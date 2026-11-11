@@ -447,7 +447,7 @@ class Floor {
     if (!(this.actBusy ??= new Set()).has(a.address) && (!c || Date.now() - c.at > age)) {
       this.actBusy.add(a.address);
       cx.spawn(async (cx) => {
-        try { cache[a.address] = (await readActivity(cwd, null)) ?? { at: Date.now(), empty: true }; }
+        try { cache[a.address] = (await readActivity(cwd, null, a.address)) ?? { at: Date.now(), empty: true }; }
         catch { cache[a.address] = { at: Date.now(), empty: true }; }
         this.actBusy.delete(a.address);
         cx.notify();

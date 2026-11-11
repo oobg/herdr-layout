@@ -1,99 +1,50 @@
 // 에이전트가 지금 무엇을 하는지: Claude Code 대화 기록(jsonl)의 끝부분에서 최근 도구 호출을 읽는다.
-//   기록 위치: ~/.claude/projects/<에이전트 폴더 경로의 영문·숫자 외 글자를 '-'로>/<세션>.jsonl (가장 최근 것)
-//   큰 기록(수십 MB)도 끝 2MB만 읽는다. 결과(tool_result)가 아직 없는 호출은 "지금 하는 중".
-import { exec, home } from "herdr";
+//   기록 위치: ~/.claude/projects/<에이전트 폴더 경로의 영문·숫자 외 글자를 '-'로>/<세션 id>.jsonl
+//   세션 id는 터미널의 앞쪽 프로세스(claude) pid → ~/.claude/sessions/<pid>.json에서 찾는다.
+//   같은 폴더에 에이전트가 여럿이어도 제 기록을 읽는다. 못 찾을 때만 그 폴더의 가장 최근 jsonl로 물러선다.
+//   큰 기록(수십 MB)도 끝 2MB만 읽는다. 해석은 parse.js가 한다.
+import { exec, hc } from "herdr";
+import { parse } from "./parse.js";
 
 const TAIL = 2000000;   // 이미지를 읽은 결과는 기록에 수백 KB로 들어가서, 턴 하나를 담으려면 넉넉히 읽는다
 
-// 도구 → [종류, 대상]. 종류는 흐름 줄에서 같은 것끼리 묶는 데 쓴다.
-function describe(name, input, cwd) {
-  const short = (p) => (p ? String(p) : "");   // 파일은 절대 경로 그대로(화면에서 위치 칩으로 줄인다)
-  switch (name) {
-    case "Read": return ["읽음", short(input.file_path)];
-    case "Edit": case "MultiEdit": case "NotebookEdit": return ["수정", short(input.file_path ?? input.notebook_path)];
-    case "Write": return ["작성", short(input.file_path)];
-    case "Grep": return ["검색", input.pattern ?? ""];
-    case "Glob": return ["찾기", input.pattern ?? ""];
-    case "Bash": return ["실행", input.description || (input.command ?? "").split("\n")[0]];
-    case "Agent": case "Task": return ["서브에이전트", input.description ?? ""];
-    case "WebFetch": return ["웹", input.url ?? ""];
-    case "WebSearch": return ["웹", input.query ?? ""];
-    case "Skill": return ["스킬", input.skill ?? ""];
-    default: return [name, ""];
-  }
+// 터미널의 앞쪽 프로세스 pid(hc get). 못 얻으면 null.
+async function foregroundPid(address) {
+  if (!address) return null;
+  try {
+    const r = await hc(["get", address, "--json"]);
+    if (r.code !== 0) return null;
+    return JSON.parse(r.stdout).foreground?.pid ?? null;
+  } catch { return null; }
 }
 
-export async function readActivity(cwd, on) {
-  const dir = `${home()}/.claude/projects/${cwd.replace(/[^A-Za-z0-9]/g, "-")}`;
-  const ls = await exec("sh", ["-c", 'ls -t "$1"/*.jsonl 2>/dev/null | head -1', "ls", dir], { on });
-  const file = ls.stdout.trim();
-  if (!file) return null;
-  const r = await exec("tail", ["-c", String(TAIL), file], { on });
-  const lines = r.stdout.split("\n");
-  lines.shift(); // 잘린 첫 줄
-  let calls = [];
-  const done = new Set(), launched = new Set(), finished = {}, names = {};
-  const textOf = (content) => (typeof content === "string" ? content
-    : Array.isArray(content) ? content.filter((it) => it.type === "text").map((it) => it.text).join("\n") : "");
-  for (const line of lines) {
-    if (!line) continue;
-    let d;
-    try { d = JSON.parse(line); } catch { continue; }
-    if (d.isSidechain) continue; // 서브에이전트 내부 기록은 묶어서 하나로 본다
-    const content = d.message?.content;
-    // 백그라운드 서브에이전트 완료 알림은 도구 결과와 같은 메시지에 섞여 오기도 한다: 줄 전체에서 찾는다
-    if (line.includes("<task-notification>")) {
-      const raw = line.replace(/\\n/g, "\n");
-      for (const m of raw.matchAll(/<task-notification>[\s\S]*?<\/task-notification>/g)) {
-        const id = /<tool-use-id>([^<]+)<\/tool-use-id>/.exec(m[0])?.[1];
-        if (!id) continue;
-        finished[id] = {
-          status: /<status>([^<]+)<\/status>/.exec(m[0])?.[1] ?? "completed",
-          tools: Number(/<tool_uses>(\d+)<\/tool_uses>/.exec(m[0])?.[1] ?? NaN),
-          ms: Number(/<duration_ms>(\d+)<\/duration_ms>/.exec(m[0])?.[1] ?? NaN),
-        };
-      }
-    }
-    if (d.type === "user" && !(Array.isArray(content) && content.some((it) => it.type === "tool_result"))) {
-      const text = textOf(content).trim();
-      // 사람이 보낸 메시지면 새 턴(자동 알림·시스템 메시지는 "<"로 시작해 제외): 그 앞 단계는 버린다
-      if (!d.isMeta && text && !text.startsWith("<")) calls = [];
-      continue;
-    }
-    if (!Array.isArray(content)) continue;
-    for (const it of content) {
-      if (it.type === "tool_use") { calls.push({ id: it.id, name: it.name, input: it.input ?? {}, at: Date.parse(d.timestamp) || 0 }); names[it.id] = it.name; }
-      else if (it.type === "tool_result") {
-        // 백그라운드로 띄운 서브에이전트는 "시작했다"는 결과가 바로 온다: 끝난 게 아니다
-        if (/^(Agent|Task)$/.test(names[it.tool_use_id] ?? "") && /Async agent launched/.test(textOf(it.content))) launched.add(it.tool_use_id);
-        else done.add(it.tool_use_id);
-      }
-    }
-  }
-  const steps = calls.map((c) => {
-    const [kind, target] = describe(c.name, c.input, cwd);
-    const end = finished[c.id];
-    return { ...c, kind, target, running: !done.has(c.id) && !end, end };
-  });
-  // 실행 중인 스크립트, 서브에이전트, 최근 파일, 흐름
-  const running = steps.filter((x) => x.running && x.kind === "실행").slice(-2);
-  const agents = steps.filter((x) => x.kind === "서브에이전트").slice(-4)
-    .map((x) => ({ type: x.input.subagent_type || "general-purpose", what: x.target, running: x.running, at: x.at,
-      failed: x.end && x.end.status !== "completed", tools: x.end?.tools, ms: x.end?.ms }));
-  const files = [];
-  for (const x of [...steps].reverse()) {
-    if (!["읽음", "수정", "작성"].includes(x.kind) || !x.target) continue;
-    if (files.some((f) => f.path === x.target)) continue;
-    files.push({ kind: x.kind, path: x.target });
-    if (files.length >= 6) break;
-  }
-  // 흐름: 이번 턴의 단계를 연속된 같은 종류끼리 묶는다(길면 마지막 10묶음)
-  const flow = [];
-  for (const x of steps) {
-    const last = flow[flow.length - 1];
-    if (last && last.kind === x.kind) { last.n++; last.running ||= x.running; last.target = x.target; }
-    else flow.push({ kind: x.kind, n: 1, running: x.running, target: x.target });
-  }
-  flow.splice(0, Math.max(0, flow.length - 10));
-  return { file, cwd, running, agents, files, flow, at: Date.now() };
+// cwd: 터미널 폴더. address: 터미널 주소(세션을 정확히 찾는 데 쓴다, 없으면 최근 파일로 짐작).
+export async function readActivity(cwd, on, address) {
+  const pid = await foregroundPid(address);
+  // 세션 파일이 있으면 그 sessionId와 cwd를 쓰고, 없으면 터미널 폴더의 가장 최근 jsonl
+  const script = [
+    'pid=$1; cwd=$2; n=$3; s=""; f=""',
+    'if [ -n "$pid" ] && [ -f "$HOME/.claude/sessions/$pid.json" ]; then',
+    // sessions/<pid>.json은 한 줄 JSON이다: sessionId와 cwd만 뽑는다
+    '  j=$(cat "$HOME/.claude/sessions/$pid.json")',
+    '  s=$(printf "%s" "$j" | sed -n \'s/.*"sessionId":"\\([^"]*\\)".*/\\1/p\')',
+    '  c=$(printf "%s" "$j" | sed -n \'s/.*"cwd":"\\([^"]*\\)".*/\\1/p\')',
+    '  [ -n "$c" ] && cwd=$c',
+    'fi',
+    'p="$HOME/.claude/projects/$(printf "%s" "$cwd" | sed "s/[^A-Za-z0-9]/-/g")"',
+    '[ -n "$s" ] && [ -f "$p/$s.jsonl" ] && f="$p/$s.jsonl"',
+    '[ -n "$f" ] || f=$(ls -t "$p"/*.jsonl 2>/dev/null | head -1)',
+    '[ -n "$f" ] || exit 3',
+    'printf "%s\\n%s\\n%s\\n" "$f" "$cwd" "$(wc -c < "$f" | tr -d " ")"',
+    'tail -c "$n" "$f"',
+  ].join("\n");
+  const r = await exec("sh", ["-c", script, "activity", pid ? String(pid) : "", cwd, String(TAIL)], { on });
+  if (r.code !== 0) return null;
+  const out = r.stdout;
+  const a = out.indexOf("\n"), b = out.indexOf("\n", a + 1), c = out.indexOf("\n", b + 1);
+  if (a < 0 || b < 0 || c < 0) return null;
+  const file = out.slice(0, a), dir = out.slice(a + 1, b), bytes = Number(out.slice(b + 1, c));
+  // 파일 전체를 읽었으면 첫 줄도 온전하다
+  const v = parse(out.slice(c + 1), { cut: bytes > TAIL });
+  return { file, cwd: dir || cwd, ...v, at: Date.now() };
 }
