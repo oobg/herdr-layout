@@ -1,30 +1,34 @@
-// office-apps의 에이전트 앱: 에이전트와 서브에이전트가 지금 하는 일.
-//   왼쪽: 에이전트 목록. 서브에이전트는 부모 아래 들여쓴다.
+// office-apps의 에이전트 앱: 에이전트가 지금 무엇을 하는지 보고, 그 터미널로 바로 간다.
+//   왼쪽: 에이전트 목록. 서브에이전트는 부모 아래 들여쓴다. 줄 모양은 파일 앱 목록과 같다(높이 24, 모서리 4).
 //         - hc run으로 띄운 서브에이전트 터미널: terminals()의 parent
 //         - Claude Code 안에서 도는 서브에이전트: 그 터미널의 records(hc get)
-//   오른쪽: 고른 에이전트의 이번 턴(요청, 마지막 말, 도구 흐름, 서브에이전트, 고친·읽은 파일)과 이동·엿보기.
+//         두 번째 줄 "스페이스 · 탭"은 스페이스가 여럿일 때만. 더블클릭은 터미널로 이동, 우클릭은 메뉴(터미널로 이동·미리 보기·부모로 이동).
+//   오른쪽: 지금 하는 일 한 줄 → 마지막 말(길면 접힘) → 이번 턴 도구 흐름(최근 몇 개, 더 보기) → 요청(접힌 한 줄) → 고친 파일(누르면 파일 앱).
 //   기록은 Claude Code 대화 기록(jsonl)에서 읽는다(agent/activity.js, agent/parse.js).
+// 셸 계약: move(delta, cx) 선택 이동 · activate(cx) 그 터미널로 이동 · emptyState() 상세가 없을 때 안내 글자.
 // 갱신: 이 앱이 그려지는 동안만 타이머가 돈다. 고른 에이전트가 작업 중이면 4초, 다른 에이전트가 작업 중이면 15초,
 //   모두 쉬면 1분(경과 시간 글자만). 기록 크기가 그대로면 다시 읽지 않고, 보여 줄 게 바뀔 때만 다시 그린다.
 //   알렸는데 그려지지 않았으면(다른 앱으로 갔거나 칸이 숨음) 멈추고, 다시 그려질 때 이어 간다.
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, spaces, focused, layout, run, setShared } from "herdr";
+import { agents, terminals, spaces, panes, focused, layout, run, setShared, openOverlay, props, theme } from "herdr";
+import { Menu, popupAt } from "./menu.js";
+import { ROLES } from "./files.js";
 import { termInfo, sessionOf, readLog, machineOf } from "./agent/activity.js";
 
 const ME = "mods/office-apps/agent";
+const APPS = "mods/office-apps";
 const SPINNER = "mods/workspace-chrome/spinner.svg";
 const FAST = 4000, SLOW = 15000, REST = 60000;
-const STATUS = { working: "작업 중", blocked: "입력 대기", done: "완료", idle: "대기" };
-// 도구 종류 → 아이콘·색(office 오버뷰와 같은 짝)
-const KIND = {
-  읽음: ["read", "#7aa2f7"], 수정: ["edit", "#e69875"], 작성: ["write", "#a7c080"], 검색: ["search", "#7fbbb3"], 찾기: ["search", "#7fbbb3"],
-  실행: ["run", "#e8b92e"], 서브에이전트: ["agent", "#d699b6"], 웹: ["web", "#83c092"], 스킬: ["skill", "#dbbc7f"],
-};
-// 파일 위치 글자 색: 프로젝트는 초록, 클로드 쪽은 Claude 주황, Herdr는 파랑, 홈은 회색
-const PLACE = { 프로젝트: "#a7c080", "클로드 임시": "#d97757", 클로드: "#d97757", Herdr: "#7aa2f7", 홈: "#9da9a0" };
+// 상태 낱말: 서버 앱과 같은 말
+const STATUS = { working: "작업 중", blocked: "입력 대기", done: "끝남", idle: "대기 중" };
+// 도구 종류 → 아이콘 모양(색은 한 가지 흐린 색)
+const KIND = { 읽음: "read", 수정: "edit", 작성: "write", 검색: "search", 찾기: "search", 실행: "run", 서브에이전트: "agent", 웹: "web", 스킬: "skill" };
 // 작게 그리면 잘 안 보이는 기본 아이콘 대신 브랜드 로고
 const BRAND = [[/claude/i, `${ME}/icons/claude.svg`, "#d97757"], [/codex|openai/i, `${ME}/icons/openai.svg`, null]];
+const FLOW_N = 6;        // 도구 흐름을 처음에 몇 묶음까지
+const SAY_N = 180;       // 마지막 말을 접는 길이(글자)
+const SAY_LINES = 3;     // 마지막 말을 접는 줄 수
 
 const isClaude = (p, app) => /claude/i.test(`${p?.key ?? ""} ${p?.name ?? ""} ${app ?? ""}`);
 const mins = (ms) => Math.max(0, Math.floor(ms / 60000));
@@ -36,12 +40,88 @@ function ago(at) {
 }
 function load(k, d) { try { return JSON.parse(localStorage.getItem(k) ?? "null") ?? d; } catch { return d; } }
 
+// 경로를 짧게: 프로젝트 안이면 상대 경로, Claude 임시 폴더면 그 안의 경로, 홈 아래면 ~/…
+function shortPath(p, cwd) {
+  if (cwd && p.startsWith(cwd + "/")) return p.slice(cwd.length + 1);
+  const tmp = /^\/(private\/)?tmp\/claude-[^/]+\/[^/]+\/[^/]+\/(scratchpad\/)?(.*)$/.exec(p);
+  if (tmp) return tmp[3];
+  const h = HOME(p);
+  if (h && p.startsWith(h + "/")) return `~/${p.slice(h.length + 1)}`;
+  return p;
+}
+
+// 파일 앱이 지금 여는 폴더와 머신(files.js location()과 같은 규칙). 공용 파일을 고치지 않으려고 같은 계산을 한다.
+function filesRoot() {
+  const space = spaces().find((s) => s.active), f = focused();
+  const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
+  const on = f?.pane === null ? (f.terminal?.includes("/") ? f.terminal.split("/")[0] : null) : space?.machine ?? null;
+  return { cwd: pane?.cwd || f?.cwd || space?.folder || null, on: on ?? null };
+}
+
+// 고친 파일을 파일 앱에서 열 경로(파일 앱 폴더 기준). 그 폴더 밖이거나 다른 머신이면 null(열지 않는다).
+function openable(abs, address, { cwd, on } = filesRoot()) {
+  if (!cwd || (machineOf(address) ?? null) !== on) return null;
+  return abs.startsWith(cwd + "/") ? abs.slice(cwd.length + 1) : null;
+}
+
+// 이동: 그 터미널로. office 레이아웃이면 터미널 칸을 열고 office 모드에 고른 워크트리를 알린다(office의 openSpace와 같게).
+//   우클릭 메뉴(오버레이 복사본)도 부르므로 값만 받는다: { address, space }
+function goTo({ address, space }) {
+  if (space) run("space.select", { id: space });
+  run("agent.focus", { terminal: address });
+  if (space && JSON.stringify(layout() ?? {}).includes('"office-term"')) {
+    run("layout.show", { id: "office-term" });
+    setShared("office.open", space);
+  }
+}
+const peek = (address) => run("terminal.peek", { terminal: address });
+
+// ── 우클릭 메뉴 ────────────────────────────────────────────
+// ctx = { title, program, address, space, kind, depth, parent: { address, space } }  (오버레이로 넘기므로 값만)
+function menuItems(ctx) {
+  const c = theme().muted, out = [];
+  // Claude Code 안의 서브에이전트는 따로 터미널이 없다: 부모로 이동만
+  if (ctx.kind !== "rec") {
+    out.push({ label: "터미널로 이동", icon: `${APPS}/terminal.svg`, color: c, fn: () => goTo(ctx), hint: "더블클릭" });
+    out.push({ label: "미리 보기", icon: `${APPS}/eye.svg`, color: c, fn: () => peek(ctx.address) });
+  }
+  if (ctx.depth > 0 && ctx.parent) out.push({ label: "부모로 이동", icon: `${APPS}/chevron-left.svg`, color: c, fn: () => goTo(ctx.parent) });
+  return out;
+}
+
+const ROW = 30, HEAD = 34, MENU_W = 240;   // menu.js Menu와 같은 줄 높이·머리줄
+
+class AgentMenu extends Menu {
+  list() { return menuItems(props().ctx); }
+
+  title(t, ctx) {
+    return h_flex().h(HEAD - 6).mb(4).px(6).gap(8).items_center().border_b_1().border_color(t.border)
+      .child(programIcon(ctx.program, 15, t))
+      .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).child(ctx.title));
+  }
+}
+
+// 오버레이 역할 표(files.js ROLES)에 더한다. main.js가 이 파일을 import하므로 모든 복사본(오버레이 포함)에서 먼저 돈다.
+function register() { ROLES["agent-menu"] = AgentMenu; }
+register();
+
+function programIcon(p, size, t) {
+  const id = `${p?.key ?? ""} ${p?.name ?? ""}`;
+  const b = BRAND.find(([re]) => re.test(id));
+  if (b) return svg(b[1]).size(size).flex_none().text_color(b[2] ?? t.foreground);
+  if (p?.icon) return p.tint ? svg(p.icon).size(size).flex_none().text_color(p.color || t.foreground) : image(p.icon).size(size).flex_none();
+  return div().flex_none().text_size(size - 2).text_color(t.foreground).child((p?.name || "?").slice(0, 1));
+}
+
 export class AgentApp {
   init(_p, _cx) {
+    register();
     this.sel = load("agent.sel", null);   // 고른 줄의 key: 터미널 주소, 안에서 도는 서브에이전트는 "주소#agentId"
     this.info = {};       // 주소 → { pid, cwd, statusAt, records, at }  (hc get)
     this.act = {};        // 줄 key → 기록에서 뽑은 활동(parse.js), 못 읽으면 { empty }
     this.rows = [];       // 지난 렌더의 목록(타이머가 쓴다)
+    this.open = {};       // 펼친 것: say(마지막 말) · flow(도구 흐름) · ask(요청). 다른 줄을 고르면 접는다.
+    this.loaded = false;  // 첫 갱신을 마쳤는지(빈 상태의 "읽는 중"과 "없음"을 가른다)
     this.timer = null; this.busy = false;
     this.rendered = 0; this.notified = 0; this.minute = 0;
   }
@@ -51,15 +131,16 @@ export class AgentApp {
     const tmap = new Map(terms.map((x) => [x.address, x]));
     const mine = new Set(ags.map((a) => a.address));
     const rows = [];
-    const walk = (addr, depth, top) => {
+    const walk = (addr, depth, top, parent) => {
       // 터미널 서브에이전트(hc run)
       // 상태를 알리는 것만(hc run으로 띄운 셸·개발 서버는 빼고, office 오버뷰와 같게)
       for (const k of terms.filter((x) => x.parent === addr && x.state === "live" && x.status)) {
         const st = k.status === "error" ? "blocked" : STATUS[k.status] ? k.status : "idle";
-        rows.push({ key: k.address, address: k.address, depth, status: st, kind: "term", top,
+        const row = { key: k.address, address: k.address, depth, status: st, kind: "term", top, parent,
           title: k.title || k.name || k.program?.name || k.address, program: k.program, app: k.report?.app ?? null,
-          cwd: k.cwd ?? null, since: k.status_ms ?? this.info[k.address]?.statusAt ?? null });
-        walk(k.address, depth + 1, top);
+          cwd: k.cwd ?? null, since: k.status_ms ?? this.info[k.address]?.statusAt ?? null };
+        rows.push(row);
+        walk(k.address, depth + 1, top, row);
       }
       // Claude Code 안의 서브에이전트(records). 부모 기록에서 끝난 걸 알면 그쪽을 믿는다.
       const recs = tmap.get(addr)?.records ?? this.info[addr]?.records ?? {};
@@ -69,7 +150,7 @@ export class AgentApp {
         const e = ended[id], g0 = known.find((x) => x.agentId === id);
         const g = e ? { ...(g0 ?? {}), running: false, failed: e.status !== "completed", tools: e.tools, ms: e.ms } : g0;
         const st = g ? (g.running ? "working" : g.failed ? "blocked" : "idle") : STATUS[r?.state] ? r.state : "idle";
-        rows.push({ key: `${addr}#${id}`, address: addr, sub: id, depth, status: st, kind: "rec", top,
+        rows.push({ key: `${addr}#${id}`, address: addr, sub: id, depth, status: st, kind: "rec", top, parent,
           title: r?.title || g?.what || "서브에이전트", program: top.program, app: r?.app ?? null, since: g?.at ?? null, finished: g && !g.running ? g : null });
       }
     };
@@ -78,27 +159,56 @@ export class AgentApp {
       if (mine.has(tmap.get(a.address)?.parent)) continue; // 부모 아래에서 그린다
       // 탭 단위 시각은 hc get의 상태 시각을 읽기 전까지 쓰는 짐작
       const tb = tabs.get(a.tab), tab = (a.status === "working" ? tb?.working_since : tb?.changed_at) ?? null;
-      const row = { key: a.address, address: a.address, depth: 0, status: a.status, kind: "agent", a,
+      const row = { key: a.address, address: a.address, depth: 0, status: a.status, kind: "agent", a, space: a.space,
         title: a.title || a.program?.name || a.address, where: `${a.space_name} · ${a.tab_name}`,
         program: a.program, app: a.app, cwd: tmap.get(a.address)?.cwd ?? null,
         since: this.info[a.address]?.statusAt ?? tmap.get(a.address)?.status_ms ?? tab };
       row.top = row;
       rows.push(row);
-      walk(a.address, 1, row);
+      walk(a.address, 1, row, row);
     }
+    // 에이전트가 있는 스페이스가 여럿일 때만 "스페이스 · 탭"을 붙인다
+    this.manySpaces = new Set(ags.map((a) => a.space)).size > 1;
     return rows;
   }
 
   current() {
-    const rows = this.rows;
-    return rows.find((r) => r.key === this.sel) ?? null;
+    return this.rows.find((r) => r.key === this.sel) ?? null;
   }
 
   select(key, cx) {
+    if (key !== this.sel) this.open = {};
     this.sel = key;
     try { localStorage.setItem("agent.sel", JSON.stringify(key)); } catch { /* 이번 실행 동안만 */ }
     this.kick(cx);
     cx.notify();
+  }
+
+  // ── 셸 계약 ────────────────────────────────────────────
+  // ↑↓: 목록에서 선택을 옮긴다(끝에서 멈춘다)
+  move(delta, cx) {
+    if (!this.rows.length) return;
+    const i = this.rows.findIndex((r) => r.key === this.sel);
+    const j = i < 0 ? 0 : Math.max(0, Math.min(this.rows.length - 1, i + delta));
+    this.select(this.rows[j].key, cx);
+  }
+
+  // Enter: 고른 줄의 터미널로(안의 서브에이전트는 부모 터미널)
+  activate(_cx) {
+    const r = this.current();
+    if (r) goTo(this.target(r));
+  }
+
+  // 상세가 없을 때(목록이 비었을 때) 셸이 그리는 안내
+  emptyState() {
+    return this.loaded
+      ? { text: "실행 중인 에이전트가 없습니다", sub: "에이전트를 띄우면 여기에 보입니다" }
+      : { text: "에이전트를 읽는 중", sub: "" };
+  }
+
+  // 줄 → 이동할 곳(값만). 안의 서브에이전트(rec)의 주소는 그 서브에이전트가 도는 터미널이다.
+  target(r) {
+    return { address: r.address, space: r.top?.space ?? null };
   }
 
   // ── 갱신 ───────────────────────────────────────────────
@@ -139,6 +249,7 @@ export class AgentApp {
         let changed = false;
         try { changed = await this.refresh(); } catch { /* 다음 차례에 다시 */ }
         this.busy = false;
+        if (!this.loaded) { this.loaded = true; changed = true; }
         const again = this.again; this.again = false;
         if (changed || again || Math.floor(Date.now() / 60000) !== this.minute) { this.notified = Date.now(); cx.notify(); }
         this.loop(cx, again ? 0 : this.interval());
@@ -176,12 +287,12 @@ export class AgentApp {
     return div().size(7).flex_none().rounded_full().bg(t[status] ?? t.idle);
   }
 
-  // 목록 오른쪽 글자: 작업 중이면 경과, 기다리면 "입력 대기", 끝났으면 "완료", 쉬면 마지막 변화 시각
+  // 목록 오른쪽 글자: 작업 중이면 경과, 기다리면 "입력 대기", 끝났으면 "끝남", 쉬면 마지막 변화 시각
   right(r, t) {
     if (r.status === "working") return [r.since ? dur(Date.now() - r.since) : "", t.muted];
     if (r.status === "blocked") return [STATUS.blocked, t.blocked];
     if (r.status === "done") return [STATUS.done, t.done];
-    return [r.kind === "rec" ? (r.finished ? "완료" : "") : ago(r.since), t.dim];
+    return [r.kind === "rec" ? (r.finished ? STATUS.done : "") : ago(r.since), t.dim];
   }
 
   // 렌더마다: 목록을 새로 만들고, 고른 줄이 없으면 정하고, 타이머를 깨운다.
@@ -192,55 +303,53 @@ export class AgentApp {
       // 고른 서브에이전트가 사라졌으면 그 부모, 처음이면 포커스된 에이전트, 없으면 첫 줄
       const parent = String(this.sel ?? "").split("#")[0], f = focused()?.terminal;
       this.sel = (this.rows.find((r) => r.key === parent) ?? this.rows.find((r) => r.address === f && !r.sub) ?? this.rows[0]).key;
+      this.open = {};
     }
     this.ensure(cx);
+  }
+
+  // 우클릭 메뉴: 오버레이는 이 모드의 새 복사본이라 값만 넘긴다.
+  openMenu(r) {
+    const ctx = { title: r.title, program: r.program ?? null, kind: r.kind, depth: r.depth, ...this.target(r),
+      parent: r.parent ? this.target(r.parent) : null };
+    const h = 12 + HEAD + menuItems(ctx).length * ROW;
+    openOverlay({ mod: "office-apps", kind: "popup", at: popupAt(MENU_W, h), width: MENU_W, height: h, props: { role: "agent-menu", ctx } });
   }
 
   list(cx, t) {
     this.prepare(cx);
     return v_flex().id("agent-list").flex_1().min_h(0).overflow_y_scrollbar().p(4)
-      .when(!this.rows.length, (el) => el.child(div().p(8).text_size(12).text_color(t.dim).child("실행 중인 에이전트가 없습니다")))
+      .when(!this.rows.length, (el) => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.loaded ? "없음" : "읽는 중")))
       .children(this.rows.map((r) => {
         const on = r.key === this.sel, [right, rc] = this.right(r, t);
-        const top = r.depth === 0;
-        return v_flex().id(`ag-${r.key}`).ml(r.depth * 14).px(8).py(top ? 6 : 4).gap(2).rounded(6).cursor_pointer()
+        const top = r.depth === 0, where = top && this.manySpaces ? r.where : "";
+        // 파일 앱 목록 줄과 같은 모양: 높이 24 · 모서리 4 · 들여쓰기 16. 스페이스 줄이 붙으면 그만큼 높인다.
+        return v_flex().id(`ag-${r.key}`).h(where ? 40 : 24).flex_none().justify_center().pl(6 + r.depth * 16).pr(8).rounded(4).cursor_pointer()
           .when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover)))
-          .on_click((_e, cx) => this.select(r.key, cx))
+          .on_click((e, cx) => { this.select(r.key, cx); if (e.click_count >= 2) goTo(this.target(r)); })
+          .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.select(r.key, cx); this.openMenu(r); })
           .child(h_flex().gap(8).items_center()
             .child(this.dot(r.status, t))
             .child(div().flex_1().min_w(0).truncate().text_size(top ? 13 : 12)
-              .text_color(top || r.status === "working" ? t.foreground : t.muted).when(top, (x) => x.font_semibold()).child(r.title))
+              .text_color(top || r.status === "working" ? t.foreground : t.muted).child(r.title))
             .when(Boolean(right), (el) => el.child(div().flex_none().text_size(11).text_color(rc).child(right))))
-          .when(top, (el) => el.child(div().pl(15).truncate().text_size(11).text_color(t.dim).child(r.where)));
+          .when(Boolean(where), (el) => el.child(div().pl(15).truncate().text_size(11).text_color(t.dim).child(where)));
       }));
   }
 
+  // 부제: 숫자는 최상위 에이전트 기준으로만. 사람이 볼 일(입력 대기)이 있을 때만 그 수를 더한다.
   subtitle(t) {
-    const n = (s) => this.rows.filter((r) => r.status === s).length;
-    const parts = [["working", n("working")], ["blocked", n("blocked")], ["done", n("done")]].filter(([, c]) => c > 0);
-    const tops = this.rows.filter((r) => r.depth === 0).length;
+    const tops = this.rows.filter((r) => r.depth === 0);
+    const blocked = tops.filter((r) => r.status === "blocked").length;
     return h_flex().gap(10).items_center().text_size(12).text_color(t.dim).truncate()
-      .child(div().flex_none().child(`에이전트 ${tops}`))
-      .children(parts.map(([s, c]) => div().flex_none().text_color(s === "working" ? t.muted : t[s]).child(`${STATUS[s]} ${c}`)));
+      .child(div().flex_none().child(`에이전트 ${tops.length}`))
+      .when(blocked > 0, (el) => el.child(div().flex_none().text_color(t.blocked).child(`${STATUS.blocked} ${blocked}`)));
   }
 
-  icon(p, size, t) {
-    const id = `${p?.key ?? ""} ${p?.name ?? ""}`;
-    const b = BRAND.find(([re]) => re.test(id));
-    if (b) return svg(b[1]).size(size).flex_none().text_color(b[2] ?? t.foreground);
-    if (p?.icon) return p.tint ? svg(p.icon).size(size).flex_none().text_color(p.color || t.foreground) : image(p.icon).size(size).flex_none();
-    return div().flex_none().text_size(size - 2).text_color(t.foreground).child((p?.name || "?").slice(0, 1));
-  }
-
-  // 이동: 그 터미널로. office 레이아웃이면 터미널 칸을 열고 office 모드에 고른 워크트리를 알린다(office의 openSpace와 같게).
-  go(r) {
-    const space = r.top?.a?.space;
-    if (space) run("space.select", { id: space });
-    run("agent.focus", { terminal: r.address });
-    if (space && JSON.stringify(layout() ?? {}).includes('"office-term"')) {
-      run("layout.show", { id: "office-term" });
-      setShared("office.open", space);
-    }
+  // 이름: 터미널 제목. 서버 앱과 같은 사람으로 보이게 상세 머리줄에는 "프로그램 이름 · 제목"
+  name(r) {
+    const p = r.kind !== "rec" ? r.program?.name : null;
+    return p && p !== r.title ? `${p} · ${r.title}` : r.title;
   }
 
   detail(cx, t) {
@@ -251,109 +360,103 @@ export class AgentApp {
     const claude = isClaude(r.program, r.app);
     const btn = (id, text, fn) => div().id(id).flex_none().px(10).py(4).rounded(6).border_1().border_color(t.border).text_size(12)
       .text_color(t.foreground).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(fn).child(text);
-    const where = r.kind === "agent" ? r.where : r.kind === "rec" ? `${r.top.title} 안의 서브에이전트` : `${r.top.title} 아래 터미널`;
 
-    // 상태 줄: 상태 낱말에만 색
-    const [label, color] = [STATUS[r.status] ?? "", t[r.status] ?? t.muted];
-    const since = r.status === "working" && r.since ? `${dur(Date.now() - r.since)}째` : r.since ? ago(r.since) : "";
-    const facts = [since, v?.model ? v.model.replace(/^claude-/, "") : null, v?.lastAt ? `마지막 기록 ${ago(v.lastAt)}` : null].filter(Boolean);
-
-    const items = [h_flex().gap(8).items_baseline()
-        .child(div().flex_none().text_color(color).font_semibold().child(r.kind === "rec" && r.finished ? (r.finished.failed ? "실패" : "완료") : label))
-        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(facts.join(" · ")))];
-
+    const items = [this.now(r, v?.flow?.length ? v : null, t)];
     if (!claude) items.push(this.note("Claude Code 에이전트만 하는 일을 읽을 수 있습니다", t));
     else if (!v) items.push(this.note("기록을 읽는 중", t));
     else if (v.empty) items.push(this.note("대화 기록을 찾지 못했습니다", t));
-    else items.push(...this.activity(r, v, t));
+    else items.push(...this.activity(r, v, cx, t));
 
     return v_flex().size_full().min_h(0)
       .child(h_flex().h(40).flex_none().px(14).gap(8).items_center().border_b_1().border_color(t.border)
-        .child(this.icon(r.program, 16, t))
-        .child(div().min_w(0).truncate().text_size(14).font_semibold().text_color(t.foreground).child(r.title))
-        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(where))
-        .when(r.kind === "rec", (el) => el.child(btn("agent-go-parent", "부모로 이동", () => this.go(r.top))))
+        .child(programIcon(r.program, 16, t))
+        .child(div().flex_1().min_w(0).truncate().text_size(14).font_semibold().text_color(t.foreground).child(this.name(r)))
+        .when(r.kind === "rec", (el) => el.child(btn("agent-go-parent", "부모로 이동", () => goTo(this.target(r.parent ?? r.top)))))
         .when(r.kind !== "rec", (el) => el
-          .child(btn("agent-go", "터미널로 이동", () => this.go(r)))
-          .child(btn("agent-peek", "엿보기", () => run("terminal.peek", { terminal: r.address })))))
+          .child(btn("agent-go", "터미널로 이동", () => goTo(this.target(r))))
+          .child(btn("agent-peek", "미리 보기", () => peek(r.address)))))
       .child(v_flex().id("agent-detail").flex_1().min_h(0).overflow_y_scrollbar().px(20).py(14).gap(2).text_size(13).children(items));
+  }
+
+  // 지금 하는 일 한 줄: 돌고 있는 도구 + 대상, 없으면 상태 점 + 상태 낱말. 오른쪽에 경과 시간.
+  now(r, v, t) {
+    const cur = r.status === "working" ? [...(v?.flow ?? [])].reverse().find((f) => f.running) : null;
+    const word = r.kind === "rec" && r.finished ? (r.finished.failed ? "실패" : STATUS.done) : STATUS[r.status] ?? "";
+    const since = r.status === "working" && r.since ? `${dur(Date.now() - r.since)}째` : r.since ? ago(r.since) : "";
+    return h_flex().gap(8).items_center().min_h(24)
+      .child(cur ? svg(SPINNER).size(13).flex_none().text_color(t.working).spin(900) : this.dot(r.status, t))
+      .child(div().flex_none().font_semibold().text_color(t.foreground).child(cur ? cur.kind : word))
+      .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(cur?.target ? this.shortTarget(cur.kind, cur.target, v) : ""))
+      .when(Boolean(since), (el) => el.child(div().flex_none().text_size(12).text_color(t.dim).child(since)));
+  }
+
+  shortTarget(kind, target, v) {
+    return ["읽음", "수정", "작성"].includes(kind) ? shortPath(target, v?.cwd) : target;
   }
 
   note(text, t) {
     return div().pt(14).text_size(12).text_color(t.dim).child(text);
   }
 
-  // 활동: 요청 → 마지막 말 → 이번 턴 → 서브에이전트 → 고친 파일 → 읽은 파일
-  activity(r, v, t) {
+  // 펼치기 글자(누르면 this.open[k]를 뒤집는다)
+  toggle(id, k, text, cx, t) {
+    return div().id(id).pt(2).text_size(11).text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground))
+      .on_click((_e, cx) => { this.open[k] = !this.open[k]; cx.notify(); }).child(text);
+  }
+
+  // 활동: 마지막 말 → 이번 턴 도구 흐름 → 요청(접힘) → 고친 파일
+  activity(r, v, cx, t) {
     const out = [];
     const head = (text) => div().pt(16).pb(4).text_size(12).font_semibold().text_color(t.muted).child(text);
-    const kindOf = (k) => KIND[k] ?? ["other", t.muted];
-    const icon = (k) => svg(`${ME}/icons/act_${kindOf(k)[0]}.svg`).size(13).flex_none().text_color(kindOf(k)[1]);
+    const icon = (k) => svg(`${ME}/icons/act_${KIND[k] ?? "other"}.svg`).size(13).flex_none().text_color(t.dim);
     const spin = () => svg(SPINNER).size(13).flex_none().text_color(t.working).spin(900);
-    const place = (p) => {
-      const h = HOME(p);
-      if (v.cwd && p.startsWith(v.cwd + "/")) return ["프로젝트", p.slice(v.cwd.length + 1)];
-      const tmp = /^\/(private\/)?tmp\/claude-[^/]+\/[^/]+\/[^/]+\/(scratchpad\/)?(.*)$/.exec(p);
-      if (tmp) return ["클로드 임시", tmp[3]];
-      if (h && p.startsWith(`${h}/.claude/`)) return ["클로드", p.slice(h.length + 9)];
-      if (h && p.startsWith(`${h}/.config/herdr-app/`)) return ["Herdr", p.slice(h.length + 20)];
-      if (h && p.startsWith(h + "/")) return ["홈", `~/${p.slice(h.length + 1)}`];
-      return [null, p];
-    };
-    const short = (k, target) => (["읽음", "수정", "작성"].includes(k) && target ? place(target)[1].split("/").pop() : target);
 
-    // 서브에이전트에게 준 지시는 길어서 앞부분만
-    const ask = r.kind === "rec" && v.ask.length > 320 ? `${v.ask.slice(0, 320).trimEnd()}…` : v.ask;
-    if (ask) out.push(head(r.kind === "rec" ? "맡은 일" : "요청"), div().text_size(13).text_color(t.foreground).child(ask));
-    if (v.say) out.push(head("마지막 말"), div().text_size(12).text_color(t.muted).child(v.say));
-
-    if (v.flow.length) {
-      out.push(head(`이번 턴 · 도구 ${v.tools}번${v.askAt ? ` · ${ago(v.askAt)} 시작` : ""}`));
-      if (v.hidden) out.push(div().pl(19).text_size(11).text_color(t.dim).child(`앞의 ${v.hidden}묶음 생략`));
-      out.push(...v.flow.map((f, i) => h_flex().id(`agent-flow-${i}`).gap(6).items_center().min_h(20)
-        .child(f.running ? spin() : icon(f.kind))
-        .child(div().flex_none().text_size(12).text_color(f.running ? t.foreground : kindOf(f.kind)[1]).when(f.running, (x) => x.font_semibold())
-          .child(`${f.kind}${f.n > 1 ? ` ×${f.n}` : ""}`))
-        .when(Boolean(f.target), (x) => x.child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(short(f.kind, f.target))))));
-    } else if (!v.ask) out.push(this.note("이번 턴에 한 일이 아직 없습니다", t));
-
-    // 서브에이전트: 누르면 그 서브에이전트를 고른다(목록에 있을 때)
-    // 기록 끝에서 띄운 줄이 잘려 나간 서브에이전트도 터미널의 records로 채운다
-    const extra = r.kind === "rec" ? [] : this.rows.filter((x) => x.kind === "rec" && x.address === r.address && !v.agents.some((g) => g.agentId === x.sub))
-      .map((x) => ({ agentId: x.sub, what: x.title, type: "", running: x.status === "working", at: null }));
-    const subs = [...v.agents, ...extra];
-    if (subs.length) {
-      out.push(head(`서브에이전트 ${subs.length}`));
-      out.push(...subs.map((g, i) => {
-        const key = g.agentId ? `${r.address}#${g.agentId}` : null;
-        const there = key && this.rows.some((x) => x.key === key);
-        const state = g.running ? `작업 중${g.at ? ` · ${dur(Date.now() - g.at)}` : ""}` : g.failed ? "실패" : [
-          "완료", Number.isFinite(g.tools) ? `도구 ${g.tools}번` : null,
-          Number.isFinite(g.ms) ? (g.ms < 60000 ? `${Math.round(g.ms / 1000)}초` : `${Math.round(g.ms / 60000)}분`) : null,
-        ].filter(Boolean).join(" · ");
-        return h_flex().id(`agent-sub-${i}`).gap(6).items_center().min_h(22).rounded(4)
-          .when(Boolean(there), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.select(key, cx)))
-          .child(g.running ? spin() : icon("서브에이전트"))
-          .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.foreground).child(g.what))
-          .when(Boolean(g.type), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(g.type)))
-          .child(div().flex_none().text_size(11).text_color(g.running ? t.working : g.failed ? t.blocked : t.muted).child(state));
-      }));
+    // 마지막 말: 몇 줄만, 길면 접는다
+    if (v.say) {
+      const lines = v.say.split("\n");
+      const long = v.say.length > SAY_N || lines.length > SAY_LINES;
+      const shown = long && !this.open.say ? `${lines.slice(0, SAY_LINES).join("\n").slice(0, SAY_N).trimEnd()}…` : v.say;
+      out.push(div().pt(10).text_size(12).text_color(t.muted).child(shown));
+      if (long) out.push(this.toggle("agent-say-more", "say", this.open.say ? "접기" : "더 보기", cx, t));
     }
 
-    const files = (title, list, more) => {
-      if (!list.length) return;
-      out.push(head(`${title} ${list.length + more}`));
-      out.push(...list.map((f) => {
-        const [at, path] = place(f.path);
-        return h_flex().gap(6).items_center().min_h(20)
+    // 이번 턴 도구 흐름: 최근 FLOW_N묶음, 더 보기로 전부
+    if (v.flow.length) {
+      out.push(head(`이번 턴 · 도구 ${v.tools}번`));
+      const over = Math.max(0, v.flow.length - FLOW_N), rest = this.open.flow ? 0 : over;
+      const list = v.flow.slice(rest);
+      if (over) out.push(this.toggle("agent-flow-more", "flow", this.open.flow ? "접기" : `앞의 ${over}묶음 더 보기`, cx, t));
+      out.push(...list.map((f, i) => h_flex().id(`agent-flow-${i}`).gap(6).items_center().min_h(20)
+        .child(f.running ? spin() : icon(f.kind))
+        .child(div().flex_none().text_size(12).text_color(f.running ? t.foreground : t.muted).when(f.running, (x) => x.font_semibold())
+          .child(`${f.kind}${f.n > 1 ? ` ×${f.n}` : ""}`))
+        .when(Boolean(f.target), (x) => x.child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted)
+          .child(["읽음", "수정", "작성"].includes(f.kind) ? f.target.split("/").pop() : f.target)))));
+    } else if (!v.ask && !v.say) out.push(this.note("이번 턴에 한 일이 아직 없습니다", t));
+
+    // 요청: 접힌 한 줄, 누르면 펼친다
+    if (v.ask) {
+      const label = r.kind === "rec" ? "맡은 일" : "요청";
+      out.push(h_flex().id("agent-ask").pt(16).gap(8).items_baseline().cursor_pointer()
+        .on_click((_e, cx) => { this.open.ask = !this.open.ask; cx.notify(); })
+        .child(div().flex_none().text_size(12).font_semibold().text_color(t.muted).child(label))
+        .child(div().flex_1().min_w(0).text_size(12).text_color(this.open.ask ? t.foreground : t.dim)
+          .when(!this.open.ask, (x) => x.truncate()).child(this.open.ask ? v.ask : v.ask.split("\n")[0])));
+    }
+
+    // 고친 파일: 짧은 경로. 파일 앱 폴더 안이면 누르면 파일 앱에서 연다.
+    if (v.edited.length) {
+      const root = filesRoot();
+      out.push(head(`고친 파일 ${v.edited.length + v.moreEdited}`));
+      out.push(...v.edited.map((f, i) => {
+        const rel = openable(f.path, r.address, root);
+        return h_flex().id(`agent-file-${i}`).h(24).px(6).gap(6).items_center().rounded(4)
+          .when(Boolean(rel), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => run(`office-apps.show:${rel}`)))
           .child(icon(f.kind))
-          .when(Boolean(at), (x) => x.child(div().flex_none().text_size(11).text_color(PLACE[at] ?? t.muted).child(at)))
-          .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.foreground).child(path));
+          .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(rel ? t.foreground : t.muted).child(shortPath(f.path, v.cwd)));
       }));
-      if (more) out.push(div().pl(19).text_size(11).text_color(t.dim).child(`외 ${more}개`));
-    };
-    files("고친 파일", v.edited, v.moreEdited);
-    files("읽은 파일", v.read, v.moreRead);
+      if (v.moreEdited) out.push(div().pl(25).text_size(11).text_color(t.dim).child(`외 ${v.moreEdited}개`));
+    }
     return out;
   }
 }

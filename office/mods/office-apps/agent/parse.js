@@ -2,7 +2,7 @@
 // office/mods/office/activity.js의 파서를 옮겨 와 고쳤다(herdr를 부르지 않아 node로도 시험할 수 있다).
 //   - 서브에이전트 기록(subagents/agent-<id>.jsonl)은 모든 줄이 isSidechain이라 sidechain 옵션으로 읽는다
 //   - 파일 전체를 읽었으면(cut=false) 첫 줄을 버리지 않는다: 서브에이전트에게 준 요청이 첫 줄에 있다
-//   - 이번 턴의 요청(ask)과 마지막 말(say), 고친 파일과 읽은 파일을 따로, 서브에이전트의 agentId를 함께 낸다
+//   - 이번 턴의 요청(ask)과 마지막 말(say), 고친 파일, 서브에이전트의 agentId를 함께 낸다
 
 // 도구 → [종류, 대상]. 종류는 흐름 줄에서 같은 것끼리 묶는 데 쓴다.
 export function describe(name, input) {
@@ -107,16 +107,11 @@ export function parse(text, { cut = true, sidechain = false } = {}) {
     .map((x) => ({ id: x.id, agentId: agentIds[x.id] ?? null, type: x.input.subagent_type || "general-purpose", what: x.target,
       running: x.running, background: launched.has(x.id), at: x.at,
       failed: Boolean(x.end && x.end.status !== "completed"), tools: x.end?.tools, ms: x.end?.ms }));
-  // 고친 파일과 읽은 파일(최근 것부터, 겹치면 고친 쪽에만)
-  const edited = [], read = [];
+  // 고친 파일(최근 것부터, 같은 파일은 한 번)
+  const edited = [];
   for (const x of [...steps].reverse()) {
     if (!x.target) continue;
     if ((x.kind === "수정" || x.kind === "작성") && !edited.some((f) => f.path === x.target)) edited.push({ kind: x.kind, path: x.target });
-  }
-  for (const x of [...steps].reverse()) {
-    if (x.kind !== "읽음" || !x.target) continue;
-    if (edited.some((f) => f.path === x.target) || read.some((f) => f.path === x.target)) continue;
-    read.push({ kind: x.kind, path: x.target });
   }
   // 흐름: 이번 턴의 단계를 연속된 같은 종류끼리 묶는다(길면 마지막 24묶음)
   const flow = [];
@@ -128,6 +123,6 @@ export function parse(text, { cut = true, sidechain = false } = {}) {
   const hidden = Math.max(0, flow.length - 24);
   flow.splice(0, hidden);
   return { ask: ask || clip(lastPrompt, 600), askAt, say, model, lastAt, tools: steps.length, running, agents, ended,
-    edited: edited.slice(0, 15), read: read.slice(0, 15), moreEdited: Math.max(0, edited.length - 15), moreRead: Math.max(0, read.length - 15),
+    edited: edited.slice(0, 15), moreEdited: Math.max(0, edited.length - 15),
     flow, hidden };
 }
