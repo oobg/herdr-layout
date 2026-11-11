@@ -491,7 +491,9 @@ class Floor {
       if (p.startsWith(h + "/")) return ["홈", `~/${p.slice(h.length + 1)}`];
       return [null, p];
     };
-    const chip = (text) => div().flex_none().px(5).rounded(4).bg(t.raised).text_size(11).text_color(t.muted).child(text);
+    // 위치 칩 색: 프로젝트는 초록, 클로드 쪽은 Claude 주황, Herdr는 파랑, 홈은 회색
+    const PLACE = { 프로젝트: "#a7c080", "클로드 임시": "#d97757", 클로드: "#d97757", Herdr: "#7aa2f7", 홈: "#9da9a0" };
+    const chip = (text) => { const c = PLACE[text] ?? t.muted; return div().flex_none().px(5).rounded(4).bg(`${c}26`).border_1().border_color(`${c}66`).text_size(11).text_color(c).child(text); };
     const short = (k, target) => (["읽음", "수정", "작성"].includes(k) && target ? place(target)[1].split("/").pop() : target);
     const head = (text) => div().pt(4).text_size(11).font_semibold().text_color(t.muted).child(text);
     return v_flex().ml(24).mb(6).pl(10).py(2).gap(3).border_l_2().border_color(t.border).text_size(12)
