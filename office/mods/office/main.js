@@ -49,7 +49,18 @@ function hashColor(s) {
   return PALETTE[h % PALETTE.length];
 }
 
-function programIcon(p, size, t) {
+// 브랜드 로고로 바꿔 보여 줄 프로그램: Claude Code → Claude(주황 별), Codex → OpenAI.
+// Herdr 기본 아이콘(Claude Code의 게 모양, Codex 아이콘)은 작게 그리면 잘 안 보여서다.
+const BRAND = [
+  [/claude/i, "mods/office/icons/claude.svg", "#d97757"],
+  [/codex|openai/i, "mods/office/icons/openai.svg", "#111111"],
+];
+
+// onLight: 흰 바탕(말풍선 안)에 그릴 때. OpenAI 로고는 바탕에 따라 검정/글자색.
+function programIcon(p, size, t, onLight = false) {
+  const id = `${p?.key ?? ""} ${p?.name ?? ""}`;
+  const brand = BRAND.find(([re]) => re.test(id));
+  if (brand) return svg(brand[1]).size(size).text_color(brand[2] === "#111111" && !onLight ? t.foreground : brand[2]);
   if (p?.icon) return p.tint ? svg(p.icon).size(size).text_color(p.color || t.foreground) : image(p.icon).size(size);
   return div().text_size(size - 2).text_color(t.foreground).child((p?.name || "?").slice(0, 1));
 }
@@ -294,6 +305,11 @@ class Floor {
     const M = SPR;
     if (!zones.length || !box.width) return div();
     const fit = (b) => Math.max(0.12, Math.min(1.0, (box.width - 24) / b.W, (box.height - 52) / b.H));
+    // 터미널을 연(칸이 좁아진) 동안에는 고른 워크트리의 사무실(구역)만 그린다.
+    if (open) {
+      const only = zones.filter(([, z]) => z.spaces.some((x) => x.id === open));
+      if (only.length) zones = only;
+    }
     let L = null, best = -1;
     for (let zc = 1; zc <= zones.length; zc++) {
       const cand = this.layout(zones, zc), k = fit(this.bounds(cand));
@@ -402,7 +418,7 @@ class Floor {
       : div().size(7).rounded_full().bg(fg);
     return h_flex().gap(5).items_center().h(24).pl(5).pr(9).rounded(12).bg(bg).border_1().border_color("#00000033").shadow_md()
       .when(a.status === "blocked", (el) => el.loop("opacity", { from: 0.65, to: 1, period: 900 }).loop("top", { from: 0, to: -3, period: 900 }))
-      .child(div().size(18).flex_none().rounded_full().bg("#ffffff").flex().items_center().justify_center().child(programIcon(a.program, 12, t)))
+      .child(div().size(18).flex_none().rounded_full().bg("#ffffff").flex().items_center().justify_center().child(programIcon(a.program, 12, t, true)))
       .child(icon)
       .child(div().text_size(12).font_semibold().text_color(fg).whitespace_nowrap().child(text))
       .when(kids > 0, (el) => el.child(div().px(5).rounded(8).bg("#00000026").text_size(11).font_semibold().text_color(fg).child(`+${kids}`)));
