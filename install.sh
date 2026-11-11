@@ -1,12 +1,14 @@
 #!/bin/sh
-# office 레이아웃과 모드를 Herdr 폴더에 복사한다. 이미 있으면 덮어쓴다.
+# office 레이아웃과 모드를 Herdr 폴더에 복사한다. 내용이 바뀐 파일만 쓴다.
+# (Herdr는 모드 폴더의 파일이 저장될 때마다 그 모드를 다시 불러온다. 바뀌지 않은 파일까지
+#  다시 쓰면 재로드가 쌓여 JS 런타임이 메모리 부족이 될 수 있다.)
 set -e
 HOME_DIR="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
 SRC="$(cd "$(dirname "$0")" && pwd)/office"
-cp "$SRC"/layouts/* "$HOME_DIR/layouts/"
+rsync -rlp --checksum "$SRC/layouts/" "$HOME_DIR/layouts/"
 for m in "$SRC"/mods/*/; do
   name=$(basename "$m")
   mkdir -p "$HOME_DIR/mods/$name"
-  cp -R "$m". "$HOME_DIR/mods/$name/"
+  rsync -rlp --checksum --itemize-changes --exclude gpui-kit.d.ts --exclude jsconfig.json "$m" "$HOME_DIR/mods/$name/" | sed "s|^|$name: |"
 done
 echo "installed to $HOME_DIR"
