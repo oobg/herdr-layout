@@ -83,9 +83,9 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 
 ### 런처 (`main.js`)
 
-- **런처 화면:** 검색창(앱 이름·설명·id로 거름) + 앱 아이콘 격자(타일 56px, 앱 색 바탕 + 흰 아이콘 `apps/<id>.svg`). 오른쪽 위 ⚙는 앱 관리.
+- **런처 화면:** 검색창(앱 이름·설명·id로 거름) + 앱 아이콘 격자(타일 56px, 앱 색 바탕 + 흰 아이콘 `apps/<id>.svg`). 앱 관리는 격자의 `manage` 앱으로 연다.
 - **앱 화면:** 위 막대 44px(`‹ 앱` · 타일 · 이름 · 앱의 `subtitle`) / 왼쪽 250px(`list`) / 오른쪽 나머지(`detail`, 바탕 `background`로 강조). `detail`이 `null`이면 "선택 내용이 없습니다 · 왼쪽에서 항목을 고르세요".
-- **앱 관리:** 앱마다 스위치. 끈 앱 목록은 공유 상태 `office-apps.disabled`(`{ id: true }`)에 둔다. 끈 앱은 격자에서 숨기고 인스턴스를 만들지 않으며, 끌 때 있던 인스턴스는 버린다.
+- **앱 관리:** 대화 상자(오버레이 역할 `manage`, 420×520)에서 앱마다 스위치. 끈 앱 목록은 공유 상태 `office-apps.disabled`(`{ id: true }`)에 두고, 대화 상자가 `setShared`로 바로 바꾼다. 런처는 렌더 때 이전 값과 비교해(`syncDisabled`) 새로 꺼진 앱의 인스턴스를 `dispose()`한 뒤 버리고, 보던 앱이 꺼졌으면 런처 화면으로 돌아간다. 끈 앱은 격자에서 숨기고 인스턴스를 만들지 않는다.
 - **앱 인스턴스:** 켜진 앱을 처음 열 때(`go`) 만든다. 렌더 중에는 입력 상자 등을 만들 수 없어서 이벤트·명령 처리 시점에 만든다. 마지막으로 연 앱 id는 `localStorage`의 `app`.
 - **우클릭 메뉴:** 앱 아이콘 우클릭 → 오버레이 `launcherMenu`(열기 · 앱 끄기 · 앱 관리…). 오버레이는 모드의 새 복사본이라 상태를 나누지 않으므로, 고른 동작은 `run("office-apps.<명령>")`으로 런처에 돌려보낸다.
 - **명령**(`nextCommand`)
@@ -95,8 +95,8 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
   | `office-apps.home` | 런처로 |
   | `office-apps.open-<id>` | 앱 열기 (`action` 앱이면 그 동작) |
   | `office-apps.show:<경로>` | 파일 앱을 열고 그 파일을 보여 줌(프로젝트 기준 상대 경로) |
-  | `office-apps.manage` | 앱 관리 화면 |
-  | `office-apps.disable-<id>` | 앱 끄기 |
+  | `office-apps.manage` | 앱 관리 대화 상자 |
+  | `office-apps.disable-<id>` | 앱 끄기 (`manage`는 무시) |
 
   `herdr-app do office-apps.open-files`처럼 클릭 없이 시험할 때 쓴다.
 
@@ -111,6 +111,7 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 | `prompt` | `files.js` | 이름 입력 창(새 파일·폴더·이름 바꾸기) |
 | `tip` | `files.js` | 툴바 툴팁 창 |
 | `launcherMenu` | `main.js` | 런처 앱 아이콘 우클릭 메뉴 |
+| `manage` | `main.js` `ManageDialog` | 앱 관리 대화 상자(앱마다 켜고 끄기) |
 | `branch-menu`, `branch-prompt` | `branch.js` | 브랜치 우클릭 메뉴와 입력 창 |
 
 역할 표는 `files.js`의 `ROLES`와 `main.js`의 `ALL_ROLES`, 확인 창 동작 표는 `menu.js`의 `ACTIONS`다. 브랜치·PR·서버 앱은 이 공용 파일을 고치지 않고, 모듈이 불릴 때 자기 동작을 표에 더한다(`branch.*`, `pr.merge`·`pr.close`·`pr.checkout`, `serverRemove`). `main.js`가 모든 앱 파일을 import하므로 오버레이 복사본에서도 먼저 등록된다. 확인 창은 따로 뜨는 복사본이라 함수를 넘길 수 없고, `ctx`에는 값만 담는다.
@@ -126,6 +127,7 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 | 에이전트 (`agent`) | `agent.js`, `agent/activity.js`, `agent/parse.js` | 왼쪽: 에이전트 목록, 서브에이전트(`hc run`으로 띄운 터미널은 `terminals()`의 `parent`, Claude Code 안의 서브에이전트는 `hc get`의 records)는 부모 아래 들여쓴다. 오른쪽: 이번 턴의 요청·마지막 말·도구 흐름·서브에이전트·고친/읽은 파일, 터미널로 이동·엿보기. 기록은 터미널 앞쪽 프로세스 pid → `~/.claude/sessions/<pid>.json`의 sessionId로 찾고, 못 찾으면 그 폴더의 가장 최근 jsonl. 이 앱이 그려지는 동안만 타이머가 돈다(고른 에이전트 작업 중 4초, 다른 에이전트 작업 중 15초, 모두 쉬면 1분). `office/activity.js`를 옮겨 와 고친 것이다(다른 모드라 import로 나눠 쓸 수 없다). |
 | 서버 (`server`) | `server.js`, `server/add.js`, `server/resources.js` | 왼쪽: 툴바(기기 추가·다시 읽기) + 머신 목록(이 컴퓨터 + `hc machine ls`, 연결 상태, 스페이스 수). 오른쪽: 주소·연결 방식·호스트·hc 버전, 그 머신의 스페이스·에이전트, 새 스페이스·새 터미널·제거(확인 창 → `hc machine rm`). 리소스는 칸이 넓으면 오른쪽 열(260px), 좁으면 정보 줄 아래. 기기 추가·제거는 구현됨. |
 | 설정 (`settings`) | `main.js` | `action` 앱: 들어가지 않고 `run("app.settings")`로 Herdr 설정 창을 연다. |
+| 앱 관리 (`manage`) | `main.js` | `action` 앱: `openManage`로 앱 관리 대화 상자를 띄운다(`office-apps.manage`와 같은 함수). `locked`라 끌 수 없다: 관리 목록에 "항상 켜짐", 우클릭 메뉴는 열기만, `disable-manage`와 공유 상태의 `manage: true`는 무시. |
 
 #### 파일 앱
 

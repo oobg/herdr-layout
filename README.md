@@ -36,7 +36,7 @@ Herdr 앱용 **Office** 레이아웃입니다. 위쪽은 코딩 에이전트들�
 
 검색창과 앱 아이콘 격자입니다. 앱을 누르면 들어가고, 앱 화면은 위 막대(`‹ 앱` · 아이콘 · 이름 · 부제), 왼쪽 목록(250px), 오른쪽 상세로 나뉩니다. 고른 항목이 없으면 "선택 내용이 없습니다"가 나옵니다.
 
-- ⚙ 앱 관리: 앱마다 켜고 끕니다. 끈 앱은 격자에서 숨기고 인스턴스를 만들지 않습니다.
+- 앱 관리: 격자의 "앱 관리" 앱을 누르면 대화 상자가 떠서 앱마다 켜고 끕니다(Esc·✕로 닫음). 끈 앱은 격자에서 숨기고 인스턴스를 만들지 않습니다. 앱 관리 앱은 끌 수 없습니다.
 - 앱 아이콘 우클릭: 열기 · 앱 끄기 · 앱 관리….
 - 마지막으로 연 앱을 기억합니다.
 
@@ -49,6 +49,7 @@ Herdr 앱용 **Office** 레이아웃입니다. 위쪽은 코딩 에이전트들�
 | 에이전트 | 에이전트와 서브에이전트 목록. 고른 에이전트의 이번 턴(요청, 마지막 말, 도구 흐름, 고친·읽은 파일)을 Claude Code 대화 기록에서 읽습니다. 터미널로 이동, 엿보기. |
 | 서버 | 이 컴퓨터와 `hc machine ls`의 머신 목록, 머신 정보, 그 머신의 스페이스·에이전트, 리소스(CPU·메모리·저장 공간·배터리·네트워크). 새 스페이스·새 터미널, 기기 추가(SSH 또는 명령, `hc machine add`), 제거(확인 창, `hc machine rm`). 기기 추가·제거는 구현됨. |
 | 설정 | 들어가지 않고 Herdr 설정 창(`app.settings`)을 엽니다. |
+| 앱 관리 | 앱마다 켜고 끄는 대화 상자를 띄웁니다. 이 앱은 끌 수 없습니다(항상 켜짐). |
 
 ### LLM 사용량 (아래 오른쪽)
 
@@ -105,10 +106,10 @@ herdr-app status                      # 화면 상태와 파일·모드 오류(e
 
 ```sh
 herdr-app do office-apps.home                  # 런처로
-herdr-app do office-apps.open-<앱 id>          # 앱 열기 (files, branch, commit, pr, agent, server, settings)
+herdr-app do office-apps.open-<앱 id>          # 앱 열기 (files, branch, commit, pr, agent, server, settings, manage)
 herdr-app do 'office-apps.show:<경로>'          # 파일 앱에서 그 파일 열기 (프로젝트 기준 상대 경로)
-herdr-app do office-apps.manage                # 앱 관리 화면
-herdr-app do office-apps.disable-<앱 id>       # 앱 끄기 (다시 켜기는 ⚙에서)
+herdr-app do office-apps.manage                # 앱 관리 대화 상자
+herdr-app do office-apps.disable-<앱 id>       # 앱 끄기 (다시 켜기는 앱 관리에서, manage는 끌 수 없음)
 ```
 
 ### 주의
