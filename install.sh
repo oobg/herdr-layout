@@ -8,6 +8,8 @@ SRC="$(cd "$(dirname "$0")" && pwd)/office"
 rsync -rlp --checksum "$SRC/layouts/" "$HOME_DIR/layouts/"
 for m in "$SRC"/mods/*/; do
   name=$(basename "$m")
+  # 제외 목록 방식: 새 모드는 폴더만 만들면 자동 설치되고(명시 목록은 추가를 놓치기 쉽다), 레이아웃이 안 쓰는 이식 원본만 뺀다.
+  case "$name" in office-git) continue ;; esac
   mkdir -p "$HOME_DIR/mods/$name"
   rsync -rlp --checksum --itemize-changes --exclude gpui-kit.d.ts --exclude jsconfig.json "$m" "$HOME_DIR/mods/$name/" | sed "s|^|$name: |"
 done
