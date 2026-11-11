@@ -327,7 +327,7 @@ class Floor {
       for (const i of M.order) {
         const who = seats[i];
         els.push(image(`${SPRITES}/seat${i}_${who ? who.ch : "empty"}.png`).absolute().left(l).top(tp).w(S).h(S));
-        if (who) seated.push({ a: who.a, x: tb.x + M.seats[i].head[0], y: tb.y + M.seats[i].head[1] });
+        if (who) seated.push({ a: who.a, tab: tb.s.tabs.find((x) => x.id === who.a.tab), x: tb.x + M.seats[i].head[0], y: tb.y + M.seats[i].head[1] });
       }
       tb.n = mine.length;
     }
@@ -335,7 +335,10 @@ class Floor {
     const z = Math.round(Math.max(18, Math.min(28, 40 * k)));
     for (const w of seated) {
       const [l, tp] = P(w.x, w.y);
-      els.push(div().absolute().left(l - z / 2 - 9).top(tp - z - 30).child(this.bubble(w.a, terms, t, z)));
+      // 상태 표시: 머리 위 가운데. 폭을 넉넉히 잡고 가운데 정렬해 글 길이가 달라도 머리 위에 온다.
+      const tab = w.tab;
+      els.push(h_flex().absolute().left(l - 90).top(tp - (w.a.status === "idle" ? 16 : 32)).w(180).justify_center()
+        .child(this.bubble(w.a, terms, t, tab)));
     }
     // 4) 클릭 영역: 칸 가운데를 중심으로 이웃 칸과 겹치지 않게(그림의 투명한 곳도 사각형으로 눌리므로).
     for (const tb of L.tables) {
@@ -381,14 +384,28 @@ class Floor {
   }
 
   // 말풍선: 흰 바탕에 에이전트 로고, 우상단에 상태 뱃지. 아래 꼬리로 머리를 가리킨다.
-  // 테두리 색이 곧 상태(작업 중 노랑·입력 대기 빨강·완료 초록·대기 회색)라, 뱃지가 작아도 멀리서 읽힌다.
-  bubble(a, terms, t, z = 24) {
-    const ring = { working: C.working, blocked: C.blocked, done: C.done }[a.status] ?? "#9aa0a6";
-    return v_flex().items_center()
-      .child(div().relative().p(Math.round(z * 0.28)).rounded(Math.round(z * 0.45)).bg("#ffffff").border_2().border_color(ring).shadow_md()
-        .child(programIcon(a.program, z, t))
-        .child(div().absolute().top(-8).right(-8).child(this.badge(a, terms, t, Math.round(z * 0.7)))))
-      .child(div().w(3).h(10).bg(ring));
+  // 머리 위 상태 표시. 상태가 먼저 읽히도록 색 알약에 상태 낱말을 쓰고, 로고는 작게.
+  //   입력 대기: 빨강 "답 필요", 깜빡이며 살짝 튄다(가장 먼저 봐야 하므로)
+  //   작업 중: 노랑 "작업 중 4분"   완료: 초록 "완료"   대기: 작은 회색 점만(화면을 어지럽히지 않게)
+  //   서브에이전트가 일하는 중이면 "+n"
+  bubble(a, terms, t, tab) {
+    if (a.status === "idle") return div().size(8).rounded_full().bg("#9aa0a6").border_1().border_color("#ffffff");
+    const m = a.status === "working" && tab?.working_since ? Math.max(0, Math.round((Date.now() - tab.working_since) / 60000)) : null;
+    const [bg, fg, text] = {
+      blocked: [C.blocked, "#ffffff", "답 필요"],
+      working: [C.working, "#2a2100", m == null ? "작업 중" : m < 1 ? "작업 중" : `작업 중 ${m < 60 ? `${m}분` : `${Math.floor(m / 60)}시간`}`],
+      done: [C.done, "#ffffff", "완료"],
+    }[a.status] ?? ["#9aa0a6", "#ffffff", ""];
+    const kids = terms.filter((x) => x.parent === a.address && x.status === "working").length;
+    const icon = a.status === "working" ? svg(SPINNER).size(12).text_color(fg).spin(900)
+      : a.status === "done" ? div().text_size(12).font_semibold().text_color(fg).child("✓")
+      : div().size(7).rounded_full().bg(fg);
+    return h_flex().gap(5).items_center().h(24).pl(5).pr(9).rounded(12).bg(bg).border_1().border_color("#00000033").shadow_md()
+      .when(a.status === "blocked", (el) => el.loop("opacity", { from: 0.65, to: 1, period: 900 }).loop("top", { from: 0, to: -3, period: 900 }))
+      .child(div().size(18).flex_none().rounded_full().bg("#ffffff").flex().items_center().justify_center().child(programIcon(a.program, 12, t)))
+      .child(icon)
+      .child(div().text_size(12).font_semibold().text_color(fg).whitespace_nowrap().child(text))
+      .when(kids > 0, (el) => el.child(div().px(5).rounded(8).bg("#00000026").text_size(11).font_semibold().text_color(fg).child(`+${kids}`)));
   }
 
   badge(a, terms, t, z = 11) {
