@@ -109,6 +109,15 @@ export function parseMarkdown(src) {
       blocks.push({ kind: "alert", type: a[1].toLowerCase(), text: ref(inner.join("\n")) });
       continue;
     }
+    // 여러 줄 HTML 그림(<p align="center">\n  <img …>\n</p>): 닫는 태그까지 한 줄로 이어 본다
+    const open = /^ {0,3}<(p|div|picture|a|center)\b[^>]*>\s*$/i.exec(line);
+    if (open) {
+      const close = new RegExp(`</${open[1]}\\s*>\\s*$`, "i");
+      let j = i + 1;
+      while (j < body.length && j - i < 20 && body[j].trim() && !close.test(body[j])) j++;
+      const joined = j < body.length && close.test(body[j]) ? imageLine(body.slice(i, j + 1).join(" "), refs) : null;
+      if (joined?.items.length) { flush(); blocks.push({ kind: "images", ...joined }); i = j; continue; }
+    }
     const imgs = line.trim() ? imageLine(line, refs) : null;
     if (imgs?.items.length) { flush(); blocks.push({ kind: "images", ...imgs }); continue; }
     text.push(outsideCode(line, ref));
