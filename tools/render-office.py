@@ -62,13 +62,25 @@ if SAMPLE:
     CHARACTERS = CHARACTERS[:3]
 
 
-def reset():
+def reset(catcher=True, size=SIZE):
+    """빈 장면 + 카메라·조명. catcher: 바닥에 그림자만 받는 판을 깐다(가구·사람 층). 방 부품은 끈다."""
     bpy.ops.wm.read_factory_settings(use_empty=True)
     sc = bpy.context.scene
-    engines = [e.identifier for e in bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items]
-    sc.render.engine = "BLENDER_EEVEE" if "BLENDER_EEVEE" in engines else "BLENDER_EEVEE_NEXT"
+    # 그림자를 투명 배경에 남기려고 Cycles의 shadow catcher를 쓴다.
+    sc.render.engine = "CYCLES"
+    sc.cycles.samples = 24
+    sc.cycles.use_denoising = True
+    try:
+        prefs = bpy.context.preferences.addons["cycles"].preferences
+        prefs.compute_device_type = "METAL"
+        prefs.get_devices()
+        for d in prefs.devices:
+            d.use = True
+        sc.cycles.device = "GPU"
+    except Exception:
+        pass
     sc.render.film_transparent = True
-    sc.render.resolution_x = sc.render.resolution_y = SIZE
+    sc.render.resolution_x = sc.render.resolution_y = size
     sc.render.image_settings.file_format = "PNG"
     sc.render.image_settings.color_mode = "RGBA"
     sc.view_settings.view_transform = "Standard"
@@ -76,7 +88,7 @@ def reset():
     sc.collection.objects.link(cam)
     sc.camera = cam
     cam.data.type = "ORTHO"
-    cam.data.ortho_scale = ORTHO
+    cam.data.ortho_scale = ORTHO * size / SIZE   # 캔버스가 커져도 1m가 같은 픽셀이 되게
     cam.rotation_euler = tuple(math.radians(v) for v in CAM_ROT)
     back = Vector((0, 0, 1))
     back.rotate(cam.rotation_euler)
@@ -92,7 +104,27 @@ def reset():
     bg = world.node_tree.nodes["Background"]
     bg.inputs[0].default_value = (0.8, 0.82, 0.85, 1)
     bg.inputs[1].default_value = 0.9
+    if catcher:
+        bpy.ops.mesh.primitive_plane_add(size=40, location=(0, 0, 0))
+        bpy.context.active_object.is_shadow_catcher = True
     return sc, cam
+
+
+def material(name, rgb):
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    bsdf = m.node_tree.nodes["Principled BSDF"]
+    bsdf.inputs[0].default_value = (*rgb, 1)
+    bsdf.inputs["Roughness"].default_value = 0.9
+    return m
+
+
+def box(center, size, mat):
+    bpy.ops.mesh.primitive_cube_add(location=center)
+    o = bpy.context.active_object
+    o.scale = (size[0] / 2, size[1] / 2, size[2] / 2)
+    o.data.materials.append(mat)
+    return o
 
 
 def place(path, loc, rotz=0):
@@ -141,10 +173,45 @@ def render(sc, name):
 
 def px(sc, cam, p):
     v = world_to_camera_view(sc, cam, Vector(p))
-    return [round(v.x * SIZE, 1), round((1 - v.y) * SIZE, 1)]
+    n = sc.render.resolution_x
+    return [round(v.x * n, 1), round((1 - v.y) * n, 1)]
 
 
 manifest = {"size": SIZE, "ortho": ORTHO, "camera": CAM_ROT, "characters": CHARACTERS, "seats": []}
+
+def rooms(o):
+    global sc, cam
+    # 방 부품: 칸마다 바닥 판, 구역의 왼쪽(xmin)·뒤(ymax) 가장자리 칸에 벽. 그림자 판 없이 렌더한다.
+    global WALL_H
+    WALL_H, WALL_T, SLAB = 1.2, 0.1, 0.12
+    FLOOR_MAT, WALL_MAT = (0.86, 0.86, 0.85), (0.94, 0.94, 0.93)
+    ROOM = SIZE * 2   # 방 부품은 테이블 캔버스보다 커서 같은 축척의 두 배 캔버스에 렌더한다
+    for name, center, size, rgb in [
+        ("room_floor", (0, 0, -SLAB / 2), (CELL_X, CELL_Y, SLAB), FLOOR_MAT),
+        ("room_wall_xmin", (-CELL_X / 2 - WALL_T / 2, 0, WALL_H / 2 - SLAB / 2), (WALL_T, CELL_Y, WALL_H + SLAB), WALL_MAT),
+        ("room_wall_ymax", (0, CELL_Y / 2 + WALL_T / 2, WALL_H / 2 - SLAB / 2), (CELL_X, WALL_T, WALL_H + SLAB), WALL_MAT),
+        ("room_corner", (-CELL_X / 2 - WALL_T / 2, CELL_Y / 2 + WALL_T / 2, WALL_H / 2 - SLAB / 2), (WALL_T, WALL_T, WALL_H + SLAB), WALL_MAT),
+    ]:
+        sc, cam = reset(catcher=False, size=ROOM)
+        box(center, size, material(name, rgb))
+        render(sc, f"{name}.png")
+    # 방 캔버스의 월드 원점 픽셀. 모드는 (테이블 캔버스 원점 - 방 캔버스 원점)만큼 옮겨 겹친다.
+    manifest["room"] = {"size": ROOM, "origin": px(sc, cam, (0, 0, 0))}
+    sc, cam = reset(catcher=False)   # 아래 좌표는 테이블 캔버스 기준
+    manifest["ez"] = [a - b for a, b in zip(px(sc, cam, (0, 0, 1)), o)]   # 높이 1m가 화면에서 움직이는 픽셀(명패 위치)
+    manifest["wall"] = WALL_H
+
+
+
+ROOMS_ONLY = "--rooms" in args
+if ROOMS_ONLY:   # 방 부품만 다시: 기존 매니페스트를 읽어 해당 값만 바꾼다
+    with open(os.path.join(OUT, "manifest.json")) as f:
+        manifest = json.load(f)
+    rooms(manifest["origin"])
+    with open(os.path.join(OUT, "manifest.json"), "w") as f:
+        json.dump(manifest, f, indent=2)
+    print("ROOMS RENDERED to", OUT)
+    sys.exit(0)
 
 # 1) 테이블
 sc, cam = reset()
@@ -171,13 +238,39 @@ manifest["hit"] = [min(c[0] for c in corners), min(c[1] for c in corners), max(c
 # 겹쳐 그리는 순서: 화면에서 멀리 있는 자리(카메라 쪽에서 먼 것)부터
 manifest["order"] = sorted(range(len(SEATS)), key=lambda i: px(sc, cam, (SEATS[i][0], SEATS[i][1], 0))[1])
 
-# 바닥 칸의 네 변(구역 바깥 테두리용). 구역 가장자리 칸에만 그 쪽 변을 그린다. 이름은 월드 방향.
-edges = {"xmin": (quad[0], quad[3]), "xmax": (quad[1], quad[2]), "ymin": (quad[0], quad[1]), "ymax": (quad[3], quad[2])}
-for side, (a, b) in edges.items():
-    with open(os.path.join(OUT, f"edge_{side}.svg"), "w") as f:
-        f.write(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {round(fw, 1)} {round(fh, 1)}">'
-                f'<line x1="{round(a[0] - fx, 1)}" y1="{round(a[1] - fy, 1)}" x2="{round(b[0] - fx, 1)}" y2="{round(b[1] - fy, 1)}" '
-                f'stroke="#000" stroke-width="5" stroke-linecap="round"/></svg>\n')
+rooms(o)
+
+# 사장님방: 임원용 책상 하나와 자리 하나. 홈 폴더(~) 스페이스에 쓴다.
+BOSS_SEAT = (0, -0.78, 180)
+def boss_desk():
+    objs = place(os.path.join(OFFICE, "03_Executive_Desk.glb"), (0, 0, 0))
+    objs += place(os.path.join(OFFICE, "41_Monitor.glb"), (0, 0.15, 0.762), 180)
+    objs += place(os.path.join(OFFICE, "43_Keyboard.glb"), (0, -0.15, 0.762), 180)
+    objs += place(os.path.join(OFFICE, "44_Desk_Lamp.glb"), (-0.55, 0.18, 0.762), 180)
+    objs += place(os.path.join(OFFICE, "47_Desktop_Books.glb"), (0.5, 0.2, 0.762), 180)
+    return objs
+sc, cam = reset()
+boss_desk()
+render(sc, "boss_table.png")
+bc = [px(sc, cam, (x, y, z)) for x, y in ((-1.2, -1.4), (1.2, 1.0)) for z in (0, 1.3)]
+manifest["boss"] = {"hit": [min(c[0] for c in bc), min(c[1] for c in bc), max(c[0] for c in bc), max(c[1] for c in bc)]}
+sc, cam = reset()
+for ob in boss_desk():
+    ob.is_holdout = True
+    ob.visible_shadow = False
+place(os.path.join(OFFICE, "09_Task_Chair.glb"), BOSS_SEAT[:2] + (0,), BOSS_SEAT[2])
+render(sc, "boss_seat_empty.png")
+for ch in CHARACTERS:
+    person = place(os.path.join(PEOPLE, ch + ".glb"), BOSS_SEAT[:2] + (0,), BOSS_SEAT[2])
+    rig = pose(person)
+    bpy.context.view_layer.update()
+    if "head" not in manifest["boss"]:
+        manifest["boss"]["head"] = px(sc, cam, rig.matrix_world @ rig.pose.bones["head"].tail)
+    render(sc, f"boss_seat_{ch}.png")
+    for ob in person:
+        bpy.data.objects.remove(ob, do_unlink=True)
+    for a in list(bpy.data.actions):
+        bpy.data.actions.remove(a)
 
 # 소품: 구역 가장자리에 둔다. 모두 월드 원점에 렌더하고, 모드가 원하는 월드 위치로 옮겨 겹친다.
 manifest["props"] = {}
@@ -194,6 +287,7 @@ for i, (x, y, r) in enumerate(SEATS):
     sc, cam = reset()
     for o in table():
         o.is_holdout = True
+        o.visible_shadow = False   # 테이블 그림자는 테이블 층에 이미 있다
     place(os.path.join(OFFICE, "09_Task_Chair.glb"), (x, y, 0), r)
     render(sc, f"seat{i}_empty.png")
     head = None

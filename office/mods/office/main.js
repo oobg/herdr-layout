@@ -5,10 +5,11 @@
 // 그래픽은 tools/render-office.py가 렌더한 아이소메트릭 스프라이트(sprites/)를 겹쳐 그린다.
 
 import { View, div, svg, image } from "gpui-kit";
+import * as fs from "fs/promises";
 import { v_flex, h_flex } from "gpui-base";
 import {
   props, spaces, agents, panes, terminals, theme, run, exec,
-  shared, setShared, nextCommand, readTextFile, appHome,
+  shared, setShared, nextCommand, readTextFile, appHome, home, pickFolder,
 } from "herdr";
 
 const TERM = "office-term";
@@ -107,7 +108,8 @@ class Floor {
 
   // 스프라이트 매니페스트(tools/render-office.py가 만든다). 모듈에 한 번 읽어 두고, 핫 리로드로 비면 다시 읽는다.
   loadSprites(cx) {
-    if (SPR || SPR_LOADING) return;
+    // 예전 형식(방·사장님방 정보가 없는) 매니페스트를 들고 있으면 다시 읽는다.
+    if ((SPR && SPR.boss && SPR.room) || SPR_LOADING) return;
     SPR_LOADING = true;
     cx.spawn(async (cx) => {
       try { SPR = JSON.parse(await readTextFile(`${appHome()}/${SPRITES}/manifest.json`)); } catch { SPR = null; }
@@ -120,15 +122,19 @@ class Floor {
     this.loadSprites(cx);
     const t = theme(), ps = panes(), ags = agents(), terms = terminals();
     const groups = new Map();
+    // 홈 폴더(~) 스페이스는 늘 있는 "사장님방"(임원용 책상), 레포는 레포 이름 방, 나머지는 "기타".
+    groups.set("~boss", { name: "사장님방", boss: true, spaces: [] });
     for (const s of spaces()) {
       const cwd = this.where(s, ps);
+      if (cwd === home() || (!cwd && s.name === "~")) { groups.get("~boss").spaces.push(s); continue; }
       const r = cwd ? this.lookup(s, cwd, cx) : null;
       const key = r ? r.key : "~other";
       if (!groups.has(key)) groups.set(key, { name: r ? r.name : "기타", spaces: [] });
       groups.get(key).spaces.push(s);
     }
-    // 기타 구역은 맨 뒤.
-    const zones = [...groups.entries()].sort(([a], [b]) => (a === "~other") - (b === "~other"));
+    // 사장님방은 맨 앞, 기타는 맨 뒤.
+    const rank = (k) => (k === "~boss" ? -1 : k === "~other" ? 1 : 0);
+    const zones = [...groups.entries()].sort(([a], [b]) => rank(a) - rank(b));
     const open = shared(OPEN);
     const box = this.box ?? { width: 0, height: 0 };
     // 터미널 칸이 열려 있으면 위는 장면, 아래는 고른 워크트리의 오버뷰.
@@ -140,11 +146,19 @@ class Floor {
       .track_focus(this.h)
       .on_key_down((e) => { if (e.key === "escape") closeTerm(); })
       .on_click(() => { this.h.focus(); if (open) closeTerm(); })
-      .child(SPR ? this.scene(zones, ags, terms, open, { width: box.width, height: sceneH }, t) : div().absolute().top(40).left(14).text_color(t.dim).child("사무실을 불러오는 중"))
+      .child(SPR ? this.scene(zones, ags, terms, open, { width: box.width, height: sceneH }, t, cx) : div().absolute().top(40).left(14).text_color(t.dim).child("사무실을 불러오는 중"))
       // 머리줄은 장면 위에: 확대했을 때 다른 구역이 덮지 않게 배경을 깐다.
       .child(h_flex().absolute().top(0).left(0).w(box.width).h(36).px(14).gap(8).items_center().bg(`${t.surface}e6`)
         .child(div().text_size(14).font_semibold().text_color(t.foreground).child("OFFICE"))
         .child(div().text_color(t.dim).child(`${ags.length}명 근무 중`))
+        .when(!open, (el) => el.child(div().flex_1()).child(div().id("office-add").px(8).py(2).rounded(5).border_1().border_color(t.border)
+          .text_size(12).text_color(t.foreground).cursor_pointer().hover((st) => st.bg(t.hover))
+          .on_click((_e, cx) => {
+            cx.stop_propagation();
+            // 폴더를 골라 그 폴더에서 새 스페이스를 연다 = 사무실 하나 추가
+            cx.spawn(async () => { const folder = await pickFolder({ prompt: "사무실로 쓸 폴더" }); if (folder) run("space.new", { folder }); });
+          })
+          .child("+ 사무실 추가하기")))
         .when(Boolean(open), (el) => el.child(div().flex_1()).child(div().id("office-all").text_size(12).text_color(t.accent).cursor_pointer()
           .hover((st) => st.underline()).on_click((_e, cx) => { cx.stop_propagation(); closeTerm(); }).child("전체 보기"))))
       .when(Boolean(sel), (el) => el.child(div().absolute().left(0).top(sceneH).w(box.width).h(Math.max(0, box.height - sceneH))
@@ -243,30 +257,38 @@ class Floor {
   layout(zones, zc) {
     const M = SPR, [CX, CY] = M.cell, [ox, oy] = M.origin;
     const at = (wx, wy) => [wx * M.ex[0] + wy * M.ey[0] - ox, wx * M.ex[1] + wy * M.ey[1] - oy];
-    const dims = zones.map(([, z]) => ({ cols: Math.min(z.spaces.length, COLS), rows: Math.ceil(z.spaces.length / COLS) }));
+    // 빈 사장님방도 책상 하나짜리 방으로 그린다(누르면 홈 폴더에서 새 스페이스).
+    const list = (z) => (z.spaces.length ? z.spaces : [null]);
+    const dims = zones.map(([, z]) => ({ cols: Math.min(list(z).length, COLS), rows: Math.ceil(list(z).length / COLS) }));
     const SW = Math.max(...dims.map((d) => d.cols)) * CX + ZONE_GAP, SD = Math.max(...dims.map((d) => d.rows)) * CY + ZONE_GAP;
-    const tables = [], props = [], edges = [], labels = [];
+    const tables = [], props = [], edges = [], walls = [], plates = [];
+    const ez = M.ez;
     zones.forEach(([key, z], j) => {
-      const { cols, rows } = dims[j], n = z.spaces.length;
+      const { cols, rows } = dims[j], n = list(z).length;
       const zx = (j % zc) * SW, zy = -Math.floor(j / zc) * SD;   // 구역 자리: 격자 칸
       const has = (c, r) => c >= 0 && r >= 0 && c < cols && r < rows && r * COLS + c < n;
-      z.spaces.forEach((s, i) => {
+      list(z).forEach((s, i) => {
         const c = i % COLS, r = Math.floor(i / COLS), wx = zx + c * CX, wy = zy - r * CY;
         const [x, y] = at(wx, wy);
         // 칸 마름모의 맨 위·맨 아래 꼭짓점(이름표 자리)
         const top = at(wx - CX / 2, wy + CY / 2), bottom = at(wx + CX / 2, wy - CY / 2);
-        tables.push({ key, z, j, i, s, x, y, top, bottom });
+        const id = s ? s.id : `${key}-empty`;
+        tables.push({ key, z, j, i, s, id, boss: Boolean(z.boss), x, y, top, bottom });
+        // 방 벽: 구역의 왼쪽(xmin)·뒤(ymax) 가장자리 칸에만
+        if (c === 0) walls.push({ key, j, side: "xmin", x, y });
+        if (r === 0) walls.push({ key, j, side: "ymax", x, y });
+        if (c === 0 && r === 0) walls.push({ key, j, side: "corner", x, y });
         for (const [side, cc, rr] of [["xmin", c - 1, r], ["xmax", c + 1, r], ["ymax", c, r - 1], ["ymin", c, r + 1]])
           if (!has(cc, rr)) edges.push({ j, side, x, y });
       });
-      // 구역 이름표: 구역의 왼쪽 꼭짓점(사람·말풍선이 없는 쪽). 그 모서리엔 소품을 두지 않는다.
-      labels.push({ key, z, j, at: at(zx - CX / 2, zy - (rows - 1) * CY - CY / 2) });
+      // 명패: 왼쪽 벽의 앞쪽(그 앞에 가구가 없는 빈 벽), 바닥에서 0.8m
+      const [px0, py0] = at(zx - CX / 2, zy - (rows - 1) * CY - CY / 2 + 1.0);
+      plates.push({ key, z, j, x: px0 + ez[0] * 0.8, y: py0 + ez[1] * 0.8 });
       // 소품: 구역 이름을 시드로 무작위(다시 그려도 같은 자리). 앞쪽(화면 아래)은 비운다.
       const L = zx - CX / 2 + 0.35, R = zx + (cols - 1) * CX + CX / 2 - 0.35, B = zy + CY / 2 - 0.35, F = zy - (rows - 1) * CY - CY / 2 + 0.35;
       const rnd = seeded(key);
       const spots = [
         { at: [L, B], corner: true }, { at: [R, B], corner: true },
-        ...Array.from({ length: rows }, (_, r) => ({ at: [L, zy - r * CY + (r === rows - 1 ? 0.6 : 0)] })),
         ...Array.from({ length: cols }, (_, c) => ({ at: [zx + c * CX, B] })),
       ];
       const want = 2 + Math.floor(rnd() * Math.min(4, spots.length - 1));
@@ -276,7 +298,7 @@ class Floor {
         props.push({ key, name: pool[Math.floor(rnd() * pool.length)], x, y });
       }
     });
-    return { tables, props, edges, labels };
+    return { tables, props, edges, walls, plates };
   }
 
   // 범위: 고른 것(구역 key 집합)만, 없으면 전부.
@@ -288,7 +310,8 @@ class Floor {
       x0 = Math.min(x0, tb.x + fx); x1 = Math.max(x1, tb.x + fx + fw);
       y0 = Math.min(y0, tb.y + M.hit[1] - 50); y1 = Math.max(y1, tb.y + fy + fh, tb.bottom[1] + M.origin[1] + 70);
     }
-    for (const lb of L.labels) if (use(lb.key)) { x0 = Math.min(x0, lb.at[0] + M.origin[0] - 10); y0 = Math.min(y0, lb.at[1] + M.origin[1] - 70); }
+    for (const w of L.walls) if (use(w.key)) { y0 = Math.min(y0, w.y + M.origin[1] + M.ez[1] * 1.3 - 40); x0 = Math.min(x0, w.x + fx); }
+    for (const pl of L.plates) if (use(pl.key)) y0 = Math.min(y0, pl.y + M.origin[1] - 40);
     for (const pr of L.props) if (use(pr.key)) {
       const m = M.props[pr.name];
       x0 = Math.min(x0, pr.x + ox - 70); x1 = Math.max(x1, pr.x + ox + 70);
@@ -301,7 +324,7 @@ class Floor {
   //  - 구역(레포)을 격자로 놓되, 칸 비율에서 가장 크게 보이는 열 수를 고른다.
   //  - 터미널을 연 동안에는 고른 워크트리의 구역으로 확대한다(다른 구역은 칸 밖으로).
   //  - 가리킨 테이블은 옅은, 고른 테이블은 진한 강조색 테두리. 이름표는 모든 그림 위에.
-  scene(zones, ags, terms, open, box, t) {
+  scene(zones, ags, terms, open, box, t, cx) {
     const M = SPR;
     if (!zones.length || !box.width) return div();
     const fit = (b) => Math.max(0.12, Math.min(1.0, (box.width - 24) / b.W, (box.height - 52) / b.H));
@@ -315,35 +338,55 @@ class Floor {
       const cand = this.layout(zones, zc), k = fit(this.bounds(cand));
       if (k > best + 1e-6) { best = k; L = cand; }
     }
-    const selKey = open ? L.tables.find((tb) => tb.s.id === open)?.key : null;
+    const selKey = open ? L.tables.find((tb) => tb.id === open)?.key : null;
     const B = this.bounds(L, selKey ? new Set([selKey]) : null);
     const k = fit(B);
     const left = (box.width - B.W * k) / 2, top = 40 + (box.height - 40 - B.H * k) / 2;
     const [fx, fy, fw, fh] = M.floor, S = M.size * k;
     const P = (x, y) => [(x - B.x0) * k, (y - B.y0) * k];
     const tile = (name, x, y, color) => { const [l, tp] = P(x + fx, y + fy); return svg(`${SPRITES}/${name}.svg`).absolute().left(l).top(tp).w(fw * k).h(fh * k).text_color(color); };
-    const ring = (tb, color) => ["xmin", "xmax", "ymin", "ymax"].map((side) => tile(`edge_${side}`, tb.x, tb.y, color));
     const els = [];
 
-    // 1) 바닥, 구역 테두리, 가리킨·고른 테이블 테두리
-    for (const tb of L.tables) els.push(tile("floor", tb.x, tb.y, ZONE[tb.j % ZONE.length]));
-    for (const e of L.edges) els.push(tile(`edge_${e.side}`, e.x, e.y, EDGE[e.j % EDGE.length]));
+    // 1) 방: 바닥 판 → 벽 → 벽 위 구역 색 띠. 화면 뒤쪽부터.
+    // 방 부품은 테이블보다 큰 캔버스(manifest.room)에 렌더되어 있어 원점 차이만큼 옮긴다.
+    const RS = M.room.size * k, rdx = M.origin[0] - M.room.origin[0], rdy = M.origin[1] - M.room.origin[1];
+    const room = (name, x, y) => { const [l, tp] = P(x + rdx, y + rdy); return image(`${SPRITES}/${name}.png`).absolute().left(l).top(tp).w(RS).h(RS); };
+    for (const tb of [...L.tables].sort((a, b) => a.y - b.y)) els.push(room("room_floor", tb.x, tb.y));
+    // 고른·가리킨 테이블: 바닥에 옅은 강조색만(선은 긋지 않는다)
     for (const tb of L.tables) {
-      if (tb.s.id === open) els.push(tile("floor", tb.x, tb.y, `${t.accent}40`), ...ring(tb, t.accent));
-      else if (tb.s.id === this.hoverId) els.push(...ring(tb, `${t.accent}99`));
+      if (tb.id === open) els.push(tile("floor", tb.x, tb.y, `${t.accent}26`));
+      else if (tb.id === this.hoverId) els.push(tile("floor", tb.x, tb.y, `${t.accent}14`));
+    }
+    for (const w of [...L.walls].sort((a, b) => a.y - b.y)) els.push(room(`room_wall_${w.side}`, w.x, w.y));
+    // 명패: 뒤 벽 면에 붙인 이름판(벽 바로 다음에 그려 앞의 가구·소품이 가린다). 벽 기울기대로 비튼 SVG(이름이 바뀌어도 되게 실행 중에 만든다).
+    for (const pl of L.plates) {
+      const plate = this.plate(pl.z.name, EDGE[pl.j % EDGE.length], cx);
+      if (!plate) continue;
+      const [l, tp] = P(pl.x + M.origin[0], pl.y + M.origin[1]);
+      els.push(image(plate.path).absolute().left(l - plate.w / 2).top(tp - plate.h / 2).w(plate.w).h(plate.h));
     }
     // 2) 테이블·자리·소품: 화면 뒤쪽부터
     const seated = [];
     const things = [...L.tables.map((tb) => ({ tb, y: tb.y })), ...L.props.map((pr) => ({ pr, y: pr.y }))].sort((a, b) => a.y - b.y);
     for (const { tb, pr } of things) {
       if (pr) { const [l, tp] = P(pr.x, pr.y); els.push(image(`${SPRITES}/prop_${pr.name}.png`).absolute().left(l).top(tp).w(S).h(S)); continue; }
-      const mine = ags.filter((a) => a.space === tb.s.id), seats = this.assign(mine);
+      const mine = tb.s ? ags.filter((a) => a.space === tb.s.id) : [];
       const [l, tp] = P(tb.x, tb.y);
-      els.push(image(`${SPRITES}/table.png`).absolute().left(l).top(tp).w(S).h(S));
-      for (const i of M.order) {
-        const who = seats[i];
-        els.push(image(`${SPRITES}/seat${i}_${who ? who.ch : "empty"}.png`).absolute().left(l).top(tp).w(S).h(S));
-        if (who) seated.push({ a: who.a, tab: tb.s.tabs.find((x) => x.id === who.a.tab), x: tb.x + M.seats[i].head[0], y: tb.y + M.seats[i].head[1] });
+      const sit = (who, head) => seated.push({ a: who.a, tab: tb.s.tabs.find((x) => x.id === who.a.tab), x: tb.x + head[0], y: tb.y + head[1] });
+      if (tb.boss) {
+        // 사장님방: 임원용 책상 하나, 자리 하나(나머지는 +n)
+        const who = this.assign(mine.slice(0, 1))[FILL[0]];
+        els.push(image(`${SPRITES}/boss_table.png`).absolute().left(l).top(tp).w(S).h(S));
+        els.push(image(`${SPRITES}/boss_seat_${who ? who.ch : "empty"}.png`).absolute().left(l).top(tp).w(S).h(S));
+        if (who) sit(who, M.boss.head);
+      } else {
+        const seats = this.assign(mine);
+        els.push(image(`${SPRITES}/table.png`).absolute().left(l).top(tp).w(S).h(S));
+        for (const i of M.order) {
+          const who = seats[i];
+          els.push(image(`${SPRITES}/seat${i}_${who ? who.ch : "empty"}.png`).absolute().left(l).top(tp).w(S).h(S));
+          if (who) sit(who, M.seats[i].head);
+        }
       }
       tb.n = mine.length;
     }
@@ -360,31 +403,57 @@ class Floor {
     for (const tb of L.tables) {
       const cx = tb.x + M.origin[0], cy = tb.y + M.origin[1];
       const [l, tp] = P(cx - fw * 0.28, cy - 170), w = fw * 0.56 * k, h = (170 + fh * 0.28) * k;
-      els.push(div().id(`table-${tb.s.id}`).absolute().left(l).top(tp).w(w).h(h).cursor_pointer()
-        .on_hover((hov, cx2) => { if (hov) this.hoverId = tb.s.id; else if (this.hoverId === tb.s.id) this.hoverId = null; cx2.notify(); })
-        .on_click((_e, cx2) => { cx2.stop_propagation(); openSpace(tb.s.id); }));
+      els.push(div().id(`table-${tb.id}`).absolute().left(l).top(tp).w(w).h(h).cursor_pointer()
+        .on_hover((hov, cx2) => { if (hov) this.hoverId = tb.id; else if (this.hoverId === tb.id) this.hoverId = null; cx2.notify(); })
+        .on_click((_e, cx2) => {
+          cx2.stop_propagation();
+          if (tb.s) openSpace(tb.s.id);
+          else { run("space.new", { folder: home() }); run("layout.show", { id: TERM }); }  // 빈 사장님방: 홈 폴더에서 새로
+        }));
     }
     // 5) 이름표(맨 위): 구역 이름은 구역 맨 뒤 꼭짓점 위, 브랜치는 칸 맨 앞 꼭짓점 아래. 가운데 정렬.
     const pill = (x, y, w, child) => { const [l, tp] = P(x, y); return h_flex().absolute().left(l - w / 2).top(tp).w(w).justify_center().child(child); };
-    for (const lb of L.labels) {
-      const [l, tp] = P(lb.at[0] + M.origin[0], lb.at[1] + M.origin[1]);
-      els.push(h_flex().absolute().left(l).top(tp - 34).child(
-        h_flex().gap(6).items_center().px(8).py(2).rounded(6).bg(`${t.chrome}e6`).border_1().border_color(EDGE[lb.j % EDGE.length])
-          .child(div().size(8).rounded_full().bg(EDGE[lb.j % EDGE.length]))
-          .child(div().text_size(13).font_semibold().text_color(t.foreground).whitespace_nowrap().child(lb.z.name))));
-    }
     for (const tb of L.tables) {
-      const sel = tb.s.id === open, hov = tb.s.id === this.hoverId;
+      const sel = tb.id === open, hov = tb.id === this.hoverId;
       els.push(pill(tb.bottom[0] + M.origin[0], tb.bottom[1] + M.origin[1] + 6 / k, 220,
         h_flex().gap(6).items_center().px(8).py(2).rounded(6)
           .bg(sel ? t.accent : `${t.chrome}e6`).border_1().border_color(sel || hov ? t.accent : t.border)
-          .child(div().text_size(12).font_semibold().text_color(sel ? t.accent_foreground : t.foreground).whitespace_nowrap().child(tb.s.branch || tb.s.name))
+          .child(div().text_size(12).font_semibold().text_color(sel ? t.accent_foreground : t.foreground).whitespace_nowrap()
+            .child(tb.s ? (tb.s.branch || tb.s.name) : "비어 있음 · 눌러서 열기"))
           .when(tb.n > 0, (el) => el.child(div().text_size(12).text_color(sel ? t.accent_foreground : t.muted).child(`${tb.n}명`)))));
     }
     return div().id("office-scene").absolute().left(left).top(top).w(B.W * k).h(B.H * k)
       .transition("left", { duration: 380, easing: "ease-out" })
       .transition("top", { duration: 380, easing: "ease-out" })
       .children(els);
+  }
+
+  // 벽에 붙일 명패 SVG를 만든다. 글자 크기는 화면 픽셀로 고정(읽히게), 모양만 왼쪽 벽(월드 y축) 기울기로 비튼다.
+  // 모드 폴더에 쓰면 모드가 다시 불러와지므로 data/ 아래에 쓴다.
+  plate(name, color, cx) {
+    const key = hash(`${name}|${color}|v2`).toString(36), path = `data/office-plates/${key}.svg`;
+    const slope = SPR.ey[1] / SPR.ey[0];   // 왼쪽 벽은 화면에서 오른쪽 위로 올라간다(음수)
+    const w = Math.round([...name].reduce((n, ch) => n + (ch.charCodeAt(0) > 0x2e80 ? 13 : 7.8), 0) + 34), h = 24;
+    const out = { path, w, h: Math.ceil(h + w * Math.abs(slope)) };
+    if ((this.plates ??= {})[key] === true) return out;
+    if (this.plates[key] === "busy") return null;
+    this.plates[key] = "busy";
+    const esc = name.replace(/[<&>"]/g, (c) => ({ "<": "&lt;", "&": "&amp;", ">": "&gt;", '"': "&quot;" })[c]);
+    const svgText = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${out.h}" viewBox="0 0 ${w} ${out.h}">`
+      + `<g transform="matrix(1,${slope.toFixed(4)},0,1,0,${slope < 0 ? (-slope * w).toFixed(1) : 0})">`
+      + `<rect x="0.5" y="0.5" width="${w - 1}" height="${h - 1}" rx="2" fill="#2b2e33" stroke="#c9a86a"/>`
+      + `<rect x="7" y="6" width="3" height="${h - 12}" rx="1" fill="${color.slice(0, 7)}"/>`
+      + `<text x="${(w + 10) / 2}" y="${h / 2 + 4.5}" text-anchor="middle" font-family="D2Coding, Apple SD Gothic Neo, sans-serif" font-size="13" font-weight="600" fill="#f1e6d0">${esc}</text>`
+      + `</g></svg>`;
+    cx.spawn(async (cx) => {
+      try {
+        await fs.mkdir(`${appHome()}/data/office-plates`, { recursive: true });
+        await fs.writeFile(`${appHome()}/${path}`, svgText);
+        this.plates[key] = true;
+      } catch { this.plates[key] = false; }
+      cx.notify();
+    });
+    return null;
   }
 
   // 에이전트를 자리에 앉힌다. 얼굴이 보이는 안쪽 자리부터, 캐릭터는 주소로 고정하되 한 테이블에서 겹치지 않게.
