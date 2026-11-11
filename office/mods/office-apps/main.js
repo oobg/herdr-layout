@@ -8,17 +8,22 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { props, theme, shared, setShared, nextCommand } from "herdr";
 import { FilesApp, ROLES } from "./files.js";
+import { BranchApp } from "./branch.js";
+import { CommitApp } from "./commit.js";
+import { PrApp } from "./pr.js";
+import { AgentApp } from "./agent.js";
+import { ServerApp } from "./server.js";
 
 const ME = "mods/office-apps";
 const DISABLED = "office-apps.disabled";   // { 앱 id: true } — 끈 앱
 // 앱 목록. make가 없는 앱은 아직 준비 중(격자에는 보이되 들어가면 안내만).
 const APPS = [
   { id: "files", name: "파일", desc: "파일트리와 뷰어(코드·마크다운·이미지)", color: "#3d7de5", make: () => new FilesApp() },
-  { id: "branch", name: "브랜치", desc: "로컬·원격 브랜치 관리", color: "#2f9e6f" },
-  { id: "commit", name: "커밋", desc: "커밋 기록과 변경 내용", color: "#e07b39" },
-  { id: "pr", name: "PR", desc: "풀 리퀘스트 목록과 리뷰", color: "#8b5cf6" },
-  { id: "agent", name: "에이전트", desc: "에이전트와 서브에이전트가 하는 일", color: "#d97757" },
-  { id: "server", name: "서버", desc: "Herdr에 등록한 머신(서버) 관리", color: "#4f8fa8" },
+  { id: "branch", name: "브랜치", desc: "로컬·원격 브랜치 관리", color: "#2f9e6f", make: () => new BranchApp() },
+  { id: "commit", name: "커밋", desc: "커밋 기록과 변경 내용", color: "#e07b39", make: () => new CommitApp() },
+  { id: "pr", name: "PR", desc: "풀 리퀘스트 목록과 리뷰", color: "#8b5cf6", make: () => new PrApp() },
+  { id: "agent", name: "에이전트", desc: "에이전트와 서브에이전트가 하는 일", color: "#d97757", make: () => new AgentApp() },
+  { id: "server", name: "서버", desc: "Herdr에 등록한 머신(서버) 관리", color: "#4f8fa8", make: () => new ServerApp() },
 ];
 
 class Launcher {
