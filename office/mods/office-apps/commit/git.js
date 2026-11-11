@@ -129,3 +129,95 @@ export function stamp(sec) {
 export const SEARCH = `Q="$1" S="$2" N="$3"; git ${READ.join(" ")} log --format='${LOG_FORMAT}' HEAD | Q="$Q" awk -F '\\037' -v s="$S" -v n="$N" '
   BEGIN { q = tolower(ENVIRON["Q"]) }
   index(tolower($1 " " $3 " " $6), q) { c++; if (c > s) print; if (c >= s + n) exit }'`;
+
+// 목록 오른쪽에 붙이는 짧은 상대 시각: 방금 / 5분 / 3시간 / 어제 / 4일 / 11. 3. / 24. 11. 3.
+export function agoShort(sec, now = Date.now() / 1000) {
+  const d = Math.max(0, now - sec);
+  if (d < 60) return "방금";
+  if (d < 3600) return `${Math.floor(d / 60)}분`;
+  if (d < 86400) return `${Math.floor(d / 3600)}시간`;
+  if (d < 172800) return "어제";
+  if (d < 86400 * 30) return `${Math.floor(d / 86400)}일`;
+  const t = new Date(sec * 1000);
+  return new Date(now * 1000).getFullYear() === t.getFullYear()
+    ? `${t.getMonth() + 1}. ${t.getDate()}.`
+    : `${String(t.getFullYear()).slice(2)}. ${t.getMonth() + 1}. ${t.getDate()}.`;
+}
+
+// 본문에서 트레일러를 뺀 문단 목록. 이름이 알려진 트레일러 줄(Co-Authored-By 등)은 어디에 있든 빼고,
+// 마지막 문단이 "키: 값" 줄로만 되어 있으면(git 트레일러 관례) 그 문단도 뺀다.
+const KNOWN_TRAILER = /^(co-authored-by|signed-off-by|reviewed-by|acked-by|tested-by|reported-by|suggested-by|helped-by|cc|change-id)\s*:/i;
+const TRAILER = /^[A-Za-z][\w-]*:\s*\S/;
+export function bodyParagraphs(body) {
+  const paras = String(body ?? "").replace(/\r/g, "").split(/\n\s*\n/)
+    .map((p) => p.split("\n").filter((l) => !KNOWN_TRAILER.test(l.trim())).join("\n").trim())
+    .filter(Boolean);
+  const last = paras[paras.length - 1];
+  if (last && last.split("\n").every((l) => TRAILER.test(l.trim()))) paras.pop();
+  return paras;
+}
+
+// ── diff 보기 공용(커밋 앱·PR 앱): 색, 줄 안 바뀐 구간, 좌우 정렬. 그리기는 commit/diffview.js ──
+
+// 테마 바탕색이 어두운지(#rrggbb 밝기). 읽을 수 없으면 어둡다고 본다.
+export function isDark(t) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(String(t?.background ?? ""));
+  if (!m) return true;
+  const [r, g, b] = m.slice(1, 4).map((h) => parseInt(h, 16) / 255);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.5;
+}
+
+// diff 색. 추가는 초록, 삭제는 빨강. line: 줄 바탕, word: 줄 안에서 바뀐 글자, gutter: 줄 번호·기호 칸, sign: +/− 글자.
+export function diffPalette(t, dark = isDark(t)) {
+  return dark ? {
+    addLine: "#2ea04333", addWord: "#2ea04380", addGutter: "#2ea04324", addSign: "#3fb950",
+    delLine: "#f8514933", delWord: "#f8514980", delGutter: "#f8514924", delSign: "#f85149",
+    hunkBg: "#388bfd1a", hunkFg: t?.dim ?? "#8b949e", emptyBg: "#8b949e0d",
+  } : {
+    addLine: "#e6ffec", addWord: "#abf2bc", addGutter: "#d5f7dd", addSign: "#1a7f37",
+    delLine: "#ffebe9", delWord: "#ffc1bc", delGutter: "#ffdcd8", delSign: "#cf222e",
+    hunkBg: "#ddf4ff", hunkFg: t?.dim ?? "#57606a", emptyBg: "#8c959f14",
+  };
+}
+
+// 붙어 있는 삭제 줄 묶음과 바로 다음 추가 줄 묶음을 차례로 짝지어, 공통 앞뒤를 뺀 가운데를 row.hl = [시작, 끝](글자 위치)으로 단다.
+// 거의 다 바뀐 줄(공통 부분이 짧은 줄)은 강조하지 않는다(줄 전체가 진해지면 오히려 안 보인다).
+export function wordSpans(rows) {
+  for (let i = 0; i < rows.length;) {
+    if (rows[i].kind !== "-") { i++; continue; }
+    let d = i; while (d < rows.length && rows[d].kind === "-") d++;
+    let a = d; while (a < rows.length && rows[a].kind === "+") a++;
+    for (let k = 0; k < Math.min(d - i, a - d); k++) mark(rows[i + k], rows[d + k]);
+    i = a;
+  }
+  return rows;
+}
+
+function mark(del, add) {
+  const x = Array.from(del.text), y = Array.from(add.text);
+  let p = 0; while (p < x.length && p < y.length && x[p] === y[p]) p++;
+  let s = 0; while (s < x.length - p && s < y.length - p && x[x.length - 1 - s] === y[y.length - 1 - s]) s++;
+  const keep = p + s, longest = Math.max(x.length, y.length);
+  if (!longest || keep < longest * 0.25) return;
+  if (p < x.length - s) del.hl = [p, x.length - s];
+  if (p < y.length - s) add.hl = [p, y.length - s];
+}
+
+// 좌우 보기용 줄: { hunk } 또는 { left, right }(없는 쪽은 null). 삭제 묶음과 추가 묶음을 같은 높이로 맞춘다.
+export function splitRows(rows) {
+  const out = [];
+  for (let i = 0; i < rows.length;) {
+    const r = rows[i];
+    if (r.kind === "@") { out.push({ hunk: r.text }); i++; continue; }
+    if (r.kind === "-" || r.kind === "+") {
+      let d = i; while (d < rows.length && rows[d].kind === "-") d++;
+      let a = d; while (a < rows.length && rows[a].kind === "+") a++;
+      const dels = rows.slice(i, d), adds = rows.slice(d, a);
+      for (let k = 0; k < Math.max(dels.length, adds.length); k++) out.push({ left: dels[k] ?? null, right: adds[k] ?? null });
+      i = a; continue;
+    }
+    out.push({ left: r, right: r });   // 맥락 줄, "\ No newline at end of file" 등은 양쪽에
+    i++;
+  }
+  return out;
+}
