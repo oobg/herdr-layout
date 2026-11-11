@@ -1,447 +1,163 @@
-// office 파일트리: Herdr 기본 files 모드를 바탕으로 WebStorm 같은 모양을 입혔다.
-//   - 맨 위에 "프로젝트 ~/경로" 헤더
-//   - Material Icon Theme 아이콘(폴더 이름·파일 이름·확장자별)
-//   - git 상태로 파일 이름 색: 수정 파랑, 추가 초록, 추적 안 됨 빨강, 무시됨 갈색(흐리게)
-// 지금 고른 스페이스(포커스된 패인)의 폴더를 보여 준다. 파일을 누르면 읽기 전용 미리보기.
+// office 아래 칸: 앱 런처. 기본 화면은 Spotlight처럼 검색창 + 앱 아이콘 격자, 앱을 누르면 들어간다.
+//   앱 화면: 위 막대(‹ 앱 · 아이콘 · 이름 · 부제) / 왼쪽 좁은 칸(툴바 + 관리 목록) / 오른쪽 넓은 칸(고른 항목, 없으면 "선택 내용이 없습니다")
+//   앱 관리(⚙): 앱마다 켜고 끄기. 끈 앱은 격자에서 숨기고 코드를 만들지 않아 타이머·git·네트워크가 돌지 않는다.
+// 오버레이 역할(props.role): menu·prompt·confirm·tip — 파일 앱의 우클릭 메뉴와 입력·확인 창, 툴팁.
+// 키·명령: office-apps.home(런처로), office-apps.open-<앱 id>(앱 열기), office-apps.show:<경로>(파일 열기)
 
-import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState, InputState, Input } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, home, appHome, props, run, openOverlay, closeOverlay, notify, shared, setShared } from "herdr";
-import { Menu, Confirm, ACTIONS, TICK, menuHeight, popupAt } from "./menu.js";
-const PREVIEW = "office-apps.preview";
+import { View, div, svg } from "gpui-kit";
+import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { props, theme, shared, setShared, nextCommand } from "herdr";
+import { FilesApp, ROLES } from "./files.js";
 
 const ME = "mods/office-apps";
-const PER_FOLDER = 500, TOTAL = 5000;
-// 툴바 아이콘 색: 기능마다 하나.
-const TOOL = { search: "#a7c080", hidden: "#7fbbb3", ignored: "#a07850", file: "#83c092", folder: "#dbbc7f",
-  reveal: "#7aa2f7", terminal: "#83c092", copy: "#d699b6", collapse: "#9da9a0", refresh: "#7fbbb3" };
-const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
-// git 상태 색 (WebStorm 기본 다크 테마 톤)
-const GIT = { M: "#6897bb", A: "#629755", "?": "#d1675a", U: "#d1675a", D: "#8c8c8c", I: "#a07850" };
-// 확장자 → VS Code 언어 id: Material Icon Theme는 흔한 언어를 확장자 대신 언어 id로 매핑한다.
-const LANGUAGE = {
-  ts: "typescript", mts: "typescript", cts: "typescript", tsx: "typescriptreact",
-  js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascriptreact",
-  json: "json", jsonc: "jsonc", md: "markdown", yaml: "yaml", yml: "yaml", toml: "toml",
-  css: "css", scss: "scss", sass: "sass", less: "less", html: "html", htm: "html", xml: "xml",
-  py: "python", rs: "rust", go: "go", java: "java", kt: "kotlin", kts: "kotlin", swift: "swift",
-  sh: "shellscript", bash: "shellscript", zsh: "shellscript", sql: "sql", rb: "ruby", php: "php",
-  c: "c", h: "c", cpp: "cpp", cc: "cpp", hpp: "cpp", cs: "csharp", dart: "dart", lua: "lua",
-  vue: "vue", svelte: "svelte", graphql: "graphql", gql: "graphql", prisma: "prisma", txt: "plaintext",
-};
+const DISABLED = "office-apps.disabled";   // { 앱 id: true } — 끈 앱
+// 앱 목록. make가 없는 앱은 아직 준비 중(격자에는 보이되 들어가면 안내만).
+const APPS = [
+  { id: "files", name: "파일", desc: "파일트리와 뷰어(코드·마크다운·이미지)", color: "#3d7de5", make: () => new FilesApp() },
+  { id: "branch", name: "브랜치", desc: "로컬·원격 브랜치 관리", color: "#2f9e6f" },
+  { id: "commit", name: "커밋", desc: "커밋 기록과 변경 내용", color: "#e07b39" },
+  { id: "pr", name: "PR", desc: "풀 리퀘스트 목록과 리뷰", color: "#8b5cf6" },
+  { id: "agent", name: "에이전트", desc: "에이전트와 서브에이전트가 하는 일", color: "#d97757" },
+  { id: "server", name: "서버", desc: "Herdr에 등록한 머신(서버) 관리", color: "#4f8fa8" },
+];
 
-let ICONS = null, ICONS_LOADING = false; // icons.json (한 번 읽어 모든 복사본이 같이 쓴다)
-
-function location() {
-  const space = spaces().find((s) => s.active), f = focused();
-  const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
-  const on = f?.pane === null ? (f.terminal?.includes("/") ? f.terminal.split("/")[0] : null) : space?.machine ?? null;
-  return { cwd: pane?.cwd || f?.cwd || space?.folder, on, space: space?.id };
-}
-const key = () => JSON.stringify(location());
-
-function iconFor(name, dir, open) {
-  const m = ICONS;
-  if (!m) return null;
-  const light = !settings().dark ? m.light : null;
-  const look = (k, x) => (light?.[k]?.[x]) ?? m[k][x];
-  const lower = name.toLowerCase();
-  let id;
-  if (dir) {
-    id = open ? look("folderNamesExpanded", lower) : look("folderNames", lower);
-    id ??= open ? m.folderExpanded : m.folder;
-  } else {
-    id = look("fileNames", lower);
-    // "a.test.ts" → "test.ts", "ts" 순으로 긴 확장자부터 찾는다.
-    const parts = lower.split(".");
-    for (let i = 1; !id && i < parts.length; i++) id = look("fileExtensions", parts.slice(i).join("."));
-    if (!id && parts.length > 1) { const lang = LANGUAGE[parts.at(-1)]; if (lang) id = look("languageIds", lang); }
-    id ??= m.file;
-  }
-  return `${ME}/icons/${id}.svg`;
-}
-
-async function directory(path, on) {
-  const script = 'n=0; for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; name=${p##*/}; [ "$name" = .git ] && continue; if [ -d "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; n=$((n+1)); [ "$n" -gt 500 ] && break; done; test -d "$1"';
-  const r = await exec("sh", ["-c", script, "files", path], { on });
-  if (r.code !== 0) throw new Error(r.stderr || "폴더를 읽지 못했습니다");
-  const fields = r.stdout.split("\0"), out = [];
-  for (let i = 0; i + 1 < fields.length; i += 2) out.push({ name: fields[i + 1], dir: fields[i] === "d" });
-  return out;
-}
-
-class Tree {
-  init(_props, cx) {
-    this.tick = shared(TICK); this.preview = shared(PREVIEW);
-    this.tools = [];
-    cx.spawn(async () => {
-      const r = await exec("sh", ["-lc", "for c in code cursor webstorm zed idea subl; do command -v $c >/dev/null 2>&1 && echo $c; done"]).catch(() => null);
-      this.tools = (r?.stdout ?? "").split("\n").filter(Boolean);
-    });
-    const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k) ?? "null") ?? d; } catch { return d; } };
-    this.showHidden = load("showHidden", true); this.hideIgnored = load("hideIgnored", false); this.sel = "";
-    this.searching = false; this.query = ""; this.all = null;
-    this.searchInput = InputState.new({ placeholder: "파일 이름" });
-    this.searchInput.on("change", (_e, cx) => { this.query = this.searchInput.value().trim().toLowerCase(); cx.notify(); });
-    this.saved = new Map();
-    this.entries = new Map(); this.folders = new Set(); this.pending = new Set();
-    this.marks = {}; this.ignored = new Set();
-    this.refresh(cx);
-    cx.timer.every(10000, (cx) => this.refresh(cx));
-  }
-
-  watch(root, cx) {
-    if (this.on || this.watched === root) return;
-    this.watched = root;
-    const context = this.context;
+class Launcher {
+  init(_p, cx) {
+    this.app = null;          // 들어가 있는 앱 id
+    this.managing = false;    // 앱 관리 화면
+    this.inst = {};           // 앱 id → 인스턴스(켜진 앱을 처음 열 때 만든다)
+    this.query = "";
+    this.search = InputState.new({ placeholder: "앱 검색" });
+    this.search.on("change", (_e, cx) => { this.query = this.search.value().trim().toLowerCase(); cx.notify(); });
+    try { this.go(JSON.parse(localStorage.getItem("app") ?? "null"), cx); } catch { /* 런처부터 */ }
     cx.spawn(async (cx) => {
-      try { while (this.context === context) { await watchFolder(root); if (this.current(context)) this.refresh(cx); } }
-      catch { if (this.context === context) this.watched = null; }
-    });
-  }
-
-  current(context) {
-    return this.context === context && key() === context.key;
-  }
-
-  async loadFolder(path, context) {
-    const { on, cwd: root } = context;
-    const entries = await directory(path ? `${root}/${path}` : root, on);
-    if (!this.current(context) || (path && !this.folders.has(path))) return;
-    const used = [...this.entries.entries()].filter(([p]) => p !== path).reduce((n, [, e]) => n + e.length, 0);
-    this.entries.set(path, entries.slice(0, Math.max(0, Math.min(PER_FOLDER, TOTAL - used)))
-      .sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name)));
-    if (entries.length > PER_FOLDER || used + entries.length > TOTAL) this.limited = true;
-  }
-
-  refresh(cx) {
-    const { cwd, on } = location(), next = key();
-    if (next !== this.context?.key) {
-      if (this.context) this.saved.set(this.context.key, { folders: this.folders, file: this.file });
-      const saved = this.saved.get(next);
-      this.context = { key: next, cwd, on }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
-      this.pending = new Set(); this.marks = {}; this.ignored = new Set(); this.show(null); this.watched = null; this.error = null; this.limited = false;
-      this.loading = false;
-      if (saved?.file) this.show(saved.file, cx);
-    }
-    if (!cwd || this.loading) return;
-    const context = this.context;
-    this.loading = true;
-    this.limited = false;
-    cx.spawn(async (cx) => {
-      try {
-        for (const path of ["", ...this.folders]) {
-          if (!this.current(context)) return;
-          await this.loadFolder(path, context);
-        }
-        const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(() => null);
-        const marks = {}, ignored = new Set();
-        if (top?.code === 0) {
-          const base = top.stdout.trim();
-          // .git 아래에 아무것도 쓰지 않는다(index lock 등): 폴더 감시가 다시 깨어나지 않게.
-          const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z",
-            "--no-renames", "--untracked-files=normal", "--ignored=matching"], { cwd, on }).catch(() => null);
-          if (status?.code === 0) for (const entry of status.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) {
-            const xy = entry.slice(0, 2), path = `${base}/${entry.slice(3)}`.replace(/\/$/, "");
-            if (xy === "!!") { ignored.add(path); continue; }
-            marks[path] = xy === "??" ? "?" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : xy.includes("A") ? "A" : "M";
-          }
-        }
-        if (!this.current(context)) return;
-        this.marks = marks; this.ignored = ignored; this.error = null; this.watch(cwd, cx);
-      } catch (e) { if (this.current(context)) this.error = String(e); }
-      finally { if (this.context === context) this.loading = false; cx.notify(); }
-    });
-  }
-
-  toggle(path, cx) {
-    this.sel = path;
-    if (this.folders.has(path)) {
-      for (const folder of [...this.folders]) if (folder === path || folder.startsWith(path + "/")) {
-        this.folders.delete(folder);
-        this.entries.delete(folder);
+      for (;;) {
+        const c = await nextCommand();
+        if (c === "home") this.go(null, cx);
+        else if (c.startsWith("open-")) this.go(c.slice(5), cx);
+        // show:<경로>  파일 앱에서 그 파일을 연다(프로젝트 기준 상대 경로)
+        else if (c.startsWith("show:")) { this.go("files", cx); this.inst.files?.show(c.slice(5), cx); }
+        cx.notify();
       }
-    } else {
-      this.folders.add(path);
-      if (!this.entries.has(path) && !this.pending.has(path)) {
-        const context = this.context;
-        this.pending.add(path);
-        cx.spawn(async (cx) => {
-          try { await this.loadFolder(path, context); }
-          catch (e) { if (this.current(context)) this.error = String(e); }
-          finally { if (this.context === context) this.pending.delete(path); cx.notify(); }
-        });
-      }
-    }
-    cx.notify();
-  }
-
-  show(path, cx) {
-    this.code?.release(); this.code = null; this.file = path; this.fileError = null;
-    if (!path || !cx) return;
-    const context = this.context, root = this.root, on = this.on;
-    cx.spawn(async (cx) => {
-      try {
-        const text = await readTextFile(`${root}/${path}`, { on });
-        if (this.file !== path || !this.current(context)) return;
-        if (text === null) { this.fileError = "파일이 더 이상 없습니다"; return; }
-        if (text.includes("\0")) { this.fileError = "바이너리 파일이라 미리보기가 없습니다"; return; }
-        const t = theme(), ext = path.includes(".") ? path.split(".").pop() : "txt";
-        this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true,
-          value: text.length > 400000 ? text.slice(0, 400000) + "\n… (잘림)" : text,
-          font_family: settings().font_family, font_size: 12,
-          syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
-      } catch { if (this.file === path && this.current(context)) this.fileError = "미리볼 수 없는 파일입니다"; }
-      finally { cx.notify(); }
     });
   }
 
-  // 무시됨: 자기 경로나 상위 폴더가 무시 목록에 있으면.
-  isIgnored(abs) {
-    for (let p = abs; p.length > (this.root?.length ?? 0); p = p.slice(0, p.lastIndexOf("/"))) if (this.ignored.has(p)) return true;
-    return false;
+  disabled() { return shared(DISABLED) ?? {}; }
+
+  // 앱 열기. 앱 인스턴스는 여기(이벤트·명령 처리 시점)에서 만든다: 렌더 중에는 입력 상자 등을 만들 수 없다.
+  go(id, cx) {
+    this.app = id && !this.disabled()[id] ? id : null;
+    this.managing = false;
+    const def = APPS.find((a) => a.id === this.app);
+    if (def?.make && !this.inst[this.app]) { this.inst[this.app] = def.make(); this.inst[this.app].init({}, cx); }
+    try { localStorage.setItem("app", JSON.stringify(this.app)); } catch { /* 이번 실행 동안만 */ }
   }
 
-  rows(prefix, depth, out, t) {
-    if (out.length >= TOTAL || depth > 40) return out;
-    for (const entry of this.entries.get(prefix) ?? []) {
-      if (out.length >= TOTAL) break;
-      const path = prefix ? `${prefix}/${entry.name}` : entry.name, open = this.folders.has(path), abs = `${this.root}/${path}`;
-      const ignored = this.isIgnored(abs), mark = this.marks[abs];
-      if ((!this.showHidden && entry.name.startsWith(".")) || (this.hideIgnored && ignored)) continue;
-      const color = mark ? GIT[mark] : ignored ? GIT.I : t.foreground;
-      const icon = iconFor(entry.name, entry.dir, open);
-      out.push(h_flex().id(`file-${path}`).h(24).flex_none().pl(6 + depth * 16).pr(8).gap(5).items_center().rounded(4)
-        .cursor_pointer().hover((s) => s.bg(t.hover)).when(this.file === path || (entry.dir && this.sel === path), (el) => el.bg(t.selected))
-        .on_click((_e, cx) => (entry.dir ? this.toggle(path, cx) : this.show(path, cx)))
-        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(this.ctxFor(path, entry.dir, mark, ignored)); })
-        .child(entry.dir ? svg(`${ME}/chevron-${open ? "down" : "right"}.svg`).size(14).flex_none().text_color(t.foreground) : div().w(14).flex_none())
-        .child(icon ? image(icon).size(16).flex_none() : div().w(16).flex_none())
-        .child(div().flex_1().min_w(0).truncate().text_color(color).child(entry.name)));
-      if (entry.dir && open) this.rows(path, depth + 1, out, t);
-    }
-    return out;
+  // 켜진 앱만 열 때 만든다(go). 끈 앱은 만들지 않고, 끄면 있던 인스턴스도 버린다.
+  instance(id) {
+    return this.disabled()[id] ? null : this.inst[id] ?? null;
   }
 
-  // 메뉴·입력 창으로 넘기는 정보(값만).
-  ctxFor(path, dir, mark = null, ignored = false) {
-    const name = path ? path.split("/").pop() : (this.root ?? "").split("/").pop();
-    return { kind: !path ? "root" : dir ? "dir" : "file", path, abs: path ? `${this.root}/${path}` : this.root, dir, root: this.root, on: this.on,
-      mark, ignored, tools: this.tools, home: home(), icon: iconFor(name, dir, false) };
-  }
-
-  // 메뉴를 열기 전에 파일 종류에 따라 필요한 정보를 읽어 둔다(스크립트, 패키지 매니저, make 대상).
-  openMenu(ctx) {
-    this.hideTip();
-    const name = ctx.abs.split("/").pop().toLowerCase(), dirOf = ctx.kind === "file" ? ctx.abs.slice(0, ctx.abs.lastIndexOf("/")) : ctx.abs;
-    const needsPm = ctx.kind === "file" && /^(package\.json|package-lock\.json|bun\.lockb?|pnpm-lock\.yaml|yarn\.lock)$|\.(test|spec)\.|\.[cm]?[jt]sx?$/.test(name);
-    const open = () => { const h = menuHeight(ctx); openOverlay({ mod: "office-apps", kind: "popup", at: popupAt(320, h), width: 320, height: h, props: { role: "menu", ctx } }); };
-    if (!needsPm && name !== "makefile" && name !== "gnumakefile") return open();
-    exec("sh", ["-c", `
-      d="$1"; while [ "$d" != "/" ] && [ -n "$d" ]; do
-        for f in bun.lock bun.lockb pnpm-lock.yaml yarn.lock package-lock.json; do [ -e "$d/$f" ] && echo "$f" && exit 0; done
-        [ "$d" = "$2" ] && break; d=$(dirname "$d"); done`, "pm", dirOf, this.root], { on: this.on }).catch(() => null)
-      .then(async (r) => {
-        const lock = (r?.stdout ?? "").trim();
-        ctx.pm = lock.startsWith("bun") ? "bun" : lock.startsWith("pnpm") ? "pnpm" : lock.startsWith("yarn") ? "yarn" : "npm";
-        if (name === "package.json") {
-          try { ctx.scripts = JSON.parse(await readTextFile(ctx.abs, { on: this.on }))?.scripts ?? {}; } catch { ctx.scripts = {}; }
-        }
-        if (name === "makefile" || name === "gnumakefile") {
-          const text = (await readTextFile(ctx.abs, { on: this.on }).catch(() => "")) ?? "";
-          ctx.targets = [...new Set([...text.matchAll(/^([A-Za-z0-9][\w.-]*)\s*:(?!=)/gm)].map((x) => x[1]))].slice(0, 30);
-        }
-        open();
-      });
-  }
-
-  // 툴바: 새 파일·폴더는 고른 폴더(마지막으로 누른 폴더, 없으면 맨 위)에 만든다.
-  toolbar(t) {
-    const dir = this.sel ? `${this.root}/${this.sel}` : this.root, where = this.sel || "맨 위";
-    const btn = (id, icon, tip, on, fn) => div().id(`ft-${id}`).p(4).rounded(4).flex_none()
-      .on_mouse_move((e) => { if (this.tipFor !== id) this.showTip(id, tip, e.bounds); })
-      .on_hover((h) => { if (!h && this.tipFor === id) this.hideTip(); })
-      .when(on, (el) => el.bg(t.selected))
-      .when(Boolean(fn), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.hideTip(); fn(cx); cx.notify(); }))
-      .child(svg(`${ME}/${icon}.svg`).size(16).text_color(fn ? TOOL[id] : t.dim));
-    const sep = () => div().w(1).h(16).mx(4).flex_none().bg(t.border);
-    const ask = (action, title, hint) => openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 210,
-      props: { role: "prompt", action, title, hint, ctx: this.ctxFor(this.sel, true) } });
-    const ok = Boolean(this.root);
-    return v_flex().flex_none()
-      .child(h_flex().h(32).px(6).gap(2).items_center().border_b_1().border_color(t.border)
-        // 켜고 끄는 버튼은 한 자리에서 아이콘으로 지금 상태를 보여 준다(걸러 내는 중이면 배경도 칠함).
-        .child(btn("search", this.searching ? "close" : "search", this.searching ? "검색 중 · 누르면 닫기" : "파일 검색 (이름으로)", this.searching, ok && ((cx) => this.toggleSearch(cx))))
-        .child(btn("hidden", this.showHidden ? "eye" : "eye-off", this.showHidden ? "숨김 파일(.으로 시작) 보이는 중 · 누르면 감추기" : "숨김 파일 감추는 중 · 누르면 보이기", !this.showHidden, () => { this.showHidden = !this.showHidden; this.save("showHidden", this.showHidden); }))
-        .child(btn("ignored", this.hideIgnored ? "ignored-off" : "ignored", this.hideIgnored ? "gitignore 항목 감추는 중 · 누르면 보이기" : "gitignore 항목 보이는 중 · 누르면 감추기", this.hideIgnored, () => { this.hideIgnored = !this.hideIgnored; this.save("hideIgnored", this.hideIgnored); }))
-        .child(sep())
-        .child(btn("file", "file-new", `새 파일 (${where}에)`, false, ok && (() => ask("file", "새 파일", `${where}에 만들 파일 이름 (하위 폴더는 a/b.ts처럼)`))))
-        .child(btn("folder", "folder-new", `새 폴더 (${where}에)`, false, ok && (() => ask("folder", "새 폴더", `${where}에 만들 폴더 이름`))))
-        .child(sep())
-        .child(btn("terminal", "terminal", `여기서 터미널 열기 (${where})`, false, ok && (() => { run("tab.new", { folder: dir }); run("layout.show", { id: "office-term" }); })))
-        .child(btn("copy", "copy", this.file ? `경로 복사 (${this.file})` : `경로 복사 (${where})`, false, ok && (() => this.copy(this.file ? `${this.root}/${this.file}` : dir))))
-        .child(div().flex_1())
-        // 펼치기/접기도 한 자리: 열린 폴더가 있으면 모두 접기, 없으면 맨 위 폴더들을 펼치기.
-        .child(this.folders.size
-          ? btn("collapse", "collapse", "모두 접기", false, ok && (() => { this.folders = new Set(); this.sel = ""; }))
-          : btn("collapse", "expand", "맨 위 폴더 모두 펼치기", false, ok && ((cx) => { for (const e of this.entries.get("") ?? []) if (e.dir && !this.folders.has(e.name)) this.toggle(e.name, cx); this.sel = ""; })))
-        .child(btn("refresh", "refresh", "다시 읽기", false, ok && ((cx) => { this.all = null; this.refresh(cx); }))))
-      .when(this.searching, (el) => el.child(h_flex().h(34).px(8).gap(6).items_center().border_b_1().border_color(t.border)
-        .child(svg(`${ME}/search.svg`).size(14).flex_none().text_color(t.muted))
-        .child(div().flex_1().min_w(0).child(Input.new(this.searchInput).h(26).text_size(12).text_color(t.foreground)))));
-  }
-
-  save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 이번 실행 동안만 */ } }
-
-  async copy(text) {
-    await exec("sh", ["-c", 'printf %s "$1" | pbcopy', "copy", text]);
-    notify({ title: "경로를 복사했습니다", body: text.replace(home(), "~"), level: "info" });
-  }
-
-  // 검색: 처음 열 때 레포 파일 목록(추적 + 추적 안 된 것, gitignore 제외)을 한 번 읽어 이름으로 거른다.
-  toggleSearch(cx) {
-    this.searching = !this.searching;
-    if (!this.searching) { this.query = ""; this.searchInput.set_value(""); return; }
-    this.searchInput.focus();
-    if (this.all) return;
-    const context = this.context;
-    cx.spawn(async (cx) => {
-      let r = await exec("git", ["ls-files", "-co", "--exclude-standard"], { cwd: this.root, on: this.on }).catch(() => null);
-      if (r?.code !== 0) r = await exec("sh", ["-c", 'cd "$1" && find . -type f -not -path "*/.git/*" | head -20000 | sed "s|^./||"', "find", this.root], { on: this.on }).catch(() => null);
-      if (this.context === context) this.all = (r?.stdout ?? "").split("\n").filter(Boolean);
-      cx.notify();
-    });
-  }
-
-  results(t) {
-    const q = this.query;
-    if (!this.all) return [div().p(8).text_size(12).text_color(t.dim).child("파일 목록을 읽는 중")];
-    if (!q) return [div().p(8).text_size(12).text_color(t.dim).child(`파일 ${this.all.length.toLocaleString()}개에서 찾습니다`)];
-    const hits = this.all.filter((p) => p.split("/").pop().toLowerCase().includes(q)).slice(0, 300);
-    if (!hits.length) return [div().p(8).text_size(12).text_color(t.dim).child("맞는 파일이 없습니다")];
-    return hits.map((path) => {
-      const name = path.split("/").pop(), icon = iconFor(name, false, false), mark = this.marks[`${this.root}/${path}`];
-      return h_flex().id(`hit-${path}`).h(24).flex_none().px(6).gap(6).items_center().rounded(4).cursor_pointer()
-        .hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.show(path, cx))
-        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(this.ctxFor(path, false, mark, false)); })
-        .child(icon ? image(icon).size(16).flex_none() : div().w(16).flex_none())
-        .child(div().flex_none().text_color(mark ? GIT[mark] : t.foreground).child(name))
-        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ""));
-    });
-  }
-
-  // 툴팁: 아이콘 바로 위, 아이콘 가운데에. 칸 밖까지 그리도록 창 오버레이로 띄운다.
-  showTip(id, text, b) {
-    this.hideTip();
-    if (!b) return;
-    const w = Math.round([...text].reduce((n, ch) => n + (ch.charCodeAt(0) > 0x2e80 ? 12 : 7), 0) + 20);
-    this.tipFor = id;
-    this.tipId = openOverlay({ mod: "office-apps", kind: "window", key: "office-apps-tip", frame: "none", width: w, height: 26,
-      at: { x: Math.max(4, Math.round(b.x + b.width / 2 - w / 2)), y: Math.max(4, Math.round(b.y - 30)) },
-      props: { role: "tip", text } });
-  }
-
-  hideTip() {
-    if (this.tipId) closeOverlay(this.tipId);
-    this.tipId = null; this.tipFor = null;
-  }
-
-  // 아이콘 표는 모듈에 한 번만 읽어 둔다. 코드를 다시 불러오면(핫 리로드) 모듈 값이 비고 init은 다시
-  // 돌지 않으므로, 그릴 때 비어 있으면 읽는다.
-  loadIcons(cx) {
-    if (ICONS || ICONS_LOADING) return;
-    ICONS_LOADING = true;
-    cx.spawn(async (cx) => {
-      try { ICONS = JSON.parse(await readTextFile(`${appHome()}/${ME}/icons.json`)); } catch { ICONS = null; }
-      ICONS_LOADING = false;
-      cx.notify();
-    });
+  toggle(id) {
+    const d = { ...this.disabled() };
+    if (d[id]) delete d[id]; else { d[id] = true; delete this.inst[id]; if (this.app === id) this.app = null; }
+    setShared(DISABLED, d);
   }
 
   render(cx) {
-    this.loadIcons(cx);
-    if (key() !== this.context?.key) this.refresh(cx);
-    if (shared(TICK) !== this.tick) { this.tick = shared(TICK); this.all = null; this.refresh(cx); }
-    const pv = shared(PREVIEW);
-    if (pv !== this.preview) { this.preview = pv; if (pv?.root === this.root) this.show(pv.path, cx); }
     const t = theme();
-    const name = this.root?.split("/").pop() ?? "";
-    const where = this.root ? this.root.replace(home(), "~") : "";
-    const rootIcon = ICONS ? `${ME}/icons/${ICONS.folderExpanded}.svg` : null;
+    if (this.app && this.disabled()[this.app]) this.app = null;
     return v_flex().id("office-apps").size_full().min_h(0).bg(t.chrome).text_color(t.foreground).text_size(13)
-      .child(h_flex().h(36).flex_none().px(10).gap(6).items_center().border_b_1().border_color(t.border)
-        .when(Boolean(this.file), (el) => el.child(div().id("files-back").px(4).rounded(4).cursor_pointer().text_color(t.muted)
-          .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("←")))
-        .when(!this.file && Boolean(rootIcon), (el) => el.child(image(rootIcon).size(16).flex_none()))
-        .child(div().flex_none().font_semibold().child(this.file ? this.file.split("/").pop() : name))
-        // 경로를 누르면 Finder에서 연다(미리보기 중이면 그 파일을 Finder에서 보여 준다).
-        .child(div().flex_1().min_w(0).child(div().id("files-path").max_w_full().truncate().text_size(12).text_color(t.dim)
-          .when(Boolean(this.root) && !this.on, (el) => el.cursor_pointer()
-            .hover((s) => s.text_color(t.foreground).underline())
-            .on_click(() => exec("open", this.file ? ["-R", `${this.root}/${this.file}`] : [this.root])))
-          .child(this.file ? this.file : where))))
-      .when(!this.file, (el) => el.child(this.toolbar(t)))
-      .when(!this.file && this.searching, (el) => el.child(v_flex().id("files-hits").flex_1().min_h(0).overflow_y_scrollbar().p(4).children(this.results(t))))
-      .when(!this.file && !this.searching, (el) => el.child(v_flex().id("files-tree")
-        .on_mouse_down("right", (_e, cx) => { if (this.root) { cx.stop_propagation(); this.openMenu(this.ctxFor("", true, null, false)); } }).flex_1().min_h(0).overflow_y_scrollbar().p(4).children(this.rows("", 0, [], t))
-        .when(Boolean(this.error) || !this.entries.get("")?.length, (el) => el.child(div().p(8).text_size(12).text_color(t.dim)
-          .child(this.error || (this.loading ? "파일을 읽는 중" : this.root ? "파일이 없습니다" : "폴더가 없습니다"))))
-        .when(this.limited, (el) => el.child(div().p(8).text_size(11).text_color(t.dim).child("폴더당 500개, 전체 5,000개까지만 보여 줍니다")))))
-      .when(Boolean(this.file), (el) => el.child(this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(12).text_color(t.dim).child(this.fileError || "파일을 읽는 중")));
+      .child(this.app ? this.appView(this.app, cx, t) : this.managing ? this.manageView(t) : this.home(t));
+  }
+
+  tile(a, size, t) {
+    return div().size(size).flex_none().rounded(Math.round(size * 0.24)).bg(a.color).flex().items_center().justify_center()
+      .border_1().border_color("#ffffff22").shadow_md()
+      .child(svg(`${ME}/apps/${a.id}.svg`).size(Math.round(size * 0.52)).text_color("#ffffff"));
+  }
+
+  // 런처: 검색창 + 격자. 앱 이름·설명으로 거른다.
+  home(t) {
+    const q = this.query, off = this.disabled();
+    const list = APPS.filter((a) => !off[a.id] && (!q || a.name.toLowerCase().includes(q) || a.desc.toLowerCase().includes(q) || a.id.includes(q)));
+    return v_flex().size_full().min_h(0)
+      .child(h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b_1().border_color(t.border)
+        .child(svg(`${ME}/search.svg`).size(16).flex_none().text_color(t.muted))
+        .child(div().flex_1().min_w(0).child(Input.new(this.search).h(30).text_size(15).text_color(t.foreground)))
+        .child(div().id("apps-manage").p(5).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => { this.managing = true; cx.notify(); })
+          .child(svg(`${ME}/apps/gear.svg`).size(16).text_color(t.muted))))
+      .child(div().id("apps-grid").flex_1().min_h(0).overflow_y_scrollbar().p(20)
+        .child(h_flex().flex_wrap().gap(18).children(list.map((a) =>
+          v_flex().id(`app-${a.id}`).w(92).py(8).gap(8).items_center().rounded(10).cursor_pointer()
+            .hover((s) => s.bg(t.hover))
+            .on_click((_e, cx) => { this.go(a.id, cx); cx.notify(); })
+            .child(this.tile(a, 56, t))
+            .child(div().text_size(13).text_color(t.foreground).child(a.name)))))
+        .when(list.length === 0, (el) => el.child(div().pt(8).text_color(t.muted).child(q ? "맞는 앱이 없습니다" : "켜진 앱이 없습니다. ⚙에서 켜세요"))));
+  }
+
+  // 앱 관리: 켜고 끄기
+  manageView(t) {
+    const off = this.disabled();
+    return v_flex().size_full().min_h(0)
+      .child(h_flex().h(48).flex_none().px(10).gap(8).items_center().border_b_1().border_color(t.border)
+        .child(this.back(t))
+        .child(div().text_size(15).font_semibold().child("앱 관리")))
+      .child(v_flex().id("apps-manage-list").flex_1().min_h(0).overflow_y_scrollbar().px(16).py(10).gap(2)
+        .child(div().pb(8).text_size(12).text_color(t.muted).child("끈 앱은 런처에서 숨기고, Herdr가 그 앱을 불러오지 않습니다(타이머·git·네트워크 요청 없음)."))
+        .children(APPS.map((a) => {
+          const on = !off[a.id];
+          return h_flex().id(`apps-tg-${a.id}`).py(8).px(6).gap(12).items_center().rounded(8).cursor_pointer()
+            .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.toggle(a.id); cx.notify(); })
+            .child(this.tile(a, 32, t))
+            .child(v_flex().flex_1().min_w(0).gap(1)
+              .child(div().text_size(13).font_semibold().text_color(on ? t.foreground : t.muted).child(a.name))
+              .child(div().truncate().text_size(12).text_color(t.muted).child(a.desc + (a.make ? "" : " · 준비 중"))))
+            // 스위치
+            .child(div().w(36).h(20).flex_none().rounded(10).bg(on ? t.accent : t.border).p(2).flex().when(on, (el) => el.justify_end())
+              .child(div().size(16).rounded_full().bg("#ffffff")));
+        })));
+  }
+
+  back(t) {
+    return h_flex().id("apps-back").px(6).py(3).gap(2).items_center().rounded(6).cursor_pointer().text_color(t.muted)
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_click((_e, cx) => { this.go(null, cx); cx.notify(); })
+      .child(svg(`${ME}/apps/back.svg`).size(14).text_color(t.foreground)).child(div().text_size(13).child("앱"));
+  }
+
+  // 앱 화면: 위 막대 / 왼쪽 목록 / 오른쪽 내용
+  appView(id, cx, t) {
+    const a = APPS.find((x) => x.id === id), app = this.instance(id);
+    const detail = app?.detail?.(cx, t) ?? null;
+    return v_flex().size_full().min_h(0)
+      .child(h_flex().h(44).flex_none().px(10).gap(8).items_center().border_b_1().border_color(t.border)
+        .child(this.back(t))
+        .child(div().w(1).h(18).bg(t.border))
+        .child(this.tile(a, 24, t))
+        .child(div().flex_none().text_size(15).font_semibold().child(a.name))
+        .child(div().flex_1().min_w(0).child(app?.subtitle?.(t) ?? div())))
+      .child(h_flex().flex_1().min_h(0).items_stretch()
+        // 왼쪽: 관리 목록(좁게)
+        .child(v_flex().w(LEFT).h_full().flex_none().min_h(0).border_r_1().border_color(t.border)
+          .child(app ? app.list(cx, t) : v_flex().p(16).gap(6).child(div().text_color(t.muted).child("준비 중인 앱입니다"))
+            .child(div().text_size(12).text_color(t.dim).child(a.desc))))
+        // 오른쪽: 고른 항목(강조: 더 넓고 밝은 바탕)
+        .child(v_flex().flex_1().h_full().min_w(0).min_h(0).bg(t.background)
+          .child(detail ?? v_flex().size_full().items_center().justify_center().gap(10)
+            .child(this.tile(a, 40, t).opacity(0.5))
+            .child(div().text_size(14).text_color(t.muted).child("선택 내용이 없습니다"))
+            .child(div().text_size(12).text_color(t.dim).child(app ? "왼쪽에서 항목을 고르세요" : a.desc)))));
   }
 }
 
-// 새 파일·새 폴더 이름을 받는 창. 만든 뒤 TICK으로 트리에 다시 읽으라고 알린다.
-class Prompt {
-  init(_p, cx) {
-    const v = props()?.value ?? "";
-    this.text = v;
-    this.input = InputState.new({ value: v });
-    // 이름 바꾸기: 확장자 앞까지만 골라 둔다.
-    if (v) this.input.set_selected_range({ start: 0, end: v.lastIndexOf(".") > 0 ? v.lastIndexOf(".") : v.length });
-    this.input.on("change", (_e, cx) => { this.text = this.input.value(); cx.notify(); });
-    this.input.on("submit", () => this.submit());
-    this.input.focus();
-    cx.timer.after(300, () => this.input.focus());
-  }
+const LEFT = 250;   // 왼쪽 관리 칸 폭(가운데 내용 칸을 강조하려고 좁게)
 
-  submit() {
-    const p = props(), name = this.text.trim();
-    if (!name || name.split("/").includes("..") || (p.action === "rename" && name.includes("/"))) return;
-    closeOverlay(p.overlay);
-    ACTIONS[p.action](p.ctx, name);
-  }
-
-  render() {
-    const t = theme(), p = props();
-    const button = (id, text, primary, action) => h_flex().id(id).h(32).px(14).items_center().rounded(8).cursor_pointer().text_size(12.5)
-      .border_1().border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
-      .text_color(primary ? t.solid_foreground : t.foreground).hover((s) => s.opacity(0.88)).on_click(action).child(text);
-    return v_flex().id("files-prompt").size_full().p(18).gap(10).bg(t.popover).text_color(t.foreground).text_size(13)
-      .on_key_down((e, cx) => { if (e.key === "escape") { closeOverlay(p.overlay); cx.stop_propagation(); } })
-      .child(h_flex().child(div().flex_1().text_size(15).font_semibold().child(p.title)).child(div().text_size(11).text_color(t.dim).child("Esc")))
-      .child(div().text_size(12).text_color(t.dim).child(p.hint ?? ""))
-      .child(Input.new(this.input).h(36).px(10).rounded(8).border_1().border_color(t.accent).bg(t.background).text_size(13))
-      .child(h_flex().pt(6).gap(8).justify_end()
-        .child(button("fp-no", "취소", false, () => closeOverlay(p.overlay)))
-        .child(button("fp-yes", p.action === "rename" ? "바꾸기" : "만들기", true, () => this.submit())));
-  }
-}
-
-class Tip {
-  init() {}
-  render() {
-    const t = theme();
-    return div().size_full().flex().items_center().justify_center().rounded(6).bg(t.popover).border_1().border_color(t.border)
-      .text_size(12).text_color(t.foreground).whitespace_nowrap().child(props()?.text ?? "");
-  }
-}
-
-const ROLES = { prompt: Prompt, tip: Tip, menu: Menu, confirm: Confirm };
-
-export default class OfficeFiles extends View {
+export default class OfficeApps extends View {
   init(p, cx) {
-    const R = ROLES[(props() ?? p ?? {}).role] ?? Tree;
+    const R = ROLES[(props() ?? p ?? {}).role] ?? Launcher;
     this.role = new R();
     this.role.init(p, cx);
   }

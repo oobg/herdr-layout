@@ -4,35 +4,59 @@
   "font": "D2Coding",
   "ui_font": "Pretendard GOV",
   "background": "canvas",
-  "terminal_padding": [12, 10],
+  "terminal_padding": [
+    12,
+    10
+  ],
   "padding": 8,
   "gap": 8,
   "children": [
     {
       "id": "office-top",
       "type": "row",
-      "size": { "weight": 3 },
+      "size": {
+        "weight": 3
+      },
       "gap": 8,
       "children": [
         {
           "id": "office-floor",
           "type": "block",
-          "size": { "weight": 1 },
+          "size": {
+            "weight": 1
+          },
           "min": 240,
           "radius": 10,
-          "border": { "width": 1, "color": "border" },
-          "content": { "mod": "office", "props": { "role": "floor" } }
+          "border": {
+            "width": 1,
+            "color": "border"
+          },
+          "content": {
+            "mod": "office",
+            "props": {
+              "role": "floor"
+            }
+          }
         },
         {
           "id": "office-term",
           "type": "column",
-          "size": { "weight": 2 },
+          "size": {
+            "weight": 2
+          },
           "children": [
             {
               "id": "office-termbar",
               "type": "block",
-              "size": { "px": 32 },
-              "content": { "mod": "office", "props": { "role": "termbar" } }
+              "size": {
+                "px": 32
+              },
+              "content": {
+                "mod": "office",
+                "props": {
+                  "role": "termbar"
+                }
+              }
             },
             {
               "id": "office-tab",
@@ -44,8 +68,14 @@
                   "radius": 10,
                   "background": "background",
                   "lone": true,
-                  "border": { "width": 1, "color": "border" },
-                  "focus": { "width": 1, "color": "accent" }
+                  "border": {
+                    "width": 1,
+                    "color": "border"
+                  },
+                  "focus": {
+                    "width": 1,
+                    "color": "accent"
+                  }
                 }
               }
             }
@@ -56,37 +86,44 @@
     {
       "id": "office-bottom",
       "type": "row",
-      "size": { "weight": 2 },
+      "size": {
+        "weight": 2
+      },
       "gap": 8,
       "children": [
         {
           "id": "office-apps",
           "type": "block",
-          "size": { "weight": 1 },
-          "min": 200,
+          "size": {
+            "weight": 1
+          },
+          "min": 420,
           "radius": 10,
-          "border": { "width": 1, "color": "border" },
+          "border": {
+            "width": 1,
+            "color": "border"
+          },
           "background": "chrome",
-          "content": { "mod": "office-apps" }
-        },
-        {
-          "id": "office-git",
-          "type": "block",
-          "size": { "weight": 2 },
-          "radius": 10,
-          "border": { "width": 1, "color": "border" },
-          "background": "chrome",
-          "content": { "mod": "office-git" }
+          "content": {
+            "mod": "office-apps"
+          }
         },
         {
           "id": "office-usage",
           "type": "block",
-          "size": { "px": 300 },
+          "size": {
+            "px": 300
+          },
           "min": 240,
           "radius": 10,
-          "border": { "width": 1, "color": "border" },
+          "border": {
+            "width": 1,
+            "color": "border"
+          },
           "background": "chrome",
-          "content": { "mod": "office-usage" }
+          "content": {
+            "mod": "office-usage"
+          }
         }
       ]
     }
