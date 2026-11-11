@@ -1,6 +1,7 @@
 // 서버 앱의 "기기 추가" 화면(오른쪽 칸). `hc machine add`가 받는 것만 묻는다:
-//   SSH: 주소(TARGET: ssh config의 Host, user@host, user@host:포트) + 포트(선택, 주소에 :포트로 붙인다) + 이름(선택, 기본은 호스트)
-//   명령: --via <명령>(ssh처럼 마지막 인자로 셸 한 줄을 받는 명령) + --name <이름>(필수)
+//   SSH: 사용자(선택) + 호스트(필수) + 포트(선택) → TARGET `user@host:port` + 기기 이름(선택, --name, 기본은 호스트)
+//   명령: --via <명령>(ssh처럼 마지막 인자로 셸 한 줄을 받는 명령) + 기기 이름(--name, 필수)
+// 미리보기와 실제 실행은 같은 args()를 쓴다.
 // 추가는 tty 없이 `hc machine add … --json`으로 돌린다. 비밀번호·새 호스트 키·herdr-core 설치처럼 물어보는 게 있으면
 // 실패하므로, 그때는 이 컴퓨터의 터미널 탭에서 같은 명령을 돌리게 안내한다(hc가 거기서 묻는다).
 import { div } from "gpui-kit";
@@ -20,6 +21,15 @@ export function runHere(name, argv) {
   run("layout.show", { id: "office-term" });
 }
 
+// 사용자·호스트·포트 칸 → ssh 대상. 호스트 칸에 user@나 :포트가 있으면 쓰되, 따로 적은 칸이 우선한다(중복 없이).
+export function sshTarget(user, hostField, port) {
+  const m = /^(?:([^@]+)@)?(.*?)(?::(\d+))?$/.exec(hostField.trim());
+  const host = m?.[2]?.trim();
+  if (!host) return null;
+  const u = user.trim() || m[1] || "", p = /^\d+$/.test(port.trim()) ? port.trim() : m[3] || "";
+  return `${u ? `${u}@` : ""}${host}${p ? `:${p}` : ""}`;
+}
+
 export class AddForm {
   // 입력 상자는 렌더 중에 만들 수 없어 여기(서버 앱 init)에서 만든다.
   init(onChange) {
@@ -31,24 +41,23 @@ export class AddForm {
       s.on("submit", (_e, cx) => this.submit(cx));
       return s;
     };
-    this.target = make("user@host 또는 ssh config의 Host");
+    this.user = make("woong");
+    this.target = make("192.168.0.10, example.com, ssh config의 Host");
     this.port = make("22");
-    this.name = make("비우면 호스트 이름");
+    this.name = make("비우면 호스트");
     this.via = make("ssh -p 2222 -i ~/.ssh/key user@ip");
-    this.viaName = make("이 기기를 부를 이름");
+    this.viaName = make("Herdr 목록에 보일 이름");
     this.onAdded = onChange;
   }
 
-  focus() { (this.mode === "ssh" ? this.target : this.via).focus(); }
+  focus() { (this.mode === "ssh" ? this.user : this.via).focus(); }
 
   // 입력 → hc 인자. 모자라면 null.
   args() {
     const v = (s) => s.value().trim();
     if (this.mode === "ssh") {
-      let target = v(this.target);
+      const target = sshTarget(v(this.user), v(this.target), v(this.port));
       if (!target) return null;
-      const port = v(this.port);
-      if (port && /^\d+$/.test(port) && !/:\d+$/.test(target)) target = `${target}:${port}`;
       return ["machine", "add", ...(v(this.name) ? ["--name", v(this.name)] : []), target];
     }
     if (!v(this.via) || !v(this.viaName)) return null;
@@ -80,7 +89,7 @@ export class AddForm {
       this.busy = false;
       if (!err) {
         this.result = { ok: true, text: `'${name}'을(를) 추가했습니다` };
-        for (const s of [this.target, this.port, this.name, this.via, this.viaName]) s.set_value("");
+        for (const s of [this.user, this.target, this.port, this.name, this.via, this.viaName]) s.set_value("");
         this.onAdded?.(name, cx);
       } else {
         const ask = INTERACTIVE.includes(err.kind) || /password|passphrase|host key|permission denied|login|install/i.test(err.message ?? "");
@@ -118,12 +127,13 @@ export class AddForm {
           .child(div().text_size(12).text_color(t.muted).child("연결 방식"))
           .child(h_flex().gap(4).child(tab("ssh", "SSH")).child(tab("via", "명령"))))
         .when(this.mode === "ssh", (el) => el
-          .child(field("주소", this.target, "user@host, user@host:2222, ssh config의 Host"))
-          .child(field("포트", this.port, "선택 · 주소에 :포트로 붙입니다"))
-          .child(field("이름", this.name, "선택 · 'vps/t7'의 vps")))
+          .child(field("사용자", this.user, "선택 · ssh로 접속할 계정"))
+          .child(field("호스트", this.target, "필수 · IP, 도메인, ssh config의 Host"))
+          .child(field("포트", this.port, "선택 · 비우면 22(또는 ssh config)"))
+          .child(field("기기 이름", this.name, "Herdr 목록에 보일 이름 · 비우면 호스트")))
         .when(this.mode === "via", (el) => el
           .child(field("명령", this.via, "마지막 인자로 셸 한 줄을 받아 그쪽에서 돌리는 명령. 아무것도 묻지 않아야 합니다"))
-          .child(field("이름", this.viaName, "필수")))
+          .child(field("기기 이름", this.viaName, "필수 · Herdr 목록에 보일 이름")))
         .child(div().pt(2).text_size(12).font_family(MONO).text_color(t.dim).child(preview))
         .child(h_flex().gap(10).items_center()
           .child(btn("sv-add-go", this.busy ? "추가하는 중" : "추가", args && !this.busy && ((_e, cx) => this.submit(cx)), true))
