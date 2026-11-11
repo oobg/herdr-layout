@@ -1,6 +1,6 @@
 // 리소스 관리자: 사용량 패널 바로 밑에서 Herdr 터미널들이 쓰는 CPU·메모리를 보여 준다.
 //   칸 높이가 FULL 이상이면 전체 표(스페이스 → 탭 → 터미널), 모자라면 메모리 한 줄(칩).
-//   칩을 누르면 칸을 EXPANDED로 늘리고, 레이아웃에 남는 높이가 없어 그래도 모자라면 팝업으로 전체 표를 띄운다.
+//   칸은 레이아웃이 사용량과 비율(6:4)로 나눠 준다. 한 줄일 때 누르면 팝업으로 전체 표를 띄운다.
 // 데이터: 터미널마다 hc get으로 셸(뿌리) pid를 한 번 얻어 두고, 3초마다 ps 한 번으로 그 자손 트리 합을 낸다.
 //   탭 = 소속 터미널 합, 스페이스 = 탭 합, 요약 = 이 컴퓨터 터미널 전체 합. 다른 기기는 exec on으로 같은 계산을 시도한다.
 
@@ -10,10 +10,9 @@ import { theme, exec, hc, run, props, spaces, panes, terminals, machines, window
   setShared, openOverlay, closeOverlay } from "herdr";
 import { SCRIPT, parseAll, treeSum, fmtMem, fmtCpu } from "./calc.js";
 
-const ID = "office-resources";   // 레이아웃 블록 id (layout.resize 대상)
+const ID = "office-resources";   // 레이아웃 블록 id이자 모드 이름
 const FULL = 220;                // 이 높이부터 전체 표
-const CHIP = 28;                 // 한 줄 칩 높이 (레이아웃 기본값과 같게)
-const EXPANDED = 340;            // 칩을 눌렀을 때 늘리는 높이
+const CHIP = 28;                 // 한 줄 칩 높이 (칸이 더 커도 맨 위에 붙인다)
 const EVERY = 3000;              // 갱신 주기(ms)
 const SPARK = 30;                // 탭 스파크라인 표본 수
 const NUM_FONT = "D2Coding";     // 숫자 칸: 고정폭 글꼴로 자릿수를 맞춘다
@@ -168,18 +167,11 @@ class Panel {
     if (this.popup) closeOverlay(props().overlay);
   }
 
-  expand(e, cx) {
-    run("layout.resize", { id: ID, px: EXPANDED });
-    // 레이아웃에 남는 높이가 없으면 늘어나지 않는다: 잠시 뒤 확인해 팝업으로 보여 준다.
-    const b = e?.bounds;
-    cx.timer.after(400, (cx) => {
-      if ((this.size?.height ?? 0) >= FULL) return;
-      run("layout.resize", { id: ID, px: CHIP });
-      const w = 300, h = 420;
-      openOverlay({ mod: ID, kind: "popup", width: w, height: h, props: { role: "popup" },
-        at: b ? { x: Math.max(8, Math.round(b.x + b.width - w)), y: Math.max(8, Math.round(b.y - h - 6)) } : "pointer" });
-      cx.notify();
-    });
+  // 한 줄에서 누르면: 같은 표를 팝업으로(칩 오른쪽 끝에 맞춰 위쪽으로 띄운다).
+  openPopup(e) {
+    const b = e?.bounds, w = 300, h = 420;
+    openOverlay({ mod: ID, kind: "popup", width: w, height: h, props: { role: "popup" },
+      at: b ? { x: Math.max(8, Math.round(b.x + b.width - w)), y: Math.max(8, Math.round(b.y - h - 6)) } : "pointer" });
   }
 
   render(cx) {
@@ -204,9 +196,9 @@ class Panel {
   // 한 줄: 메모리 칩 아이콘 + 메모리 합, 흐린 글자. 사용량 카드 밑에 붙어 보이게 테두리 없이.
   chip(t) {
     const { mem } = this.total();
-    return h_flex().id("res-chip").size_full().px(14).gap(6).items_center().cursor_pointer()
+    return h_flex().id("res-chip").w_full().h(CHIP).flex_none().px(14).gap(6).items_center().cursor_pointer()
       .text_color(t.dim).hover((s) => s.text_color(t.foreground))
-      .on_click((e, cx) => this.expand(e, cx))
+      .on_click((e) => this.openPopup(e))
       .child(svg(`mods/${ID}/chip.svg`).size(13).flex_none().text_color(t.dim))
       .child(div().text_size(12).font_family(NUM_FONT).child(mem == null ? "—" : fmtMem(mem)));
   }
@@ -251,9 +243,7 @@ class Panel {
       .child(h_flex().h(40).pl(14).pr(8).flex_none().items_center().gap(2).border_b_1().border_color(t.border)
         .child(div().flex_1().text_size(14).font_semibold().text_color(t.foreground).child("리소스 관리자"))
         .child(this.btn(t, "refresh", "refresh", TOOL.refresh, this.busy ? "읽는 중" : "지금 새로 고침", (cx) => this.tick(cx, true), this.busy))
-        .child(this.popup
-          ? this.btn(t, "close", "close", TOOL.fold, "닫기", () => closeOverlay(props().overlay))
-          : this.btn(t, "fold", "collapse", TOOL.fold, "한 줄로 줄이기", () => run("layout.resize", { id: ID, px: CHIP }))))
+        .when(this.popup, (el) => el.child(this.btn(t, "close", "close", TOOL.fold, "닫기", () => closeOverlay(props().overlay)))))
       // 요약: 이 컴퓨터 터미널 합
       .child(h_flex().px(14).pt(10).pb(4).flex_none().items_baseline().gap(6)
         .child(div().text_size(16).font_semibold().font_family(NUM_FONT).text_color(t.foreground).child(fmtCpu(cpu)))

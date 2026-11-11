@@ -121,7 +121,7 @@
               "id": "office-usage",
               "type": "block",
               "size": {
-                "weight": 1
+                "weight": 6
               },
               "min": 160,
               "radius": 10,
@@ -138,7 +138,7 @@
               "id": "office-resources",
               "type": "block",
               "size": {
-                "px": 28
+                "weight": 4
               },
               "min": 28,
               "content": {
