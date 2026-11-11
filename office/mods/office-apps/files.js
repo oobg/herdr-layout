@@ -9,12 +9,17 @@ import { v_flex, h_flex, Editor, EditorState, InputState, Input, TextView } from
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, home, appHome, props, run, openOverlay, closeOverlay, notify, shared, setShared } from "herdr";
 import * as fs from "fs/promises";
 import { preview } from "./viewers.js";
+import { codeLang } from "./markdown.js";
 import { Menu, Confirm, ACTIONS, TICK, menuHeight, popupAt } from "./menu.js";
 const PREVIEW = "office-apps.preview";
 
 const ME = "mods/office-apps";
 const PER_FOLDER = 500, TOTAL = 5000;
 const CODE_FONT = "D2Coding";   // 코드·스크립트·마크다운 뷰어 글꼴(패널은 Pretendard GOV)
+const MD_CODE_MAX = 30;         // 마크다운 코드 블록 중 색을 입힐(편집기를 만들) 최대 개수. 넘치면 TextView로
+const MD_LINE = 18;             // 편집기 줄 높이(글자 12px)
+// GitHub 알림 종류 → 이름·색(테마 ansi)
+const ALERT = { note: ["참고", "ansi4"], tip: ["팁", "ansi2"], important: ["중요", "ansi5"], warning: ["주의", "ansi3"], caution: ["경고", "ansi1"] };
 // 툴바 아이콘 색: 기능마다 하나.
 const TOOL = { search: "#a7c080", hidden: "#7fbbb3", ignored: "#a07850", file: "#83c092", folder: "#dbbc7f",
   reveal: "#7aa2f7", terminal: "#83c092", copy: "#d699b6", collapse: "#9da9a0", refresh: "#7fbbb3" };
@@ -182,17 +187,22 @@ export class FilesApp {
   // 오른쪽 뷰어에 파일을 연다. 형식별 미리보기는 viewers.js가 만든다.
   show(path, cx) {
     this.code?.release(); this.code = null; this.file = path; this.view = null; this.sheet = 0;
+    for (const c of this.mdCode ?? []) c?.release();
+    this.mdCode = [];
     if (!path || !cx) return;
     const context = this.context, root = this.root, on = this.on, ext = path.includes(".") ? path.split(".").pop().toLowerCase() : "";
     cx.spawn(async (cx) => {
       let v;
       try { v = await preview(`${root}/${path}`, ext, on); } catch (e) { v = { kind: "error", message: `미리보기를 만들지 못했습니다: ${String(e?.message ?? e).slice(0, 80)}` }; }
       if (this.file !== path || !this.current(context)) return;
-      if (v.kind === "code") {
-        const t = theme();
-        this.code = EditorState.new({ language: v.lang, readonly: true, value: v.text,
-          font_family: CODE_FONT, font_size: 12,
-          syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
+      const t = theme(), syntax = { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 };
+      if (v.kind === "code") this.code = EditorState.new({ language: v.lang, readonly: true, value: v.text, font_family: CODE_FONT, font_size: 12, syntax });
+      // 마크다운 코드 블록: 블록마다 읽기 전용 편집기(줄 번호·접기 없음). 편집기는 렌더 중에 만들 수 없어 여기서 만든다.
+      if (v.kind === "md") {
+        let n = 0;
+        this.mdCode = v.blocks.map((b) => (b.kind === "code" && n++ < MD_CODE_MAX
+          ? EditorState.new({ language: codeLang(b.lang), readonly: true, value: b.text, font_family: CODE_FONT, font_size: 12, line_numbers: false, folding: false, syntax })
+          : null));
       }
       this.view = v;
       cx.notify();
@@ -402,7 +412,8 @@ export class FilesApp {
     let body;
     if (!v) body = v_flex().flex_1().items_center().justify_center().text_color(t.muted).child("미리보기를 만드는 중");
     else if (v.kind === "code") body = this.code ? Editor.new(this.code).flex_1().min_h(0) : div();
-    else if (v.kind === "md") body = div().id("files-md").flex_1().min_h(0).overflow_y_scrollbar().px(24).py(16).text_size(14).font_family(CODE_FONT).child(TextView.markdown("files-md-view", v.text));
+    else if (v.kind === "md") body = v_flex().id("files-md").flex_1().min_h(0).overflow_y_scrollbar().px(24).py(16).gap(12).text_size(14).font_family(CODE_FONT)
+      .children(this.markdown(v.blocks, W - 8, t, cx));
     else if (v.kind === "pages") body = v_flex().id("files-pages").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(16).items_center()
       .children(v.pages.map((p, i) => {
         const w = Math.min(W, p.w), h = Math.round((w * p.h) / Math.max(1, p.w));
@@ -428,6 +439,53 @@ export class FilesApp {
         .child(btn("files-open-ext", "기본 앱으로 열기", () => exec("open", [abs])))
         .child(div().id("files-close").px(6).rounded(4).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("✕")))
       .child(body);
+  }
+
+  // 마크다운 블록(markdown.js): 글은 TextView, 코드는 편집기, 알림은 왼쪽 선 + 이름, 그림은 image()
+  markdown(blocks, W, t) {
+    const dir = this.file.includes("/") ? this.file.slice(0, this.file.lastIndexOf("/")) : "";
+    const md = (id, text) => TextView.markdown(id, text).on_link_click((url, cx) => this.openLink(url, dir, cx));
+    return blocks.map((b, i) => {
+      const id = `files-md-${i}`;
+      if (b.kind === "text") return b.notes ? div().text_size(12).text_color(t.muted).child(md(id, b.text)) : md(id, b.text);
+      if (b.kind === "code") {
+        const st = this.mdCode?.[i];
+        if (!st) return md(id, "```" + (b.lang ?? "") + "\n" + b.text + "\n```");
+        const lines = b.text.split("\n").length;
+        return v_flex().rounded(4).bg(t.surface).border_1().border_color(t.border).px(12).py(10).gap(4)
+          .when(Boolean(b.lang), (el) => el.child(div().text_size(11).text_color(t.dim).child(b.lang)))
+          .child(Editor.new(st).w_full().h(lines * MD_LINE + 4));
+      }
+      if (b.kind === "alert") {
+        const [label, color] = ALERT[b.type] ?? ALERT.note;
+        return v_flex().pl(12).gap(4).border_l_2().border_color(t[color])
+          .child(div().text_size(13).font_semibold().text_color(t[color]).child(label))
+          .child(md(id, b.text));
+      }
+      if (b.kind === "images") return h_flex().flex_wrap().gap(6).items_end().when(Boolean(b.center), (el) => el.justify_center()).children(b.items.map((it, j) => {
+        if (!it.path) return div().text_size(12).text_color(t.dim).child(`[그림${it.alt ? `: ${it.alt}` : ""}]`);
+        const w = Math.min(W, it.width ?? it.w), h = Math.round((w * it.h) / Math.max(1, it.w));
+        const img = image(it.path).w(w).h(h);
+        return it.link ? div().id(`${id}-${j}`).cursor_pointer().on_click((_e, cx) => this.openLink(it.link, dir, cx)).child(img) : img;
+      }));
+      return null;
+    }).filter(Boolean);
+  }
+
+  // 마크다운 링크: http·mailto는 브라우저로, 상대 경로는 이 파일 앱에서 연다(#제목 링크는 무시)
+  openLink(url, dir, cx) {
+    if (/^(https?|mailto):/i.test(url)) { exec("open", [url]); return; }
+    let p = decodeURIComponent(url.replace(/^file:\/\//i, "").replace(/[?#].*$/, ""));
+    if (!p) return;
+    if (p.startsWith(this.root + "/")) p = p.slice(this.root.length + 1);
+    else if (p.startsWith("/")) { exec("open", [p]); return; }
+    else {
+      const out = dir ? dir.split("/") : [];
+      for (const part of p.split("/")) { if (part === "..") out.pop(); else if (part && part !== ".") out.push(part); }
+      p = out.join("/");
+    }
+    this.show(p, cx);
+    cx.notify();
   }
 
   // 표(CSV·엑셀): 시트 탭 + 머리 행 고정 느낌의 격자. 칸은 같은 폭, 넘치면 가로로 스크롤.
