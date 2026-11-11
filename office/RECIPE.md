@@ -1,12 +1,12 @@
 # Office
 
-코딩 에이전트들이 일하는 사무실을 위에, 파일·git·LLM 사용량 패널을 아래에 둔 Herdr 레이아웃이다. 이 문서만 보고 처음부터 다시 만들 수 있게 쓴다. 파일들은 이 레시피를 한 번 구현한 결과다.
+코딩 에이전트들이 일하는 사무실을 위에, 앱 런처와 LLM 사용량 패널을 아래에 둔 Herdr 레이아웃이다. 이 레이아웃을 다시 만들거나 고치는 사람을 위한 구조 설명이다. Herdr 모드·레이아웃 규칙은 `~/.config/herdr-app/AGENTS.md`가 정본이다.
 
 <!-- ![Office](preview.png) -->
 
-## 보이는 것
+## 레이아웃 (`layouts/office.json`)
 
-테마는 정하지 않는다(사용자 설정을 따른다). 터미널·패널 글꼴은 `D2Coding`. 시스템 제목 표시줄을 쓴다.
+테마는 정하지 않는다(사용자 설정을 따른다). 터미널 글꼴 `D2Coding`, 패널 글꼴 `Pretendard GOV`(`ui_font`), 터미널 안쪽 여백 `[12, 10]`.
 
 ```
 root  column · padding 8 · gap 8 · background canvas
@@ -16,70 +16,155 @@ root  column · padding 8 · gap 8 · background canvas
 │     ├─ office-termbar   block · 32px   → mod office {role: termbar}
 │     └─ office-tab       block · {tab: active} · 패인 카드 radius 10, focus 테두리 accent
 └─ office-bottom  row · weight 2 · gap 8
-   ├─ office-files    block · weight 1 · min 200 · chrome   → mod office-files
-   ├─ office-git      block · weight 2 · chrome             → mod office-git
-   └─ office-usage    block · 300px · min 240 · chrome      → mod office-usage
+   ├─ office-apps     block · weight 1 · min 420 · radius 10 · border · chrome   → mod office-apps
+   └─ office-usage    block · 300px · min 240 · radius 10 · border · chrome      → mod office-usage
 ```
 
-아래 세 칸은 모두 radius 10, 1px `border` 테두리, `chrome` 배경이다. 각 칸은 위에서부터 **헤더(36~40px) → 툴바(32px) → 내용** 순서다.
+레이아웃이 쓰는 모드는 `office`, `office-apps`, `office-usage` 셋이다. 셋 다 `place: none`(레이아웃이 자리를 정한다)이고 `office`만 `focusable`이다.
 
-### 툴바 규칙 (세 패널 공통)
+### 툴바 규칙 (패널 공통)
 
 - 아이콘 16px, 기능마다 색 하나. 쓸 수 없는 버튼은 `dim`으로 흐리게, 쓸 일 자체가 없으면 숨긴다.
-- 켜고 끄는 버튼은 **한 자리**에서 아이콘으로 상태를 보인다(눈 ↔ 빗금 눈, ☆ ↔ ★, 🔍 ↔ ✕). 걸러 내는 중이면 배경 `selected`.
+- 켜고 끄는 버튼은 **한 자리**에서 아이콘으로 상태를 보인다(눈 ↔ 빗금 눈, 🔍 ↔ ✕). 걸러 내는 중이면 배경 `selected`.
 - 펼치기/접기도 한 자리: 열린 것이 있으면 "모두 접기", 다 닫혀 있으면 "모두 펼치기".
-- 상태 숫자는 버튼에 바로 쓴다(끌어오기 `↓n`, 푸시 `↑n`, 갱신 주기 `5분`).
-- 툴팁은 기본 툴팁(커서를 가림) 대신 **창 오버레이**(`kind: window`, `frame: none`, 고정 `key`)로 아이콘 바로 위 30px, 아이콘 가운데에 띄운다. 글은 "지금 상태 · 누르면 무엇".
+- 상태 숫자는 버튼에 바로 쓴다(사용량 패널의 갱신 주기 `5분`).
+- 툴팁은 기본 툴팁(커서를 가림) 대신 **창 오버레이**(`kind: window`, `frame: none`, 고정 `key`)로 아이콘 바로 위에 띄운다. 글은 "지금 상태 · 누르면 무엇".
 
-### 우클릭 메뉴 규칙 (파일·브랜치 공통)
+### 우클릭 메뉴 규칙 (파일·브랜치 공통, 런처 메뉴는 하위 메뉴 없이 같은 모양)
 
-- 팝업 너비 300~330px. 마우스 오른쪽 아래에 띄우되, 창에 공간이 모자라면 위·왼쪽으로 뒤집는다(`window.mouse_position()`, `viewport_size()`).
+- 팝업 위치는 `menu.js`의 `popupAt(w, h)`: 마우스 오른쪽 아래가 기본, 창에 공간이 모자라면 위·왼쪽으로 뒤집는다.
 - 맨 위 머리줄에 대상(아이콘·이름)과 상태 배지.
 - 자주 쓰는 것을 위에, 나머지는 하위 메뉴(▸)로 묶는다. 하위 메뉴는 같은 팝업 안에서 화면을 바꾸고 머리줄 `←`로 돌아온다. 팝업 높이는 가장 긴 화면에 맞춘다.
-- 쓸 수 없는 항목은 숨긴다. 위험한 항목은 빨간 글씨 `#e67e80`, 확인 창을 거친다.
+- 쓸 수 없는 항목은 숨긴다. 위험한 항목은 빨간 글씨, 확인 창을 거친다.
 - 항목 30px: 색 아이콘 15px · 이름 · 오른쪽에 흐린 보조 글(실행될 명령, 복사될 경로 등).
 - 키: `↑↓` 이동, `Enter`/`→` 실행·열기, `←`/`Backspace` 뒤로, `Esc` 닫기.
 
 ## 사무실 (`mods/office`)
 
-- **구역:** 스페이스마다 첫 터미널의 현재 폴더(없으면 만든 폴더)에서 `git rev-parse --git-common-dir`로 레포를 찾아 묶는다. 레포가 아니면 "기타" 구역, 맨 뒤.
-- **테이블:** 폭 150, 워크트리 스페이스 하나에 하나. 아래에 브랜치 이름(없으면 스페이스 이름). 고른 테이블은 `selected` 배경과 `accent` 테두리.
-- **캐릭터:** 테이블에 최대 4명, 넘치면 `+n`. 셔츠 색은 주소 해시로 고정 팔레트(`#7aa2d6 #8cc0a0 #d69a7a #b69ad6 #d6c27a #7ac6c6 #d67aa2 #a2b07a`)에서.
-- **말풍선:** 흰 바탕에 에이전트 로고(`program.icon`, `tint`이면 `svg` 아니면 `image`), 우상단에 상태 뱃지.
+역할(`props.role`)은 `floor`(사무실 그림)와 `termbar`(터미널 칸 위 막대: 지금 스페이스 이름·브랜치와 `✕`) 두 개다.
 
-  | 상태 | 뱃지 |
+- **방:** 스페이스마다 첫 터미널의 현재 폴더(없으면 만든 폴더)에서 `git rev-parse --git-common-dir`로 레포를 찾아 묶는다. 홈 폴더(`~`) 스페이스는 늘 있는 "사장님방"(맨 앞, 임원용 책상, 비어 있으면 책상 하나), 레포가 아니면 "기타"(맨 뒤).
+- **배치:** 방 한 줄에 테이블 3개(`COLS`), 방 사이 통로 1.2m. 방의 왼쪽(xmin)·뒤(ymax) 가장자리 칸에 벽, 왼쪽 벽 윗부분에 방 이름 명패(벽 기울기대로 비튼 SVG를 실행 중에 만든다). 소품은 방 이름을 시드로 한 난수로 고르고 놓아, 다시 그려도 같은 자리다.
+- **테이블:** 워크트리 스페이스 하나에 4인 책상 하나. 아래에 브랜치 이름(없으면 스페이스 이름) 이름표. 자리는 얼굴이 보이는 안쪽부터 채운다.
+- **머리 위 알약:** 상태 낱말이 먼저 읽히게 색 알약에 쓰고 로고는 작게.
+
+  | 상태 | 알약 |
   |---|---|
-  | `working` | 노란 `#e8b92e` 스피너 (`svg(spinner).spin(900)`) |
-  | `blocked` | 빨간 `#e5484d` 원 안의 흰 `?` |
-  | `done` | 채운 초록 `#30a46c` 원 |
-  | 서브에이전트 일하는 중 | `terminals()`에서 `parent`가 이 에이전트인 것: 속이 빈 원(그 프로그램의 `tile` 색, 없으면 팔레트) 안에 로고 |
+  | `blocked` | 빨강 `#e5484d` "답 필요", 깜빡이며 살짝 튐 |
+  | `working` | 노랑 `#e8b92e` 스피너 + "작업 중 n분"(`working_since` 기준) |
+  | `done` | 초록 `#30a46c` ✓ "완료 n분 전" |
+  | `idle` | 회색 "대기" |
 
-  Herdr 상태는 `working/blocked/done/idle`뿐이라 "문제로 멈춤"은 표시하지 않는다.
-- **열고 닫기:** 테이블 클릭 → `space.select` + `layout.show office-term` + 공유 상태 `office.open`. 같은 테이블·빈 바닥·`✕`·`Esc`(사무실에 포커스) → `layout.hide`. 장면은 칸 가운데에 두고, 칸 너비가 바뀌면 `left/top`을 `transition(380ms, ease-out)`으로 옮긴다(레이아웃 칸 자체는 한 번에 바뀐다).
-- **그래픽:** 지금은 도형. 로우폴리 모델을 부품별 투명 PNG(바닥 타일, 구역 러그, 테이블, 캐릭터)로 렌더해 개수에 맞춰 조립할 예정.
+  일하는 서브에이전트(`terminals()`에서 `parent`가 이 에이전트)가 있으면 `+n`. Herdr는 완료를 한 번 보면 `idle`로 바꾸지만, 사무실은 다음 일을 시작할 때까지 완료로 둔다.
+- **로고:** Claude Code는 Claude 별(`icons/claude.svg`, `#d97757`), Codex는 OpenAI 로고(`icons/openai.svg`). 그 밖에는 `program.icon`.
+- **열고 닫기:** 테이블 클릭 → `space.select` + `layout.show office-term` + 공유 상태 `office.open`. 같은 테이블·빈 바닥·`✕`·`Esc`(사무실에 포커스)·"전체 보기" → `layout.hide`.
+- **오버뷰:** 터미널 칸이 열려 있으면 사무실 칸 위 40%는 장면, 아래는 고른 워크트리의 오버뷰다. 레포 이름 · 브랜치·머신 · `↑n ↓n`(`git status -b -uno`, 10초마다), 입력 대기 에이전트가 있으면 "답하기" 버튼, 에이전트 줄(상태·이름·경과·창 제목)과 그 아래 이번 턴 활동(`activity.js`가 Claude Code 대화 기록 jsonl 끝 2MB에서 도구 호출을 읽는다), 서브에이전트 줄. 변경 파일 섹션은 없다(파일·커밋 앱이 맡는다).
+- **사무실 추가:** 머리줄 "+ 사무실 추가하기" → `pickFolder` → `space.new`.
 
-## 파일트리 (`mods/office-files`)
+### 스프라이트 (`sprites/`, `tools/render-office.py`)
 
-- 기본 `files` 모드를 바탕으로 한다. 포커스된 패인의 폴더(없으면 스페이스 폴더)를 보여 주고, 폴더별 500개·전체 5,000개까지.
-- **헤더:** 열린 폴더 아이콘 · 프로젝트 이름(굵게) · `~/경로`(흐림, 누르면 `open`; 미리보기 중엔 그 파일을 `open -R`).
-- **아이콘:** Material Icon Theme. `icons.json`은 `fileNames → fileExtensions(긴 확장자부터) → languageIds(확장자→언어 표) → file` 순으로 찾고, 라이트 테마면 `light` 표를 먼저 본다. 표는 모듈 변수에 두고, 비어 있으면 render에서 다시 읽는다(핫 리로드 대비).
-- **git 색:** `git status --porcelain -z --ignored=matching`. 수정 `#6897bb`, 추가 `#629755`, 새 파일·충돌 `#d1675a`, 삭제 `#8c8c8c`, 무시됨(자신이나 상위가 `!!`) `#a07850`.
-- **툴바:** 검색(`git ls-files -co --exclude-standard`, 없으면 `find`) · 숨김 파일 · gitignore 항목 · 새 파일 · 새 폴더 · 터미널 · 경로 복사 · (오른쪽) 펼치기/접기 · 다시 읽기. 새 파일 등은 마지막으로 누른 폴더 기준. 필터 상태는 저장한다.
-- **우클릭:** 빈 영역(맨 위 폴더) / 폴더 / 파일로 나뉜다.
-  - 파일 종류: `package.json` → 스크립트 실행 ▸·의존성 설치, 락 파일 → 다시 설치, `*.test|spec.*` → vitest 실행, `.sh/.py/.js/.ts` → 실행, `Makefile` → make 대상 ▸, `Dockerfile`·compose → 빌드·올리기·내리기, 이미지 → Quick Look, 압축 파일 → 풀기, `.env*` → `.env.example` 만들기. 패키지 매니저는 위로 올라가며 찾은 락 파일로.
-  - git 상태: 새 파일 → git에 추가·gitignore / 수정 → diff·기록·blame·stage·되돌리기 / stage됨 → staged diff·빼기 / 커밋됨 → 마지막 커밋·기록·blame / 무시됨 → 왜 무시되는지 / 충돌 → 내 쪽·상대 쪽·해결됨을 **맨 위에**.
-  - 공통: 다음으로 열기 ▸(기본 앱, 설치된 에디터, Finder, 터미널), 새 파일·폴더, 복사 ▸, 이름 바꾸기, 복제, (폴더) 압축, 휴지통(`trash`, 없으면 Finder).
-- 파일을 바꾼 뒤엔 공유 상태 `office-files.tick`을 바꿔 트리가 다시 읽게 한다. 오버레이의 "미리보기"는 `office-files.preview`로 알린다.
+사무실 그림은 Blender로 렌더한 아이소메트릭 투명 PNG를 겹쳐 그린다. 모든 층이 같은 카메라·같은 캔버스라 같은 좌표에 그대로 겹치면 맞는다.
 
-## 브랜치 · 커밋 (`mods/office-git`)
+```sh
+blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> office/mods/office/sprites [--sample]
+```
 
-- **브랜치 화면:** HEAD 줄 · 로컬(이름의 `/`로 폴더) · 원격(리모트별 폴더) · 태그(처음엔 접힘). 아이콘 색은 현재 `#e5739d`, 즐겨찾기·기본 `#e8b92e`, 나머지 `#6ca0dc`. 추적 정보는 `↑n`(초록)·`↓n`(파랑)·`원격 없음`(빨강).
-- **읽는 것:** `for-each-ref`(HEAD, symref, upstream, track), `worktree list --porcelain`, `branch --merged HEAD`, `status --porcelain -uno`. `.git` 폴더를 감시하고 15초마다도 다시 읽는다.
-- **툴바:** ☆/★ 즐겨찾기만 · 🔍 검색 · 가져오기 · 끌어오기(`↓n`, 추적 없거나 원격 없으면 숨김, 갈라졌으면 리베이스로) · 푸시(`↑n`, 추적 없으면 `push -u`, 갈라졌으면 비활성) · 새 브랜치 · 임시 저장(변경 없으면 비활성) · 임시 저장 목록 · 커밋 로그 · PR(`gh` 있을 때) · ⋯ 더보기(이름 변경, 태그, 상태, 병합된 브랜치 정리, 웹, lazygit) · (오른쪽) 펼치기/접기 · 다시 읽기. 즐겨찾기는 공유 상태 `office-git.favorites`에 레포별로.
-- **우클릭(로컬):** 맨 위에 상황별 "할 일" — 추적 없음 → 원격에 올리기 / 뒤처짐 → 끌어오기·빨리 감기 / 앞섬 → 푸시 / 갈라짐 → 리베이스·병합으로 끌어오기, 강제 푸시(`--force-with-lease`, 확인) / 원격 없음 → 다시 올리기·추적 정리. 체크아웃은 현재면 숨김, 다른 워크트리에 있으면 "워크트리 열기", 변경이 있으면 "임시 저장 후 체크아웃"도. 삭제는 병합됨 → 바로 삭제, 아니면 강제 삭제(확인), 현재·기본·다른 워크트리면 숨김. 그 밖에 로그, 즐겨찾기, 새 브랜치·워크트리, 비교 ▸, 합치기 ▸(병합됐으면 숨김), 복사 ▸, 이름 바꾸기(기본이면 숨김).
-- **우클릭(원격/태그):** 이미 로컬이 추적 중이면 "로컬로 체크아웃", 아니면 추적 브랜치 만들기. 원격에서 삭제(기본이면 숨김). 태그는 로그·새 브랜치·비교·복사.
-- **커밋 화면:** `git log <ref> -n400 --date-order`. 레인 그래프(줄 26px, 레인 14px, 색 `#7aa2f7 #a7c080 #e69875 #d699b6 #83c092 #dbbc7f #7fbbb3 #e67e80`), 머지 커밋은 속 빈 점. 제목 · ref 칩(태그 노랑, HEAD 분홍, 브랜치 파랑) · 작성자 · 날짜("오늘/어제 오후 3:06", 그 밖은 "26. 11. 9. 오후 1:02") · 짧은 해시. 검색은 제목·해시 앞부분·작성자.
-- 충돌·인증이 생길 수 있는 작업(비교, diff, 리베이스, 병합, 푸시, stash pop)은 새 터미널 탭에서 실행하고 터미널 칸을 연다.
+- `<에셋 폴더>`: Office_48_Standalone_Pack, Lowpoly_People_Standalone_Pack을 각각 `office/`, `people/`에 푼 폴더. 패키지의 스크립트는 실행하지 않고 GLB만 가져온다. `--sample`은 캐릭터 3명만 렌더한다.
+- 카메라: 정사영, 회전 (60, 0, 45), 캔버스 512px에 4.6m. 바닥 한 칸 3.6 × 4.2m.
+- 결과
+  - `table.png`, `seat<i>_empty.png`, `seat<i>_<캐릭터>.png`: 4인 벤치 책상, 자리별 빈 의자, 의자 + 앉아 타이핑하는 사람(테이블에 가려지는 부분은 holdout으로 투명). 캐릭터 12명.
+  - `boss_table.png`, `boss_seat_*.png`: 사장님방 책상과 자리.
+  - `prop_<이름>.png`: 화분·캐비닛·정수기·화이트보드·책장·휴지통.
+  - `room_floor.png`, `room_wall_xmin.png`, `room_wall_ymax.png`, `room_corner.png`: 방 바닥과 벽(벽 높이 2m). 테이블 캔버스의 두 배 크기 캔버스.
+  - `manifest.json`: 캔버스 크기, 월드 원점 픽셀, 월드 축의 화면 벡터(`ex`, `ey`, `ez`), 자리별 머리·바닥 위치, 테이블 클릭 영역, 사장님방·소품·방 정보.
+- 모드는 `manifest.json`을 한 번 읽어 모듈 변수에 두고, 방·사장님방 정보가 없는 예전 형식이면 다시 읽는다.
+
+## 앱 런처 (`mods/office-apps`)
+
+### 런처 (`main.js`)
+
+- **런처 화면:** 검색창(앱 이름·설명·id로 거름) + 앱 아이콘 격자(타일 56px, 앱 색 바탕 + 흰 아이콘 `apps/<id>.svg`). 오른쪽 위 ⚙는 앱 관리.
+- **앱 화면:** 위 막대 44px(`‹ 앱` · 타일 · 이름 · 앱의 `subtitle`) / 왼쪽 250px(`list`) / 오른쪽 나머지(`detail`, 바탕 `background`로 강조). `detail`이 `null`이면 "선택 내용이 없습니다 · 왼쪽에서 항목을 고르세요".
+- **앱 관리:** 앱마다 스위치. 끈 앱 목록은 공유 상태 `office-apps.disabled`(`{ id: true }`)에 둔다. 끈 앱은 격자에서 숨기고 인스턴스를 만들지 않으며, 끌 때 있던 인스턴스는 버린다.
+- **앱 인스턴스:** 켜진 앱을 처음 열 때(`go`) 만든다. 렌더 중에는 입력 상자 등을 만들 수 없어서 이벤트·명령 처리 시점에 만든다. 마지막으로 연 앱 id는 `localStorage`의 `app`.
+- **우클릭 메뉴:** 앱 아이콘 우클릭 → 오버레이 `launcherMenu`(열기 · 앱 끄기 · 앱 관리…). 오버레이는 모드의 새 복사본이라 상태를 나누지 않으므로, 고른 동작은 `run("office-apps.<명령>")`으로 런처에 돌려보낸다.
+- **명령**(`nextCommand`)
+
+  | 명령 | 하는 일 |
+  |---|---|
+  | `office-apps.home` | 런처로 |
+  | `office-apps.open-<id>` | 앱 열기 (`action` 앱이면 그 동작) |
+  | `office-apps.show:<경로>` | 파일 앱을 열고 그 파일을 보여 줌(프로젝트 기준 상대 경로) |
+  | `office-apps.manage` | 앱 관리 화면 |
+  | `office-apps.disable-<id>` | 앱 끄기 |
+
+  `herdr-app do office-apps.open-files`처럼 클릭 없이 시험할 때 쓴다.
+
+### 오버레이 역할
+
+오버레이는 `openOverlay({ mod: "office-apps", props: { role, ... } })`로 띄우고, 기본 내보내기(`OfficeApps`)가 `props.role`로 역할 클래스를 고른다. 역할이 없으면 런처다.
+
+| 역할 | 어디 | 하는 일 |
+|---|---|---|
+| `menu` | `menu.js` `Menu` | 파일트리 우클릭 메뉴 |
+| `confirm` | `menu.js` `Confirm` | 확인 창. `ACTIONS[props.action](props.ctx)`를 부른다 |
+| `prompt` | `files.js` | 이름 입력 창(새 파일·폴더·이름 바꾸기) |
+| `tip` | `files.js` | 툴바 툴팁 창 |
+| `launcherMenu` | `main.js` | 런처 앱 아이콘 우클릭 메뉴 |
+| `branch-menu`, `branch-prompt` | `branch.js` | 브랜치 우클릭 메뉴와 입력 창 |
+
+역할 표는 `files.js`의 `ROLES`와 `main.js`의 `ALL_ROLES`, 확인 창 동작 표는 `menu.js`의 `ACTIONS`다. 브랜치·PR·서버 앱은 이 공용 파일을 고치지 않고, 모듈이 불릴 때 자기 동작을 표에 더한다(`branch.*`, `pr.merge`·`pr.close`·`pr.checkout`, `serverRemove`). `main.js`가 모든 앱 파일을 import하므로 오버레이 복사본에서도 먼저 등록된다. 확인 창은 따로 뜨는 복사본이라 함수를 넘길 수 없고, `ctx`에는 값만 담는다.
+
+### 앱
+
+| 앱 (id) | 파일 | 내용 |
+|---|---|---|
+| 파일 (`files`) | `files.js`, `viewers.js`, `markdown.js`, `menu.js`, `viewers/` | 아래 참고 |
+| 브랜치 (`branch`) | `branch.js` | 왼쪽: 툴바(검색·가져오기·끌어오기·푸시·새 브랜치·임시 저장·더보기·다시 읽기) + 로컬/원격/태그. 오른쪽: 고른 브랜치의 추적 상태(원격·현재 브랜치 대비 앞섬/뒤처짐), 동작 버튼, 받을 커밋, 최근 커밋. `.git` 감시 + 15초마다 다시 읽음. 짧은 일(체크아웃·만들기·이름 변경·삭제)은 바로, 결과를 사람이 봐야 하는 일(끌어오기·푸시·병합·리베이스·원격 삭제)은 새 터미널 탭에서. 위험한 동작은 확인 창. |
+| 커밋 (`commit`) | `commit.js`, `commit/git.js` | 왼쪽: 검색 + 현재 브랜치 커밋 목록(200개씩, 더 불러오기), 맨 위에 "커밋 안 된 변경"(있을 때만). 오른쪽: 제목·본문·작성자·시각·해시, 바뀐 파일, 고른 파일의 diff. git은 `.git` 아래에 쓰지 않는 옵션으로 읽기만 한다. 파싱은 `commit/git.js`(herdr를 import하지 않아 node로 시험 가능). |
+| PR (`pr`) | `pr.js` | `gh`로 왼쪽: 필터(열림·내 PR·리뷰 요청·닫힘) + 목록, 오른쪽: 상태, base ← head, 본문, 체크, 리뷰·코멘트, 바뀐 파일, 동작. 머지(`--match-head-commit`)·닫기·체크아웃은 확인 창을 거친다(구현됨). 동작 뒤 공유 상태를 바꿔 다시 읽는다. |
+| 에이전트 (`agent`) | `agent.js`, `agent/activity.js`, `agent/parse.js` | 왼쪽: 에이전트 목록, 서브에이전트(`hc run`으로 띄운 터미널은 `terminals()`의 `parent`, Claude Code 안의 서브에이전트는 `hc get`의 records)는 부모 아래 들여쓴다. 오른쪽: 이번 턴의 요청·마지막 말·도구 흐름·서브에이전트·고친/읽은 파일, 터미널로 이동·엿보기. 기록은 터미널 앞쪽 프로세스 pid → `~/.claude/sessions/<pid>.json`의 sessionId로 찾고, 못 찾으면 그 폴더의 가장 최근 jsonl. 이 앱이 그려지는 동안만 타이머가 돈다(고른 에이전트 작업 중 4초, 다른 에이전트 작업 중 15초, 모두 쉬면 1분). `office/activity.js`를 옮겨 와 고친 것이다(다른 모드라 import로 나눠 쓸 수 없다). |
+| 서버 (`server`) | `server.js`, `server/add.js`, `server/resources.js` | 왼쪽: 툴바(기기 추가·다시 읽기) + 머신 목록(이 컴퓨터 + `hc machine ls`, 연결 상태, 스페이스 수). 오른쪽: 주소·연결 방식·호스트·hc 버전, 그 머신의 스페이스·에이전트, 새 스페이스·새 터미널·제거(확인 창 → `hc machine rm`). 리소스는 칸이 넓으면 오른쪽 열(260px), 좁으면 정보 줄 아래. 기기 추가·제거는 구현됨. |
+| 설정 (`settings`) | `main.js` | `action` 앱: 들어가지 않고 `run("app.settings")`로 Herdr 설정 창을 연다. |
+
+#### 파일 앱
+
+- 기본 `files` 모드를 바탕으로 한다. 포커스된 패인의 폴더(없으면 스페이스 폴더)를 보여 주고, 폴더별 500개·전체 5,000개까지. 폴더 감시 + 10초마다 다시 읽음.
+- **부제:** `~/경로`(누르면 `open`).
+- **아이콘:** Material Icon Theme(`icons/`, `icons.json`, `tools/build-icons.py`로 생성). `fileNames → fileExtensions(긴 확장자부터) → languageIds(확장자→언어 표) → file` 순으로 찾고, 라이트 테마면 `light` 표를 먼저 본다.
+- **git 색:** `git status --porcelain -z --ignored=matching`. 수정 파랑, 추가 초록, 새 파일·충돌 빨강, 삭제 회색, 무시됨 갈색.
+- **툴바:** 검색(`git ls-files -co --exclude-standard`, 없으면 `find`) · 숨김 파일 · gitignore 항목 · 새 파일 · 새 폴더 · 터미널 · 경로 복사 · 펼치기/접기 · 다시 읽기. 필터 상태는 `localStorage`.
+- **우클릭(`menu.js`):** 빈 영역 / 폴더 / 파일, 파일 종류(`package.json` 스크립트, 테스트, 실행 파일, `Makefile`, Docker, 이미지, 압축, `.env*`), git 상태(새 파일·수정·stage됨·커밋됨·무시됨·충돌)마다 항목이 바뀐다. 공통: 다음으로 열기 ▸, 새 파일·폴더, 복사 ▸, 이름 바꾸기, 복제, 압축, 휴지통(`trash`, 없으면 Finder). 파일을 바꾼 뒤엔 공유 상태 `office-apps.tick`을 바꿔 트리가 다시 읽게 한다.
+- **뷰어(`viewers.js`):** 확장자로 미리보기 종류를 고른다. 추가 설치 없이 macOS 기본 도구와 Python 표준 라이브러리만 쓴다. 만든 미리보기는 `data/office-apps/preview/<경로·수정 시각 해시>/`에 두고 같은 파일은 다시 만들지 않는다.
+
+  | 종류 | 대상 |
+  |---|---|
+  | `code` | 코드·텍스트(읽기 전용 편집기, 색 입힘), JSON, 압축 파일 목록(`unzip`, `tar`), 16진수 덤프(`xxd`) |
+  | `md` | 마크다운(`markdown.js`) |
+  | `pages` | 이미지, `sips`로 바꾸는 이미지(HEIC·PSD·RAW 등), PDF(`viewers/pdf.swift`, 처음 쓸 때 `xcrun swiftc`로 `data/office-apps/bin/pdfpages`에 컴파일, 실패하면 `swift`로 실행), Quick Look(`qlmanage`) 미리보기 |
+  | `table` | CSV·TSV, 엑셀(`viewers/office.py`) |
+  | `slides` | 파워포인트(`viewers/office.py`) |
+
+  워드·RTF 등은 `textutil`로 글을 뽑아 마크다운으로 보여 주고, 오디오는 `mdls` 정보와 Quick Look 그림을 함께 보여 준다.
+- **마크다운(`markdown.js`):** `TextView.markdown`이 그리는 것(표·체크박스·취소선·자동 링크·인용)은 그대로 넘기고, 못 그리는 것만 블록으로 떼어 낸다: 코드 블록(읽기 전용 편집기로 색), `> [!NOTE]` 알림, 그림만 있는 줄(여러 줄 HTML로 감싼 그림 포함, 배지는 한 줄에 나란히). 각주는 위첨자 번호로 바꾸고 내용은 문서 끝에 모은다. 원격 그림은 `curl`로 받아 캐시한다.
+- **글꼴:** 코드·마크다운 뷰어는 `D2Coding`(`CODE_FONT`), 나머지 패널은 레이아웃의 `Pretendard GOV`.
+
+### 새 앱 추가하기
+
+1. **앱 클래스**를 `mods/office-apps/<id>.js`에 만든다. 런처가 부르는 메서드:
+
+   | 메서드 | 필수 | 하는 일 |
+   |---|---|---|
+   | `init(props, cx)` | 예 | 처음 열 때 한 번. `props`는 `{}`, `cx`는 런처의 것이다. 타이머(`cx.timer.every`)·비동기 작업(`cx.spawn`)은 여기서 시작하고, 바뀌면 `cx.notify()` |
+   | `list(cx, t)` | 예 | 왼쪽 250px 칸의 내용(툴바 + 목록). `t`는 `theme()` |
+   | `detail(cx, t)` | 아니오 | 오른쪽 칸의 내용. `null`이면 "선택 내용이 없습니다" |
+   | `subtitle(t)` | 아니오 | 위 막대의 앱 이름 옆 부제 |
+
+   지금 스페이스를 보는 앱은 파일·브랜치 앱과 같은 규칙(포커스된 패인의 폴더, 없으면 스페이스 폴더, 다른 머신이면 `on`)을 따른다.
+2. **`main.js`의 `APPS`에 등록**한다: `{ id, name, desc, color, make: () => new XxxApp() }`. 들어가지 않고 동작만 하는 앱은 `make` 대신 `action: () => ...`. `make`도 `action`도 없으면 격자에는 보이되 들어가면 "준비 중인 앱입니다"가 나온다. 파일 맨 위에 import를 더한다.
+3. **아이콘** `apps/<id>.svg`를 둔다. 런처가 앱 색 타일 위에 `text_color("#ffffff")`로 칠하므로 단색 SVG로 그린다(지금 아이콘들과 같은 형식).
+4. **확인 창**이 필요하면 지금은 `menu.js`의 `ACTIONS`에 동작을 등록하는 방식이다. 모듈 최상위(함수 밖)에 `ACTIONS["<id>.<동작>"] = (ctx) => ...`를 두고, `openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", action, title, detail, ctx } })`로 띄운다. `ctx`에는 값만 담는다. 새 오버레이 역할이 필요하면 같은 방식으로 `files.js`의 `ROLES`에 더한다(`branch.js` 끝 참고).
+5. `herdr-app check office/mods/office-apps` → `./install.sh` → `herdr-app do office-apps.open-<id>` → `herdr-app shot`, `herdr-app status`의 errors 확인.
 
 ## LLM 사용량 (`mods/office-usage`)
 
@@ -100,12 +185,17 @@ root  column · padding 8 · gap 8 · background canvas
 - **프로바이더 머리줄:** `⠿` 손잡이(끌어서 순서), 펼침 화살표, 로고(Claude는 Anthropic 별 `#d97757`, Codex는 OpenAI, Grok은 글자색), 🌐 사용량 웹페이지, 접혀도 보이는 최대 사용률.
 - **툴바:** 펼치기/접기 · 정렬(사용률순 ↔ 내 순서) · 순서 초기화(내 순서를 바꿨을 때만) · ⏱ 주기(1·5·15·30분, 버튼에 글자) · 흘리기 켜기/끄기 · (오른쪽) 새로 고침(읽는 동안 회전). 설정은 `localStorage`.
 
+## `mods/office-git` (레이아웃에서 쓰지 않음)
+
+예전 아래 칸의 독립 브랜치·커밋 그래프 모드다. 레포에 남아 있지만 지금 레이아웃은 쓰지 않고, 브랜치 앱(`office-apps/branch.js`)의 이식 원본이다. `install.sh`는 `mods/` 아래 폴더를 모두 복사하므로 설치본에는 들어간다. 예전 버전을 설치했던 곳에는 `mods/office-files`(지금의 `office-apps` 이전 이름)도 남아 있을 수 있다.
+
 ## 파일
 
 - `layouts/office.json`: 레이아웃
-- `mods/office/`: 사무실과 터미널 막대
-- `mods/office-files/`: 파일트리(`main.js`), 우클릭 메뉴·확인 창(`menu.js`), 아이콘(`icons/`, `icons.json`, MIT 라이선스)
-- `mods/office-git/`: 브랜치·커밋(`main.js`), 메뉴·입력·확인 창과 git 동작(`actions.js`)
+- `mods/office/`: 사무실과 터미널 막대(`main.js`), 오버뷰 활동 읽기(`activity.js`), 스프라이트(`sprites/`), 로고·활동 아이콘(`icons/`), 패널 글꼴(`fonts/`, OFL)
+- `mods/office-apps/`: 런처(`main.js`), 앱(`files.js`, `branch.js`, `commit.js`, `pr.js`, `agent.js`, `server.js`와 같은 이름 폴더), 파일 우클릭 메뉴·확인 창·`ACTIONS`(`menu.js`), 뷰어(`viewers.js`, `markdown.js`, `viewers/`), 앱 아이콘(`apps/`), 파일 아이콘(`icons/`, `icons.json`, MIT 라이선스)
 - `mods/office-usage/`: 사용량(`main.js`), Grok 토큰 갱신(`grok_refresh.py`), 로고(`icons/`)
-- `../tools/build-icons.py`: Material Icon Theme 패키지에서 아이콘과 `icons.json` 생성
-- `../install.sh`: 위 파일들을 `~/.config/herdr-app`에 복사
+- `mods/office-git/`: 쓰지 않는 예전 모드(브랜치 앱의 이식 원본)
+- `../tools/render-office.py`: 사무실 스프라이트 렌더(Blender)
+- `../tools/build-icons.py`: Material Icon Theme 패키지에서 파일 아이콘과 `icons.json` 생성
+- `../install.sh`: 위 파일들 중 바뀐 것만 `~/.config/herdr-app`에 복사
