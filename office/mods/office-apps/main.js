@@ -6,7 +6,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { props, theme, shared, setShared, nextCommand } from "herdr";
+import { props, theme, shared, setShared, nextCommand, run } from "herdr";
 import { FilesApp, ROLES } from "./files.js";
 import { BranchApp } from "./branch.js";
 import { CommitApp } from "./commit.js";
@@ -16,7 +16,7 @@ import { ServerApp } from "./server.js";
 
 const ME = "mods/office-apps";
 const DISABLED = "office-apps.disabled";   // { 앱 id: true } — 끈 앱
-// 앱 목록. make가 없는 앱은 아직 준비 중(격자에는 보이되 들어가면 안내만).
+// 앱 목록. make가 없는 앱은 아직 준비 중(격자에는 보이되 들어가면 안내만). action이 있는 앱은 들어가지 않고 그 동작만 한다.
 const APPS = [
   { id: "files", name: "파일", desc: "파일트리와 뷰어(코드·마크다운·이미지)", color: "#3d7de5", make: () => new FilesApp() },
   { id: "branch", name: "브랜치", desc: "로컬·원격 브랜치 관리", color: "#2f9e6f", make: () => new BranchApp() },
@@ -24,6 +24,7 @@ const APPS = [
   { id: "pr", name: "PR", desc: "풀 리퀘스트 목록과 리뷰", color: "#8b5cf6", make: () => new PrApp() },
   { id: "agent", name: "에이전트", desc: "에이전트와 서브에이전트가 하는 일", color: "#d97757", make: () => new AgentApp() },
   { id: "server", name: "서버", desc: "Herdr에 등록한 머신(서버) 관리", color: "#4f8fa8", make: () => new ServerApp() },
+  { id: "settings", name: "설정", desc: "Herdr 설정 창 열기", color: "#6b7280", action: () => run("app.settings") },
 ];
 
 class Launcher {
@@ -51,6 +52,8 @@ class Launcher {
 
   // 앱 열기. 앱 인스턴스는 여기(이벤트·명령 처리 시점)에서 만든다: 렌더 중에는 입력 상자 등을 만들 수 없다.
   go(id, cx) {
+    const act = APPS.find((a) => a.id === id)?.action;
+    if (act && !this.disabled()[id]) { act(); return; }
     this.app = id && !this.disabled()[id] ? id : null;
     this.managing = false;
     const def = APPS.find((a) => a.id === this.app);
@@ -119,7 +122,7 @@ class Launcher {
             .child(this.tile(a, 32, t))
             .child(v_flex().flex_1().min_w(0).gap(1)
               .child(div().text_size(13).font_semibold().text_color(on ? t.foreground : t.muted).child(a.name))
-              .child(div().truncate().text_size(12).text_color(t.muted).child(a.desc + (a.make ? "" : " · 준비 중"))))
+              .child(div().truncate().text_size(12).text_color(t.muted).child(a.desc + (a.make || a.action ? "" : " · 준비 중"))))
             // 스위치
             .child(div().w(36).h(20).flex_none().rounded(10).bg(on ? t.accent : t.border).p(2).flex().when(on, (el) => el.justify_end())
               .child(div().size(16).rounded_full().bg("#ffffff")));
