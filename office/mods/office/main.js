@@ -283,8 +283,8 @@ class Floor {
       });
       // 명패: 왼쪽 벽 윗부분
       // 화면에서 왼쪽 벽 앞쪽 윗부분은 가구 뒤에 겹치지 않는 빈 벽면이다(첫 줄 테이블 중심보다 0.9m 앞).
-      const [px0, py0] = at(zx - CX / 2, zy - 0.9);
-      const zh = (M.wall ?? 1.2) - 0.45;
+      const [px0, py0] = at(zx - CX / 2, zy + CY / 2 - 1.5);   // 벽 뒤쪽 윗부분(화면 왼쪽 위). 이 높이면 칸막이·모니터보다 위
+      const zh = (M.wall ?? 1.2) - 0.3;   // 벽 꼭대기 바로 아래
       plates.push({ key, z, j, x: px0 + ez[0] * zh, y: py0 + ez[1] * zh });
       // 소품: 구역 이름을 시드로 무작위(다시 그려도 같은 자리). 앞쪽(화면 아래)은 비운다.
       const L = zx - CX / 2 + 0.35, R = zx + (cols - 1) * CX + CX / 2 - 0.35, B = zy + CY / 2 - 0.35, F = zy - (rows - 1) * CY - CY / 2 + 0.35;
