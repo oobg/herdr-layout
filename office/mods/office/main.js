@@ -165,7 +165,7 @@ class Floor {
       .on_size_change((size, cx) => { this.box = size; cx.notify(); })
       .track_focus(this.h)
       .on_key_down((e) => { if (e.key === "escape") closeTerm(); })
-      .on_click(() => { this.h.focus(); if (open) closeTerm(); })
+      .on_click(() => { this.h.focus(); })
       .child(SPR ? this.scene(zones, ags, terms, open, { width: box.width, height: sceneH }, t, cx) : div().absolute().top(40).left(14).text_color(t.dim).child("사무실을 불러오는 중"))
       // 머리줄은 장면 위에: 확대했을 때 다른 구역이 덮지 않게 배경을 깐다.
       .child(h_flex().absolute().top(0).left(0).w(box.width).h(36).px(14).gap(8).items_center().bg(`${t.surface}e6`)
