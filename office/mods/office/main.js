@@ -23,6 +23,9 @@ const COLS = 3;                       // 구역 한 줄에 놓는 테이블 수
 const EDGE = ["#7aa2d6aa", "#8cc0a0aa", "#d69a7aaa", "#b69ad6aa", "#d6c27aaa", "#7ac6c6aa"]; // 구역 테두리
 const ZONE = ["#7aa2d633", "#8cc0a033", "#d69a7a33", "#b69ad633", "#d6c27a33", "#7ac6c633"]; // 구역 바닥 색
 let SPR = null, SPR_LOADING = false;  // sprites/manifest.json
+// 구역 이름으로 시드를 정한 난수(mulberry32)와 섞기.
+function seeded(key) { let a = hash(key) || 1; return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+function shuffle(list, rnd) { const a = [...list]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 function hash(s) { let h = 0; for (const ch of String(s)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return h; }
 // 셔츠·서브에이전트 색. gpui는 hsl()을 받지 않아 hex로 둔다.
 const PALETTE = ["#7aa2d6", "#8cc0a0", "#d69a7a", "#b69ad6", "#d6c27a", "#7ac6c6", "#d67aa2", "#a2b07a"];
@@ -117,6 +120,9 @@ class Floor {
     const zones = [...groups.entries()].sort(([a], [b]) => (a === "~other") - (b === "~other"));
     const open = shared(OPEN);
     const box = this.box ?? { width: 0, height: 0 };
+    // 터미널 칸이 열려 있으면 위는 장면, 아래는 고른 워크트리의 오버뷰.
+    const sel = open ? spaces().find((x) => x.id === open) : null;
+    const sceneH = sel ? Math.max(180, Math.round(box.height * 0.4)) : box.height;
 
     return div().id("office-floor").relative().size_full().bg(t.surface).text_size(12).overflow_hidden()
       .on_size_change((size, cx) => { this.box = size; cx.notify(); })
@@ -126,7 +132,112 @@ class Floor {
       .child(h_flex().absolute().top(12).left(14).gap(8).items_center()
         .child(div().text_size(14).font_semibold().text_color(t.foreground).child("OFFICE"))
         .child(div().text_color(t.dim).child(`${ags.length}명 근무 중`)))
-      .child(SPR ? this.scene(zones, ags, terms, open, box, t) : div().absolute().top(40).left(14).text_color(t.dim).child("사무실을 불러오는 중"));
+      .child(SPR ? this.scene(zones, ags, terms, open, { width: box.width, height: sceneH }, t) : div().absolute().top(40).left(14).text_color(t.dim).child("사무실을 불러오는 중"))
+      .when(Boolean(sel), (el) => el.child(div().absolute().left(0).top(sceneH).w(box.width).h(Math.max(0, box.height - sceneH))
+        .child(this.overview(sel, groups, ags, terms, cx, t))));
+  }
+
+  // ── 오버뷰: 고른 워크트리 한눈에 ───────────────────────────
+  // git 상태(브랜치, 앞섬·뒤처짐, 바뀐 파일)는 열려 있는 동안 10초마다 읽는다.
+  gitFor(s, cx) {
+    const cwd = this.where(s, panes());
+    const k = `${s.id}|${cwd}`, g = this.git?.[k];
+    if (!cwd || this.gitBusy?.has(k) || (g && Date.now() - g.at < 10000)) return g;
+    (this.gitBusy ??= new Set()).add(k);
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec("git", ["--no-optional-locks", "status", "--porcelain=v1", "-b", "-uall"], { cwd, on: s.machine });
+        const lines = r.code === 0 ? r.stdout.split("\n").filter(Boolean) : [];
+        const head = lines[0]?.startsWith("## ") ? lines.shift().slice(3) : "";
+        const files = lines.map((l) => ({ xy: l.slice(0, 2), path: l.slice(3) }));
+        (this.git ??= {})[k] = { at: Date.now(), ok: r.code === 0, files,
+          ahead: Number(/ahead (\d+)/.exec(head)?.[1] ?? 0), behind: Number(/behind (\d+)/.exec(head)?.[1] ?? 0), gone: /\[gone\]/.test(head),
+          upstream: /\.\.\.(\S+)/.exec(head)?.[1] ?? null };
+      } catch { (this.git ??= {})[k] = { at: Date.now(), ok: false, files: [] }; }
+      this.gitBusy.delete(k);
+      cx.notify();
+    });
+    return g;
+  }
+
+  overview(s, groups, ags, terms, cx, t) {
+    const mine = ags.filter((a) => a.space === s.id);
+    const g = this.gitFor(s, cx) ?? { files: [], ahead: 0, behind: 0 };
+    const repo = [...groups.values()].find((z) => z.spaces.some((x) => x.id === s.id))?.name ?? s.name;
+    const working = mine.filter((a) => a.status === "working"), blocked = mine.filter((a) => a.status === "blocked"), done = mine.filter((a) => a.status === "done");
+    const kids = (a) => terms.filter((x) => x.parent === a.address && x.status);
+    const tabOf = (a) => s.tabs.find((x) => x.id === a.tab);
+    const since = (ms) => { if (!ms) return ""; const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 60 ? `${m}분` : `${Math.floor(m / 60)}시간 ${m % 60}분`; };
+    const goto = (a) => () => { run("agent.focus", { terminal: a.address }); };
+
+    // 지금 챙길 일 하나: 입력 대기 > 원격 뒤처짐 > 커밋 안 한 변경 > 순조로움
+    const alert = blocked.length ? { color: C.blocked, title: `${blocked.length}명이 입력을 기다립니다`, body: blocked.map((a) => a.program?.name ?? a.app).join(", "), action: ["보러 가기", goto(blocked[0])] }
+      : g.behind ? { color: C.working, title: `원격보다 ${g.behind}개 뒤처졌습니다`, body: g.upstream ?? "", action: null }
+      : g.files.length ? { color: "#7aa2f7", title: `커밋하지 않은 변경 ${g.files.length}개`, body: g.files.slice(0, 2).map((f) => f.path.split("/").pop()).join(", "), action: null }
+      : { color: C.done, title: "모두 순조롭습니다", body: mine.length ? `${mine.length}명이 이 워크트리에서 일하고 있습니다` : "이 워크트리에 에이전트가 없습니다", action: null };
+
+    const stat = (n, label, color) => v_flex().flex_1().py(8).items_center().gap(2).border_r_1().border_color(t.border)
+      .child(div().text_size(17).font_semibold().text_color(color ?? t.foreground).child(String(n)))
+      .child(div().text_size(11).text_color(color ?? t.muted).child(label));
+    const STATUS = { working: ["작업 중", C.working], blocked: ["입력 대기", C.blocked], done: ["완료", C.done], idle: ["대기", t.dim] };
+    const row = (a, depth) => {
+      const [label, color] = STATUS[a.status] ?? ["", t.dim];
+      const tab = tabOf(a);
+      return h_flex().id(`ov-${a.address}`).h(28).pl(depth * 18).pr(6).gap(8).items_center().rounded(5).cursor_pointer()
+        .hover((st) => st.bg(t.hover)).on_click(goto(a))
+        .child(div().w(14).h(1).flex_none().bg(a.status === "blocked" ? C.blocked : t.border))
+        .child(div().size(7).flex_none().rounded_full().bg(color))
+        .child(programIcon(a.program, 15, t))
+        .child(div().flex_none().font_semibold().text_color(t.foreground).child(a.program?.name ?? a.app ?? "agent"))
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(a.title ?? ""))
+        .child(div().flex_none().text_size(11).text_color(color).child(a.status === "working" && tab?.working_since ? `${label} ${since(tab.working_since)}` : label));
+    };
+    const section = (title, color, items) => items.length ? v_flex().gap(2).pt(10)
+      .child(div().px(2).pb(2).text_size(11).font_semibold().text_color(color).child(`${title} · ${items.length}`))
+      .children(items) : null;
+    const fileRow = (f) => h_flex().h(24).px(2).gap(8).items_center()
+      .child(div().size(6).flex_none().rounded_full().bg(f.xy === "??" ? "#d1675a" : f.xy.includes("A") ? "#629755" : "#6897bb"))
+      .child(div().flex_none().text_color(t.foreground).child(f.path.split("/").pop()))
+      .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/")) : ""));
+
+    return v_flex().size_full().border_t_1().border_color(t.border).bg(t.chrome).text_size(12)
+      // 머리줄
+      .child(h_flex().h(40).px(12).gap(8).items_center().flex_none()
+        .child(div().font_semibold().text_size(14).text_color(t.foreground).child(repo))
+        .child(div().px(6).py(1).rounded(4).bg(t.raised).text_size(11).text_color(t.muted).truncate()
+          .child(`${s.branch ?? "브랜치 없음"} · ${s.machine ?? "이 컴퓨터"}`)))
+      .child(v_flex().id("ov-body").flex_1().min_h(0).overflow_y_scrollbar().px(12).pb(10).gap(10)
+        // 알림 카드
+        .child(h_flex().gap(10).items_center().p(10).rounded(8).border_1().border_color(`${alert.color}66`).bg(`${alert.color}14`)
+          .child(div().size(9).flex_none().rounded_full().bg(alert.color))
+          .child(v_flex().flex_1().min_w(0).gap(2)
+            .child(div().font_semibold().text_color(t.foreground).child(alert.title))
+            .child(div().truncate().text_size(11).text_color(t.muted).child(alert.body)))
+          .when(Boolean(alert.action), (el) => el.child(div().id("ov-alert").px(10).py(4).rounded(6).bg(t.foreground).text_color(t.background)
+            .font_semibold().cursor_pointer().on_click(alert.action[1]).child(alert.action[0]))))
+        // 숫자 카드
+        .child(h_flex().rounded(8).border_1().border_color(t.border).overflow_hidden()
+          .child(stat(mine.length, "에이전트"))
+          .child(stat(working.length, "작업 중", working.length ? C.working : null))
+          .child(stat(blocked.length, "입력 대기", blocked.length ? C.blocked : null))
+          .child(stat(g.files.length, "변경", g.files.length ? "#7aa2f7" : null))
+          .child(stat(g.gone ? "–" : `${g.ahead}/${g.behind}`, "↑앞섬/↓뒤처짐")))
+        // 에이전트 트리(서브에이전트는 들여서)
+        .child(v_flex().gap(1).children(mine.length ? mine.flatMap((a) => [row(a, 0), ...kids(a).map((k) => row({ ...k, program: k.program, app: k.report?.app, title: k.name ?? "", tab: a.tab }, 1))])
+          : [div().py(6).text_color(t.dim).child("에이전트가 없습니다. 테이블에 새 에이전트를 앉혀 보세요.")]))
+        .children([
+          section("입력 대기", C.blocked, blocked.map((a) => row(a, 0))),
+          section("완료", C.done, done.map((a) => row(a, 0))),
+          section("바뀐 파일", "#7aa2f7", g.files.slice(0, 8).map(fileRow)),
+        ].filter(Boolean)))
+      // 바닥줄
+      .child(h_flex().h(36).px(12).gap(8).items_center().flex_none().border_t_1().border_color(t.border)
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(C.working)
+          .child(`${s.branch ?? ""} · 변경 ${g.files.length}${g.ahead ? ` · ↑${g.ahead}` : ""}${g.behind ? ` · ↓${g.behind}` : ""}`))
+        .child(div().id("ov-log").px(8).py(3).rounded(6).border_1().border_color(t.border).text_size(11).text_color(t.foreground).cursor_pointer()
+          .hover((st) => st.bg(t.hover))
+          .on_click(() => setShared("office-git.show", { name: s.branch, ref: "HEAD", top: this.where(s, panes()), at: Date.now() }))
+          .child("커밋 로그")));
   }
 
   // 아이소메트릭 장면. 구역(레포)마다 한 줄, 그 줄에 워크트리 테이블을 월드 x축으로 늘어놓는다.
@@ -148,13 +259,21 @@ class Floor {
         for (const [side, cc, rr] of [["xmin", c - 1, r], ["xmax", c + 1, r], ["ymax", c, r - 1], ["ymin", c, r + 1]])
           if (!has(cc, rr)) edges.push({ j, side, x: px - ox, y: py - oy });
       });
-      // 소품: 뒤 모서리(화면 위) 화분, 오른쪽 모서리 정수기, 왼쪽 위 변 가운데 화이트보드.
-      // 앞쪽(화면 아래)은 브랜치 이름표와 의자를 가리지 않게 비워 둔다.
+      // 소품: 구역마다 다르게, 구역 이름으로 시드를 정해 무작위로(새로 그려도 같은 자리).
+      // 자리는 뒤·왼쪽·오른쪽 가장자리만 쓴다. 앞쪽(화면 아래)은 이름표와 의자를 가리지 않게 비운다.
       const L = -CX / 2 + 0.35, R = (cols - 1) * CX + CX / 2 - 0.35, B = -rowY + CY / 2 - 0.35, F = -(rowY + (rows - 1) * CY) - CY / 2 + 0.35;
       const put = (name, wx, wy) => { const [px, py] = at(wx, wy); props.push({ name, x: px - ox, y: py - oy }); };
-      put("plant", L, B);
-      put("water", R, B);
-      put("whiteboard", L, (B + F) / 2);
+      const rnd = seeded(key);
+      const spots = [
+        { at: [L, B], corner: true }, { at: [R, B], corner: true }, { at: [L, F], corner: true },
+        ...Array.from({ length: rows }, (_, r) => ({ at: [L, -(rowY + r * CY)], edge: "left" })),
+        ...Array.from({ length: cols }, (_, c) => ({ at: [c * CX, B], edge: "back" })),
+      ];
+      const want = 2 + Math.floor(rnd() * (Math.min(4, spots.length - 1)));
+      for (const sp of shuffle(spots, rnd).slice(0, want)) {
+        const pool = sp.corner ? ["plant", "plant", "water", "bin", "cabinet"] : ["whiteboard", "bookcase", "cabinet", "plant"];
+        put(pool[Math.floor(rnd() * pool.length)], ...sp.at);
+      }
       rowY += rows * CY + ZONE_GAP;
     });
     if (!tables.length) return div();
@@ -187,13 +306,6 @@ class Floor {
       const [l, tp] = P(e.x + fx, e.y + fy);
       els.push(svg(`${SPRITES}/edge_${e.side}.svg`).absolute().left(l).top(tp).w(fw * k).h(fh * k).text_color(EDGE[e.j % EDGE.length]));
     }
-    // 2) 구역 이름: 그 구역 첫 칸의 왼쪽 모서리 위.
-    for (const [key, z] of zones) {
-      const tb = tables.find((x) => x.key === key);
-      const [l, tp] = P(tb.x + fx, tb.y + fy + fh * 0.5);
-      els.push(div().absolute().left(l).top(tp - 22).px(6).py(1).rounded(4).bg(`${t.chrome}cc`).text_size(12).font_semibold()
-        .text_color(t.foreground).whitespace_nowrap().child(z.name));
-    }
     // 3) 테이블과 자리: 화면 뒤쪽(위)부터. 자리 층은 테이블에 가려지는 부분이 이미 지워져 있어 테이블 뒤에 그려도 맞다.
     const seated = [], S = M.size * k;
     const things = [...tables.map((tb) => ({ tb, y: tb.y })), ...props.map((pr) => ({ pr, y: pr.y }))].sort((a, b) => a.y - b.y);
@@ -217,7 +329,15 @@ class Floor {
     // 4) 말풍선: 머리 위. 모든 스프라이트 위에 그린다.
     for (const w of seated) {
       const [l, tp] = P(w.x, w.y);
-      els.push(div().absolute().left(l - 21).top(tp - 54).child(this.bubble(w.a, terms, t)));
+      const z = Math.round(Math.max(18, Math.min(28, 40 * k)));   // 로고 크기: 장면 배율을 따르되 너무 작아지지 않게
+      els.push(div().absolute().left(l - z / 2 - 9).top(tp - z - 30).child(this.bubble(w.a, terms, t, z)));
+    }
+    // 구역 이름: 그 구역 첫 칸의 왼쪽 모서리 위. 소품·사람에 가리지 않게 스프라이트 위에 그린다.
+    for (const [key, z] of zones) {
+      const tb = tables.find((x) => x.key === key);
+      const [l, tp] = P(tb.x + fx, tb.y + fy + fh * 0.5);
+      els.push(div().absolute().left(l).top(tp - 22).px(6).py(1).rounded(4).bg(`${t.chrome}cc`).text_size(12).font_semibold()
+        .text_color(t.foreground).whitespace_nowrap().child(z.name));
     }
     // 5) 테이블 이름과 클릭 영역(이미지는 투명한 곳도 사각형으로 눌리므로 매니페스트의 영역을 따로 둔다).
     for (const tb of tables) {
@@ -249,12 +369,14 @@ class Floor {
   }
 
   // 말풍선: 흰 바탕에 에이전트 로고, 우상단에 상태 뱃지. 아래 꼬리로 머리를 가리킨다.
-  bubble(a, terms, t) {
+  // 테두리 색이 곧 상태(작업 중 노랑·입력 대기 빨강·완료 초록·대기 회색)라, 뱃지가 작아도 멀리서 읽힌다.
+  bubble(a, terms, t, z = 24) {
+    const ring = { working: C.working, blocked: C.blocked, done: C.done }[a.status] ?? "#9aa0a6";
     return v_flex().items_center()
-      .child(div().relative().p(7).rounded(10).bg("#ffffff").border_1().border_color("#00000022")
-        .child(programIcon(a.program, 24, t))
-        .child(div().absolute().top(-7).right(-7).child(this.badge(a, terms, t, 16))))
-      .child(div().w(3).h(9).bg("#ffffff"));
+      .child(div().relative().p(Math.round(z * 0.28)).rounded(Math.round(z * 0.45)).bg("#ffffff").border_2().border_color(ring).shadow_md()
+        .child(programIcon(a.program, z, t))
+        .child(div().absolute().top(-8).right(-8).child(this.badge(a, terms, t, Math.round(z * 0.7)))))
+      .child(div().w(3).h(10).bg(ring));
   }
 
   badge(a, terms, t, z = 11) {
