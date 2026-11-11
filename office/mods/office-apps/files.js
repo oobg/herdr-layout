@@ -207,15 +207,7 @@ export class FilesApp {
       try { v = await preview(abs, ext, on); } catch (e) { v = { kind: "error", message: `미리보기를 만들지 못했습니다: ${String(e?.message ?? e).slice(0, 80)}` }; }
       if (!latest()) return;
       this.releaseEditors();   // 만일을 위해: 남아 있는 상태가 있으면 덮기 전에 놓아 준다
-      const t = theme(), syntax = { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 };
-      if (v.kind === "code") this.code = EditorState.new({ language: v.lang, readonly: true, value: v.text, font_family: CODE_FONT, font_size: 12, syntax });
-      // 마크다운 코드 블록: 블록마다 읽기 전용 편집기(줄 번호·접기 없음). 편집기는 렌더 중에 만들 수 없어 여기서 만든다.
-      if (v.kind === "md") {
-        let n = 0;
-        this.mdCode = v.blocks.map((b) => (b.kind === "code" && n++ < MD_CODE_MAX
-          ? EditorState.new({ language: codeLang(b.lang), readonly: true, value: b.text, font_family: CODE_FONT, font_size: 12, line_numbers: false, folding: false, syntax })
-          : null));
-      }
+      makeEditors(this, v);
       this.view = v;
       cx.notify();
       // 글을 먼저 그린 뒤, 남은 원격 그림을 받아 채우고 다시 그린다(그동안 그 자리는 흐린 대체 글)
@@ -228,9 +220,7 @@ export class FilesApp {
   }
 
   releaseEditors() {
-    this.code?.release(); this.code = null;
-    for (const c of this.mdCode ?? []) c?.release();
-    this.mdCode = [];
+    releaseEditors(this);
   }
 
   // 무시됨: 자기 경로나 상위 폴더가 무시 목록에 있으면.
@@ -504,26 +494,8 @@ export class FilesApp {
     const W = Math.max(200, (this.dw ?? 600) - 40);
     const btn = (id, text, fn) => div().id(id).px(10).py(4).rounded(6).border_1().border_color(t.border).text_size(12)
       .text_color(t.foreground).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(fn).child(text);
-    let body;
-    if (!v) body = v_flex().flex_1().items_center().justify_center().text_color(t.muted).child("미리보기를 만드는 중");
-    else if (v.kind === "code") body = this.code ? Editor.new(this.code).flex_1().min_h(0) : div();
-    else if (v.kind === "md") body = v_flex().id("files-md").flex_1().min_h(0).overflow_y_scrollbar().px(24).py(16).gap(12).text_size(14).font_family(CODE_FONT)
-      .children(this.markdown(v.blocks, W - 8, t, cx));
-    else if (v.kind === "pages") body = v_flex().id("files-pages").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(16).items_center()
-      .children(v.pages.map((p, i) => {
-        const w = Math.min(W, p.w), h = Math.round((w * p.h) / Math.max(1, p.w));
-        return v_flex().gap(4).items_center()
-          .child(image(p.path).w(w).h(h).rounded(4).shadow_md())
-          .when(v.pages.length > 1, (el) => el.child(div().text_size(11).text_color(t.dim).child(`${i + 1} / ${v.count}`)));
-      }));
-    else if (v.kind === "table") body = this.table(v, t);
-    else if (v.kind === "slides") body = v_flex().id("files-slides").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(14)
-      .when(Boolean(v.thumb), (el) => el.child(image(v.thumb.path).w(Math.min(W, v.thumb.w)).h(Math.round(Math.min(W, v.thumb.w) * v.thumb.h / v.thumb.w)).rounded(4).shadow_md()))
-      .children(v.slides.map((sl) => v_flex().gap(3)
-        .child(div().text_size(11).font_semibold().text_color(t.muted).child(`슬라이드 ${sl.n}`))
-        .children(sl.texts.map((tx, i) => div().text_size(i === 0 ? 14 : 13).when(i === 0, (x) => x.font_semibold()).text_color(t.foreground).child(tx)))));
-    else body = v_flex().flex_1().items_center().justify_center().gap(10).text_color(t.muted)
-      .child(div().text_size(13).child(v.message ?? "미리볼 수 없는 파일입니다"));
+    const dir = this.file.includes("/") ? this.file.slice(0, this.file.lastIndexOf("/")) : "";
+    const body = previewBody(this, t, W, (url, cx) => this.openLink(url, dir, cx));
     return v_flex().size_full().min_h(0)
       .on_size_change((size, cx) => { if (Math.abs((this.dw ?? 0) - size.width) > 4) { this.dw = size.width; cx.notify(); } })
       .child(h_flex().h(40).flex_none().px(14).gap(8).items_center().border_b_1().border_color(t.border)
@@ -534,38 +506,6 @@ export class FilesApp {
         .child(btn("files-open-ext", "기본 앱으로 열기", () => exec("open", [abs])))
         .child(div().id("files-close").px(6).rounded(4).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("✕")))
       .child(body);
-  }
-
-  // 마크다운 블록(markdown.js): 글은 TextView, 코드는 편집기, 알림은 왼쪽 선 + 이름, 그림은 image()
-  markdown(blocks, W, t) {
-    const dir = this.file.includes("/") ? this.file.slice(0, this.file.lastIndexOf("/")) : "";
-    const md = (id, text) => TextView.markdown(id, text).on_link_click((url, cx) => this.openLink(url, dir, cx));
-    return blocks.map((b, i) => {
-      const id = `files-md-${i}`;
-      if (b.kind === "text") return b.notes ? div().text_size(12).text_color(t.muted).child(md(id, b.text)) : md(id, b.text);
-      if (b.kind === "code") {
-        const st = this.mdCode?.[i];
-        if (!st) return md(id, "```" + (b.lang ?? "") + "\n" + b.text + "\n```");
-        const lines = b.text.split("\n").length;
-        return v_flex().rounded(4).bg(t.surface).border_1().border_color(t.border).px(12).py(10).gap(4)
-          .when(Boolean(b.lang), (el) => el.child(div().text_size(11).text_color(t.dim).child(b.lang)))
-          .child(Editor.new(st).w_full().h(lines * MD_LINE + 6));
-      }
-      if (b.kind === "alert") {
-        const [label, color] = ALERT[b.type] ?? ALERT.note;
-        return v_flex().pl(12).gap(4).border_l_2().border_color(t[color])
-          .child(div().text_size(13).font_semibold().text_color(t[color]).child(label))
-          .child(md(id, b.text));
-      }
-      if (b.kind === "images") return h_flex().flex_wrap().gap(6).items_end().when(Boolean(b.center), (el) => el.justify_center()).children(b.items.map((it, j) => {
-        // 받는 중(pending)인 원격 그림은 대체 글을 더 흐리게, 못 가져온 그림은 대체 글로
-        if (!it.path) return div().text_size(12).text_color(t.dim).when(Boolean(it.pending), (el) => el.opacity(0.45)).child(`[그림${it.alt ? `: ${it.alt}` : ""}]`);
-        const w = Math.min(W, it.width ?? it.w), h = Math.round((w * it.h) / Math.max(1, it.w));
-        const img = image(it.path).w(w).h(h);
-        return it.link ? div().id(`${id}-${j}`).cursor_pointer().on_click((_e, cx) => this.openLink(it.link, dir, cx)).child(img) : img;
-      }));
-      return null;
-    }).filter(Boolean);
   }
 
   // 마크다운 링크: http·mailto는 브라우저로, 상대 경로는 이 파일 앱에서 연다(#제목 링크는 무시)
@@ -583,26 +523,195 @@ export class FilesApp {
     this.show(p, cx);
     cx.notify();
   }
+}
 
-  // 표(CSV·엑셀): 시트 탭 + 머리 행 고정 느낌의 격자. 칸은 같은 폭, 넘치면 가로로 스크롤.
-  table(v, t) {
-    const sh = v.sheets[Math.min(this.sheet ?? 0, v.sheets.length - 1)] ?? { rows: [] };
-    const cols = Math.min(60, Math.max(0, ...sh.rows.map((r) => r.length)));
-    const CW = 132, RW = 44;
-    const cell = (text, head, i) => div().w(i === -1 ? RW : CW).h(26).flex_none().px(6).flex().items_center().border_r_1().border_b_1().border_color(t.border)
-      .when(head, (x) => x.bg(t.raised).font_semibold()).when(i === -1, (x) => x.justify_end().text_color(t.dim).bg(t.raised))
-      .text_size(12).child(div().truncate().child(String(text ?? "")));
-    const colName = (i) => { let s = "", n = i + 1; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };
-    return v_flex().flex_1().min_h(0)
-      .when(v.sheets.length > 1, (el) => el.child(h_flex().id("files-sheets").flex_none().px(10).py(6).gap(4).overflow_x_scrollbar().border_b_1().border_color(t.border)
-        .children(v.sheets.map((s, i) => div().id(`sheet-${i}`).px(10).py(3).rounded(5).text_size(12).cursor_pointer()
-          .bg(i === (this.sheet ?? 0) ? t.selected : t.chrome).text_color(i === (this.sheet ?? 0) ? t.foreground : t.muted)
-          .hover((x) => x.bg(t.hover)).on_click((_e, cx) => { this.sheet = i; cx.notify(); }).child(s.name)))))
-      .child(div().id("files-grid").flex_1().min_h(0).overflow_scrollbar()
-        .child(v_flex().w(RW + cols * CW)
-          .child(h_flex().child(cell("", true, -1)).children(Array.from({ length: cols }, (_, i) => cell(colName(i), true, i))))
-          .children(sh.rows.map((r, ri) => h_flex().child(cell(ri + 1, false, -1)).children(Array.from({ length: cols }, (_, i) => cell(r[i], false, i)))))
-          .when(Boolean(sh.more), (el) => el.child(div().p(8).text_size(12).text_color(t.dim).child("앞부분만 보여 줍니다(최대 500행)")))));
+// ── 형식별 미리보기 그리기: 파일 앱(오른쪽 칸)과 뷰어 창(오버레이 역할 viewer)이 함께 쓴다 ──
+//   s = 미리보기를 가진 쪽(FilesApp 또는 ViewerWindow): { view, code, mdCode, sheet }
+//   view는 viewers.js preview()의 결과, code·mdCode는 makeEditors가 만든 편집기 상태.
+
+// 편집기 상태 만들기. 편집기는 렌더 중에 만들 수 없어 미리보기를 받은 직후(이벤트·비동기 시점)에 만든다.
+export function makeEditors(s, v) {
+  const t = theme(), syntax = { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 };
+  if (v.kind === "code") s.code = EditorState.new({ language: v.lang, readonly: true, value: v.text, font_family: CODE_FONT, font_size: 12, syntax });
+  // 마크다운 코드 블록: 블록마다 읽기 전용 편집기(줄 번호·접기 없음)
+  if (v.kind === "md") {
+    let n = 0;
+    s.mdCode = v.blocks.map((b) => (b.kind === "code" && n++ < MD_CODE_MAX
+      ? EditorState.new({ language: codeLang(b.lang), readonly: true, value: b.text, font_family: CODE_FONT, font_size: 12, line_numbers: false, folding: false, syntax })
+      : null));
+  }
+}
+
+// 편집기 상태 놓아 주기
+export function releaseEditors(s) {
+  s.code?.release(); s.code = null;
+  for (const c of s.mdCode ?? []) c?.release();
+  s.mdCode = [];
+}
+
+// 미리보기 본문. W: 그림·표를 맞출 폭. onLink(url, cx): 마크다운 링크·그림 링크를 눌렀을 때.
+export function previewBody(s, t, W, onLink) {
+  const v = s.view;
+  if (!v) return v_flex().flex_1().items_center().justify_center().text_color(t.muted).child("미리보기를 만드는 중");
+  if (v.kind === "code") return s.code ? Editor.new(s.code).flex_1().min_h(0) : div();
+  if (v.kind === "md") return v_flex().id("files-md").flex_1().min_h(0).overflow_y_scrollbar().px(24).py(16).gap(12).text_size(14).font_family(CODE_FONT)
+    .children(markdownView(s, v.blocks, W - 8, t, onLink));
+  if (v.kind === "pages") return v_flex().id("files-pages").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(16).items_center()
+    .children(v.pages.map((p, i) => {
+      const w = Math.min(W, p.w), h = Math.round((w * p.h) / Math.max(1, p.w));
+      return v_flex().gap(4).items_center()
+        .child(image(p.path).w(w).h(h).rounded(4).shadow_md())
+        .when(v.pages.length > 1, (el) => el.child(div().text_size(11).text_color(t.dim).child(`${i + 1} / ${v.count}`)));
+    }));
+  if (v.kind === "table") return tableView(s, v, t);
+  if (v.kind === "slides") return v_flex().id("files-slides").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(14)
+    .when(Boolean(v.thumb), (el) => el.child(image(v.thumb.path).w(Math.min(W, v.thumb.w)).h(Math.round(Math.min(W, v.thumb.w) * v.thumb.h / v.thumb.w)).rounded(4).shadow_md()))
+    .children(v.slides.map((sl) => v_flex().gap(3)
+      .child(div().text_size(11).font_semibold().text_color(t.muted).child(`슬라이드 ${sl.n}`))
+      .children(sl.texts.map((tx, i) => div().text_size(i === 0 ? 14 : 13).when(i === 0, (x) => x.font_semibold()).text_color(t.foreground).child(tx)))));
+  return v_flex().flex_1().items_center().justify_center().gap(10).text_color(t.muted)
+    .child(div().text_size(13).child(v.message ?? "미리볼 수 없는 파일입니다"));
+}
+
+// 마크다운 블록(markdown.js): 글은 TextView, 코드는 편집기, 알림은 왼쪽 선 + 이름, 그림은 image()
+function markdownView(s, blocks, W, t, onLink) {
+  const md = (id, text) => TextView.markdown(id, text).on_link_click((url, cx) => onLink(url, cx));
+  return blocks.map((b, i) => {
+    const id = `files-md-${i}`;
+    if (b.kind === "text") return b.notes ? div().text_size(12).text_color(t.muted).child(md(id, b.text)) : md(id, b.text);
+    if (b.kind === "code") {
+      const st = s.mdCode?.[i];
+      if (!st) return md(id, "```" + (b.lang ?? "") + "\n" + b.text + "\n```");
+      const lines = b.text.split("\n").length;
+      return v_flex().rounded(4).bg(t.surface).border_1().border_color(t.border).px(12).py(10).gap(4)
+        .when(Boolean(b.lang), (el) => el.child(div().text_size(11).text_color(t.dim).child(b.lang)))
+        .child(Editor.new(st).w_full().h(lines * MD_LINE + 6));
+    }
+    if (b.kind === "alert") {
+      const [label, color] = ALERT[b.type] ?? ALERT.note;
+      return v_flex().pl(12).gap(4).border_l_2().border_color(t[color])
+        .child(div().text_size(13).font_semibold().text_color(t[color]).child(label))
+        .child(md(id, b.text));
+    }
+    if (b.kind === "images") return h_flex().flex_wrap().gap(6).items_end().when(Boolean(b.center), (el) => el.justify_center()).children(b.items.map((it, j) => {
+      // 받는 중(pending)인 원격 그림은 대체 글을 더 흐리게, 못 가져온 그림은 대체 글로
+      if (!it.path) return div().text_size(12).text_color(t.dim).when(Boolean(it.pending), (el) => el.opacity(0.45)).child(`[그림${it.alt ? `: ${it.alt}` : ""}]`);
+      const w = Math.min(W, it.width ?? it.w), h = Math.round((w * it.h) / Math.max(1, it.w));
+      const img = image(it.path).w(w).h(h);
+      return it.link ? div().id(`${id}-${j}`).cursor_pointer().on_click((_e, cx) => onLink(it.link, cx)).child(img) : img;
+    }));
+    return null;
+  }).filter(Boolean);
+}
+
+// 표(CSV·엑셀): 시트 탭 + 머리 행 고정 느낌의 격자. 칸은 같은 폭, 넘치면 가로로 스크롤. 고른 시트는 s.sheet.
+function tableView(s, v, t) {
+  const sh = v.sheets[Math.min(s.sheet ?? 0, v.sheets.length - 1)] ?? { rows: [] };
+  const cols = Math.min(60, Math.max(0, ...sh.rows.map((r) => r.length)));
+  const CW = 132, RW = 44;
+  const cell = (text, head, i) => div().w(i === -1 ? RW : CW).h(26).flex_none().px(6).flex().items_center().border_r_1().border_b_1().border_color(t.border)
+    .when(head, (x) => x.bg(t.raised).font_semibold()).when(i === -1, (x) => x.justify_end().text_color(t.dim).bg(t.raised))
+    .text_size(12).child(div().truncate().child(String(text ?? "")));
+  const colName = (i) => { let c = "", n = i + 1; while (n > 0) { const m = (n - 1) % 26; c = String.fromCharCode(65 + m) + c; n = Math.floor((n - 1) / 26); } return c; };
+  return v_flex().flex_1().min_h(0)
+    .when(v.sheets.length > 1, (el) => el.child(h_flex().id("files-sheets").flex_none().px(10).py(6).gap(4).overflow_x_scrollbar().border_b_1().border_color(t.border)
+      .children(v.sheets.map((x, i) => div().id(`sheet-${i}`).px(10).py(3).rounded(5).text_size(12).cursor_pointer()
+        .bg(i === (s.sheet ?? 0) ? t.selected : t.chrome).text_color(i === (s.sheet ?? 0) ? t.foreground : t.muted)
+        .hover((y) => y.bg(t.hover)).on_click((_e, cx) => { s.sheet = i; cx.notify(); }).child(x.name)))))
+    .child(div().id("files-grid").flex_1().min_h(0).overflow_scrollbar()
+      .child(v_flex().w(RW + cols * CW)
+        .child(h_flex().child(cell("", true, -1)).children(Array.from({ length: cols }, (_, i) => cell(colName(i), true, i))))
+        .children(sh.rows.map((r, ri) => h_flex().child(cell(ri + 1, false, -1)).children(Array.from({ length: cols }, (_, i) => cell(r[i], false, i)))))
+        .when(Boolean(sh.more), (el) => el.child(div().p(8).text_size(12).text_color(t.dim).child("앞부분만 보여 줍니다(최대 500행)")))));
+}
+
+// ── 뷰어 창: 에이전트 활동의 파일 줄을 누르면 뜨는 떠 있는 창(오버레이 kind "window", 역할 viewer) ──
+//   props { role: "viewer", file: 절대 경로, on?: 원격 머신 이름 }
+//   머리줄(아이콘 · 이름 · 흐린 경로 · 기본 앱으로 열기 · Finder에서 보기 · ✕)을 잡고 끌어 옮긴다.
+//   본문과 버튼은 누름을 멈춰(stop_propagation) 글 고르기·스크롤이 창 끌기가 되지 않게 한다.
+//   원격 파일은 preview가 글로만 읽고, 기본 앱·Finder 버튼은 이 기기 파일일 때만 보인다.
+export const VIEWER_W = 760, VIEWER_H = 560;
+// 여는 함수. key가 같으면(같은 머신의 같은 파일) Herdr가 열린 창을 그 자리에서 바꿔 띄운다: 같은 파일 창이 둘로 늘지 않는다.
+//   office 모드는 다른 모드라 이 함수를 import할 수 없어 같은 openOverlay를 직접 부른다(office/main.js openViewer).
+export function openViewer(file, on = null) {
+  if (!file || !file.startsWith("/")) return;
+  openOverlay({ mod: "office-apps", kind: "window", key: `office-apps.viewer:${on ?? ""}:${file}`,
+    width: VIEWER_W, height: VIEWER_H, props: { role: "viewer", file, on: on ?? null } });
+}
+
+export class ViewerWindow {
+  init(_p, cx) {
+    const p = props() ?? {};
+    this.on = p.on ?? null;
+    this.h = cx.focus_handle();
+    this.h.focus();   // Esc로 닫을 수 있게(창은 처음에 키보드를 갖지 않는다)
+    this.open(p.file, cx);
+  }
+
+  // 파일 불러오기. 마크다운의 상대 링크도 이 창 안에서 다시 부른다(마지막 요청만 반영).
+  open(abs, cx) {
+    const req = this.req = (this.req ?? 0) + 1;
+    releaseEditors(this); this.abs = abs; this.view = null; this.sheet = 0;
+    if (!abs) return;
+    const name = abs.split("/").pop(), ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
+    const latest = () => this.req === req && this.abs === abs;
+    cx.spawn(async (cx) => {
+      let v;
+      try { v = await preview(abs, ext, this.on); } catch (e) { v = { kind: "error", message: `미리보기를 만들지 못했습니다: ${String(e?.message ?? e).slice(0, 80)}` }; }
+      if (!latest()) return;
+      releaseEditors(this);
+      makeEditors(this, v);
+      this.view = v;
+      cx.notify();
+      if (v.kind === "md" && v.pendingRemote) {
+        await mdRemoteImages(v.blocks, abs).catch(() => 0);
+        v.pendingRemote = false;
+        if (latest() && this.view === v) cx.notify();
+      }
+    });
+  }
+
+  // 마크다운 링크: http·mailto는 브라우저로, 상대·절대 경로는 이 창에서 연다(#제목 링크는 무시)
+  link(url, cx) {
+    if (/^(https?|mailto):/i.test(url)) { exec("open", [url]); return; }
+    let p = decodeURIComponent(url.replace(/^file:\/\//i, "").replace(/[?#].*$/, ""));
+    if (!p) return;
+    if (!p.startsWith("/")) {
+      const out = this.abs.slice(0, this.abs.lastIndexOf("/")).split("/");
+      for (const part of p.split("/")) { if (part === "..") out.pop(); else if (part && part !== ".") out.push(part); }
+      p = out.join("/");
+    }
+    this.open(p, cx);
+    cx.notify();
+  }
+
+  dismiss() {
+    releaseEditors(this);
+    closeOverlay(props().overlay);
+  }
+
+  render() {
+    const t = theme(), abs = this.abs ?? "", name = abs.split("/").pop(), icon = iconFor(name, false, false), local = !this.on;
+    const where = (this.on ? `${this.on}:` : "") + (abs.startsWith(home() + "/") ? `~${abs.slice(home().length)}` : abs);
+    const W = Math.max(200, (this.dw ?? VIEWER_W) - 40);
+    const stop = (_e, cx) => cx.stop_propagation();   // 컨트롤·본문의 누름이 창 끌기로 가지 않게
+    const btn = (id, text, fn) => div().id(id).flex_none().px(10).py(4).rounded(6).border_1().border_color(t.border).text_size(12)
+      .text_color(t.foreground).cursor_pointer().hover((s) => s.bg(t.hover)).on_mouse_down("left", stop).on_click(fn).child(text);
+    return v_flex().id("viewer").track_focus(this.h).size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
+      .on_size_change((size, cx) => { if (Math.abs((this.dw ?? 0) - size.width) > 4) { this.dw = size.width; cx.notify(); } })
+      .on_key_down((e, cx) => { if (e.key === "escape") { cx.stop_propagation(); this.dismiss(); } })
+      // 머리줄: 여기를 잡고 끈다
+      .child(h_flex().h(40).flex_none().px(14).gap(8).items_center().bg(t.chrome).border_b_1().border_color(t.border)
+        .when(Boolean(icon), (el) => el.child(image(icon).size(16).flex_none()))
+        .child(div().flex_none().max_w(260).truncate().text_size(14).font_semibold().text_color(t.foreground).child(name))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(this.view?.note ?? where))
+        .when(local, (el) => el
+          .child(btn("viewer-open-ext", "기본 앱으로 열기", () => exec("open", [abs])))
+          .child(btn("viewer-reveal", "Finder에서 보기", () => exec("open", ["-R", abs]))))
+        .child(div().id("viewer-close").flex_none().px(6).rounded(4).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover))
+          .on_mouse_down("left", stop).on_click(() => this.dismiss()).child("✕")))
+      .child(v_flex().id("viewer-body").flex_1().min_h(0).on_mouse_down("left", stop)
+        .child(previewBody(this, t, W, (url, cx) => this.link(url, cx))));
   }
 }
 

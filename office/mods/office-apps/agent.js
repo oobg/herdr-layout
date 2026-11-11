@@ -3,7 +3,9 @@
 //         - hc run으로 띄운 서브에이전트 터미널: terminals()의 parent
 //         - Claude Code 안에서 도는 서브에이전트: 그 터미널의 records(hc get)
 //         두 번째 줄 "스페이스 · 탭"은 스페이스가 여럿일 때만. 더블클릭은 터미널로 이동, 우클릭은 메뉴(터미널로 이동·미리 보기·부모로 이동).
-//   오른쪽: 지금 하는 일 한 줄 → 마지막 말(길면 접힘) → 이번 턴 도구 흐름(최근 몇 개, 더 보기) → 요청(접힌 한 줄) → 고친 파일(누르면 파일 앱).
+//   오른쪽: 지금 하는 일 한 줄 → 마지막 말(길면 접힘) → 이번 턴 도구 흐름(최근 몇 개, 더 보기) → 요청(접힌 한 줄) → 고친 파일.
+//         고친 파일은 파일 앱 폴더 안이면 파일 앱에서, 밖이면 떠 있는 뷰어 창으로 연다(우클릭은 늘 뷰어 창).
+//         도구 흐름의 파일 대상(읽음·수정·작성)도 누르면 뷰어 창.
 //   기록은 Claude Code 대화 기록(jsonl)에서 읽는다(agent/activity.js, agent/parse.js).
 // 셸 계약: move(delta, cx) 선택 이동 · activate(cx) 그 터미널로 이동 · emptyState() 상세가 없을 때 안내 글자.
 // 갱신: 이 앱이 그려지는 동안만 타이머가 돈다. 고른 에이전트가 작업 중이면 4초, 다른 에이전트가 작업 중이면 15초,
@@ -13,7 +15,7 @@ import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, spaces, panes, focused, layout, run, setShared, openOverlay, props, theme } from "herdr";
 import { Menu, popupAt } from "./menu.js";
-import { ROLES } from "./files.js";
+import { ROLES, openViewer } from "./files.js";
 import { termInfo, sessionOf, readLog, machineOf } from "./agent/activity.js";
 
 const ME = "mods/office-apps/agent";
@@ -63,6 +65,9 @@ function openable(abs, address, { cwd, on } = filesRoot()) {
   if (!cwd || (machineOf(address) ?? null) !== on) return null;
   return abs.startsWith(cwd + "/") ? abs.slice(cwd.length + 1) : null;
 }
+
+// 뷰어 창으로 열 수 있는 파일 대상: 파일 도구(읽음·수정·작성)의 절대 경로
+const isFile = (kind, target) => ["읽음", "수정", "작성"].includes(kind) && typeof target === "string" && target.startsWith("/");
 
 // 이동: 그 터미널로. office 레이아웃이면 터미널 칸을 열고 office 모드에 고른 워크트리를 알린다(office의 openSpace와 같게).
 //   우클릭 메뉴(오버레이 복사본)도 부르므로 값만 받는다: { address, space }
@@ -431,7 +436,10 @@ export class AgentApp {
         .child(div().flex_none().text_size(12).text_color(f.running ? t.foreground : t.muted).when(f.running, (x) => x.font_semibold())
           .child(`${f.kind}${f.n > 1 ? ` ×${f.n}` : ""}`))
         .when(Boolean(f.target), (x) => x.child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted)
-          .child(["읽음", "수정", "작성"].includes(f.kind) ? f.target.split("/").pop() : f.target)))));
+          .child(["읽음", "수정", "작성"].includes(f.kind) ? f.target.split("/").pop() : f.target)))
+        // 파일 대상(절대 경로)은 누르면 뷰어 창
+        .when(isFile(f.kind, f.target), (x) => x.cursor_pointer().hover((s) => s.underline())
+          .on_click(() => openViewer(f.target, machineOf(r.address))))));
     } else if (!v.ask && !v.say) out.push(this.note("이번 턴에 한 일이 아직 없습니다", t));
 
     // 요청: 접힌 한 줄, 누르면 펼친다
@@ -444,14 +452,17 @@ export class AgentApp {
           .when(!this.open.ask, (x) => x.truncate()).child(this.open.ask ? v.ask : v.ask.split("\n")[0])));
     }
 
-    // 고친 파일: 짧은 경로. 파일 앱 폴더 안이면 누르면 파일 앱에서 연다.
+    // 고친 파일: 짧은 경로. 파일 앱 폴더 안이면 누르면 파일 앱에서, 밖(임시 폴더·홈 등)이면 뷰어 창으로 연다.
+    //   우클릭은 어디 있든 뷰어 창(파일 앱으로 옮겨 가지 않고 잠깐 볼 때).
     if (v.edited.length) {
       const root = filesRoot();
       out.push(head(`고친 파일 ${v.edited.length + v.moreEdited}`));
       out.push(...v.edited.map((f, i) => {
-        const rel = openable(f.path, r.address, root);
+        const rel = openable(f.path, r.address, root), abs = f.path.startsWith("/"), on = machineOf(r.address);
         return h_flex().id(`agent-file-${i}`).h(24).px(6).gap(6).items_center().rounded(4)
-          .when(Boolean(rel), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => run(`office-apps.show:${rel}`)))
+          .when(Boolean(rel) || abs, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover).underline())
+            .on_click(() => (rel ? run(`office-apps.show:${rel}`) : openViewer(f.path, on))))
+          .when(abs, (el) => el.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openViewer(f.path, on); }))
           .child(icon(f.kind))
           .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(rel ? t.foreground : t.muted).child(shortPath(f.path, v.cwd)));
       }));

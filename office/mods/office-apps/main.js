@@ -12,6 +12,7 @@
 // 오버레이 역할(props.role): menu·prompt·confirm·tip — 파일 앱의 우클릭 메뉴와 입력·확인 창, 툴팁.
 //   manage — 앱 관리 대화 상자(앱마다 켜고 끄기).
 //   launcherMenu — 런처 격자의 앱 아이콘 우클릭 메뉴(열기 · 앱 끄기 · 앱 관리…, 앱 관리 앱은 열기만).
+//   viewer — 떠 있는 파일 뷰어 창(kind "window", props { file: 절대 경로, on? }). 에이전트 활동의 파일 줄이 연다(files.js openViewer).
 // 키·명령: office-apps.home(런처로), office-apps.open-<앱 id>(앱 열기), office-apps.show:<경로>(파일 열기),
 //   office-apps.manage(앱 관리 대화 상자), office-apps.disable-<앱 id>(앱 끄기),
 //   office-apps.commit:<해시|WORKTREE>(커밋 앱에서 그 커밋 열기), office-apps.range:<a>...<b>(커밋 앱에서 범위 비교),
@@ -19,8 +20,8 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { props, theme, shared, setShared, nextCommand, run, openOverlay, closeOverlay, notify } from "herdr";
-import { FilesApp, ROLES } from "./files.js";
+import { props, theme, settings, shared, setShared, nextCommand, run, openOverlay, closeOverlay, notify } from "herdr";
+import { FilesApp, ROLES, ViewerWindow } from "./files.js";
 import { popupAt } from "./menu.js";
 import { BranchApp } from "./branch.js";
 import { CommitApp } from "./commit.js";
@@ -164,8 +165,9 @@ class Launcher {
   }
 
   tile(a, size, t) {
-    // 격자(56)에서만 유리 판이 바탕에서 살짝 떠 보이게 옅은 그림자. 작은 크기는 그림자가 번져 보여 뺀다.
-    return size >= 48 ? tile(a, size).rounded(Math.round(size * 0.24)).shadow_sm() : tile(a, size);
+    // 라이트 격자(56)에서만 서리 유리가 바탕에서 살짝 떠 보이게 옅은 그림자. 다크는 반투명 유리 아래로 그림자가
+    //   비쳐 탁해지므로 빼고, 작은 크기는 그림자가 번져 보여 뺀다.
+    return size >= 48 && !darkUi() ? tile(a, size).rounded(Math.round(size * 0.24)).shadow_sm() : tile(a, size);
   }
 
   // 앱 아이콘 우클릭 메뉴. 오버레이는 이 모드의 새 복사본이라 상태를 나누지 않으므로, 고른 동작은 명령으로 돌려받는다.
@@ -249,12 +251,20 @@ class Launcher {
 
 const LEFT = 250;   // 왼쪽 관리 칸 폭(가운데 내용 칸을 강조하려고 좁게)
 
-// 앱 타일 그림(리퀴드 글래스): apps/tiles/<id>.svg 한 장이 바탕(앱 색 단색 + 광택·림)과 흰 글리프를 다 담는다.
-//   image()는 원래 색 그대로 그린다(svg()처럼 테마색 마스크가 아님). 모든 그림이 같은 조명·림·글리프 굵기를 쓴다.
-//   그림이 없는 앱(TILES에 없음)은 예전처럼 앱 색 div + 흰 선 아이콘으로 그린다.
+// 앱 타일 그림(무채색 리퀴드 글래스): 그림 한 장이 반투명 유리 바탕(광택·림·안쪽 테)과 글리프를 다 담는다.
+//   다크 apps/tiles/<id>.svg(흰 유리 + 흰 글리프) · 라이트 <id>-light.svg(서리 유리 + 회색 테 + 짙은 회색 글리프).
+//   image()는 SVG의 색·투명도 그대로 그린다(svg()처럼 테마색 마스크가 아님). 앱 색은 쓰지 않고 글리프로만 구분한다.
+//   그림이 없는 앱(TILES에 없음)은 예전처럼 앱 색(APPS color) div + 흰 선 아이콘으로 그린다.
 const TILES = new Set(["files", "branch", "commit", "pr", "agent", "server", "settings", "manage"]);
+// 다크 테마인지: settings().dark가 있으면 그것, 없으면 바탕색 밝기로 짐작
+function darkUi() {
+  const d = settings()?.dark;
+  if (typeof d === "boolean") return d;
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(theme().background ?? "");
+  return !m || (0.299 * parseInt(m[1], 16) + 0.587 * parseInt(m[2], 16) + 0.114 * parseInt(m[3], 16)) < 128;
+}
 function tile(a, size) {
-  if (TILES.has(a.id)) return image(`${ME}/apps/tiles/${a.id}.svg`).size(size).flex_none();
+  if (TILES.has(a.id)) return image(`${ME}/apps/tiles/${a.id}${darkUi() ? "" : "-light"}.svg`).size(size).flex_none();
   return div().size(size).flex_none().rounded(Math.round(size * 0.24)).bg(a.color).flex().items_center().justify_center()
     .child(svg(`${ME}/apps/${a.id}.svg`).size(Math.round(size * 0.52)).text_color("#ffffff"));
 }
@@ -364,7 +374,7 @@ class ManageDialog {
   }
 }
 
-const ALL_ROLES = { ...ROLES, launcherMenu: LauncherMenu, manage: ManageDialog };
+const ALL_ROLES = { ...ROLES, launcherMenu: LauncherMenu, manage: ManageDialog, viewer: ViewerWindow };
 
 export default class OfficeApps extends View {
   init(p, cx) {

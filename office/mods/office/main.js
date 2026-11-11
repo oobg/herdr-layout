@@ -10,8 +10,19 @@ import { readActivity } from "./activity.js";
 import { v_flex, h_flex } from "gpui-base";
 import {
   props, spaces, agents, panes, terminals, theme, run, exec,
-  shared, setShared, nextCommand, readTextFile, appHome, home, pickFolder,
+  shared, setShared, nextCommand, readTextFile, appHome, home, pickFolder, openOverlay,
 } from "herdr";
+
+// 에이전트 활동의 파일 줄을 누르면 office-apps의 뷰어 창(떠 있는 창, 역할 viewer)으로 연다.
+//   office-apps/files.js openViewer와 같은 값: 다른 모드라 import할 수 없어 여기서 같은 openOverlay를 부른다.
+//   key가 같으면(같은 머신의 같은 파일) 열린 창을 그 자리에서 바꿔 띄워 같은 파일 창이 늘지 않는다.
+//   on: 원격 터미널 주소("machine/t7")면 그 머신(뷰어는 글로만 읽는다), 아니면 이 기기.
+function openViewer(file, address) {
+  if (!file || !file.startsWith("/")) return;
+  const on = String(address ?? "").includes("/") ? String(address).split("/")[0] : null;
+  openOverlay({ mod: "office-apps", kind: "window", key: `office-apps.viewer:${on ?? ""}:${file}`,
+    width: 760, height: 560, props: { role: "viewer", file, on } });
+}
 
 const TERM = "office-term";
 const OPEN = "office.open";
@@ -483,8 +494,11 @@ class Floor {
     const head = (text) => div().pt(4).text_size(11).font_semibold().text_color(t.muted).child(text);
     return v_flex().ml(24).mb(6).pl(10).py(2).gap(3).border_l_2().border_color(t.border).text_size(12)
       // 이번 턴의 흐름: 한 줄에 한 묶음, 종류 아이콘. 지금 하는 묶음은 굵게.
-      .when(v.flow.length > 0, (el) => el.child(head("이번 턴")).children(v.flow.map((f) =>
-        h_flex().gap(6).items_center().min_h(18)
+      //   파일 도구(읽음·수정·작성)의 절대 경로 대상도 누르면 뷰어 창.
+      .when(v.flow.length > 0, (el) => el.child(head("이번 턴")).children(v.flow.map((f, i) =>
+        h_flex().id(`ov-flow-${a.address}-${i}`).gap(6).items_center().min_h(18)
+          .when(["읽음", "수정", "작성"].includes(f.kind) && String(f.target ?? "").startsWith("/"),
+            (x) => x.cursor_pointer().hover((s) => s.underline()).on_click(() => openViewer(f.target, a.address)))
           .child(f.running && f.kind === "실행" ? svg(SPINNER).size(13).flex_none().text_color(C.working).spin(900) : icon(f.kind))
           .child(div().flex_none().text_color(f.running ? t.foreground : kindOf(f.kind)[1]).when(f.running, (x) => x.font_semibold())
             .child(`${f.kind}${f.n > 1 ? ` ×${f.n}` : ""}`))
@@ -500,10 +514,11 @@ class Floor {
             Number.isFinite(g.tools) ? `도구 ${g.tools}번` : null,
             Number.isFinite(g.ms) ? (g.ms < 60000 ? `${Math.round(g.ms / 1000)}초` : `${Math.round(g.ms / 60000)}분`) : null,
           ].filter(Boolean).join(" · "))))))
-      // 이번 턴에 본 파일: 위치 칩 + 짧은 경로
-      .when(v.files.length > 0, (el) => el.child(head("파일")).children(v.files.map((f) => {
+      // 이번 턴에 본 파일: 위치 칩 + 짧은 경로. 절대 경로면 누르면 뷰어 창(hover: 밑줄·포인터)
+      .when(v.files.length > 0, (el) => el.child(head("파일")).children(v.files.map((f, i) => {
         const [where, path] = place(f.path);
-        return h_flex().gap(6).items_center().min_h(18)
+        return h_flex().id(`ov-file-${a.address}-${i}`).gap(6).items_center().min_h(18)
+          .when(f.path.startsWith("/"), (x) => x.cursor_pointer().hover((s) => s.underline()).on_click(() => openViewer(f.path, a.address)))
           .child(icon(f.kind))
           .when(Boolean(where), (x) => x.child(chip(where)))
           .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(path));
