@@ -1,16 +1,17 @@
-// office-apps의 브랜치 앱. 지금 고른 스페이스(포커스된 패인)의 git 레포를 보여 준다.
-//   왼쪽: 툴바(검색·가져오기·끌어오기·푸시·새 브랜치·임시 저장·더보기·다시 읽기) + 로컬/원격/태그 목록
-//   오른쪽: 고른 브랜치의 추적 상태(원격·현재 브랜치 대비 앞섬/뒤처짐), 동작 버튼, 받을 커밋, 최근 커밋
+// office-apps의 브랜치 앱. 지금 고른 스페이스(포커스된 패인)의 git 저장소를 보여 준다.
+//   왼쪽: 툴바(검색·가져오기·끌어오기·푸시·새 브랜치·더보기) + 로컬/원격/태그 목록(비어 있는 섹션은 숨김)
+//   오른쪽: 고른 브랜치의 추적 상태, 주 동작 하나 + ⋯(우클릭 메뉴와 같은 것), 받을 커밋, 최근 커밋(또는 커밋 비교)
 // office-git(예전 독립 모드)의 기능을 앱 형태로 옮겼다. 짧은 일(체크아웃·만들기·이름 변경·삭제)은 바로 실행하고,
-// 결과를 사람이 봐야 하는 일(끌어오기·푸시·병합·리베이스·원격 삭제)은 새 터미널 탭에서 돌려
-// 충돌이나 인증 질문을 직접 다룰 수 있게 한다. 위험한 동작은 menu.js의 확인 창(Confirm)을 거친다.
+// 커밋·변경 내용 보기는 커밋 앱(office-apps.commit:/range:)으로 넘겨 앱 안에서 끝낸다.
+// 인증이나 충돌 대화가 생길 수 있는 일(끌어오기·푸시·병합·리베이스·원격 삭제·태그 푸시·임시 저장 꺼내기)만
+// 새 터미널 탭에서 돌린다. 위험한 동작은 menu.js의 확인 창(Confirm)을 거친다.
 //
 // 오버레이 연결: 확인 창(Confirm)은 menu.js의 ACTIONS 표에서 동작을 찾고, 오버레이 역할은 files.js의 ROLES에서
 // 찾는다. 두 공용 파일을 고치지 않으려고 이 모듈이 불릴 때 "branch."로 시작하는 동작과 "branch-menu"·"branch-prompt"
 // 역할을 그 표에 더해 둔다(register). main.js가 이 파일을 import하므로 모든 복사본(오버레이 포함)에서 먼저 돈다.
 
 import { div, svg } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, ScrollHandle, Scrollbar, v_virtual_list } from "gpui-base";
 import { spaces, panes, focused, exec, watchFolder, theme, home, props, run, openOverlay, closeOverlay, notify, shared, setShared } from "herdr";
 import { Menu, ACTIONS, TICK, popupAt } from "./menu.js";
 import { ROLES } from "./files.js";
@@ -18,10 +19,15 @@ import { ROLES } from "./files.js";
 const ME = "mods/office-apps";
 const I = (n) => `${ME}/${n}.svg`;          // office-apps에 이미 있는 아이콘
 const B = (n) => `${ME}/branch/${n}.svg`;   // office-git에서 가져온 아이콘
-const LOG_N = 12, IN_N = 10;                // 최근 커밋·받을 커밋을 몇 개까지
+const PAGE = 100, CMP_N = 30;               // 커밋 그래프를 한 번에 몇 개씩, 비교 목록은 몇 개까지
+// 커밋 그래프(예전 office-git과 같은 값): 줄 높이, 레인 폭, 레인 색 8개.
+const GROW = 26, LANE = 14;
+const LANES = ["#7aa2f7", "#a7c080", "#e69875", "#d699b6", "#83c092", "#dbbc7f", "#7fbbb3", "#e67e80"];
+const CMP = "office-apps.branch.compare";   // 메뉴(오버레이)에서 앱에게 "이 브랜치를 비교해 보여 줘"를 넘기는 공유 키
+const NOT_REPO = "git 저장소가 아닙니다";
 const DANGER = "#e67e80";
 // 툴바 아이콘 색: 기능마다 하나(files.js와 같은 톤).
-const TOOL = { search: "#a7c080", fetch: "#7aa2f7", pull: "#a7c080", push: "#e69875", new: "#83c092", stash: "#dbbc7f", more: "#9da9a0", refresh: "#7fbbb3" };
+const TOOL = { search: "#a7c080", fetch: "#7aa2f7", pull: "#a7c080", push: "#e69875", new: "#83c092", more: "#9da9a0" };
 // 메뉴 아이콘 색
 const C = { go: "#e5739d", new: "#83c092", cmp: "#7fbbb3", mix: "#d699b6", remote: "#e69875", edit: "#dbbc7f", view: "#7aa2f7", danger: DANGER };
 
@@ -50,6 +56,31 @@ function ago(sec) {
 }
 
 const q = (s) => `'${s}'`;
+
+// 커밋마다 레인을 정한다(office-git에서 가져옴). lanes[i]는 i번째 줄이 다음에 만날 커밋 해시.
+function graph(commits) {
+  const lanes = [], out = [];
+  for (const c of commits) {
+    let at = lanes.indexOf(c.hash);
+    if (at === -1) { at = lanes.indexOf(null); if (at === -1) at = lanes.length; lanes[at] = c.hash; }
+    const before = lanes.map((h) => h !== null && h !== undefined);
+    // 같은 커밋을 기다리던 다른 레인은 여기서 합쳐진다.
+    for (let i = 0; i < lanes.length; i++) if (i !== at && lanes[i] === c.hash) lanes[i] = null;
+    lanes[at] = c.parents[0] ?? null;
+    for (const p of c.parents.slice(1)) if (!lanes.includes(p)) { const free = lanes.indexOf(null); lanes[free === -1 ? lanes.length : free] = p; }
+    while (lanes.length && lanes[lanes.length - 1] == null) lanes.pop();
+    const after = lanes.map((h) => h !== null && h !== undefined);
+    out.push({ ...c, lane: at, before, after, width: Math.max(before.length, after.length, at + 1) });
+  }
+  return out;
+}
+
+// git log 한 줄(%H %P %at %s, NUL로 구분)을 커밋으로.
+const LOG_FMT = "--format=%H%x00%P%x00%at%x00%s";
+const parseLog = (res) => (res?.code === 0 ? res.stdout.split("\n").filter(Boolean).map((l) => {
+  const [hash, parents, at, subject] = l.split("\0");
+  return { hash, parents: parents ? parents.split(" ") : [], at: Number(at), subject };
+}) : []);
 const counts = (ahead, behind) => [ahead && `${ahead}개 앞섬`, behind && `${behind}개 뒤처짐`].filter(Boolean).join(" · ");
 
 // ── 동작(오버레이 복사본에서도 돈다: ctx는 값만) ────────────────
@@ -116,9 +147,10 @@ const ACT = {
   unsetUpstream: async (ctx) => { if (await git(ctx, ["branch", "--unset-upstream", ctx.name])) done("추적 정보를 정리했습니다", ctx.name); },
   merge: (ctx) => inTab(ctx, `merge ${ctx.name}`, ["git", "merge", ctx.ref]),
   rebase: (ctx) => inTab(ctx, `rebase ${ctx.name}`, ["git", "rebase", ctx.ref]),
-  compare: (ctx) => inTab(ctx, `${ctx.head ?? "HEAD"} ↔ ${ctx.name}`, ["git", "--no-pager", "log", "--oneline", "--graph", "--left-right", `HEAD...${ctx.ref}`]),
-  diff: (ctx) => inTab(ctx, `diff ${ctx.name}`, ["git", "diff", `HEAD...${ctx.ref}`]),
-  show: (ctx, hash) => inTab(ctx, `show ${hash}`, ["git", "show", hash]),
+  // 커밋 비교는 앱 오른쪽 칸에서 보여 준다. 메뉴는 오버레이 복사본에서 돌므로 공유 값으로 앱에게 넘긴다(sync가 받음).
+  compare: (ctx) => setShared(CMP, { top: ctx.top, ref: ctx.ref, at: Date.now() }),
+  // 변경 내용·커밋은 커밋 앱에서 연다(터미널 탭을 쌓지 않는다).
+  diff: (ctx) => run(`office-apps.range:HEAD...${ctx.name}`),
   copyName: (ctx) => copy(ctx.name, "이름"),
   copyHash: async (ctx) => {
     const r = await exec("git", ["rev-parse", `${ctx.ref}^{commit}`], { cwd: ctx.top, on: ctx.on }).catch(() => null);
@@ -134,7 +166,8 @@ const ACT = {
   },
   stashPop: (ctx, ref) => inTab(ctx, `stash pop ${ref}`, ["git", "stash", "pop", ref]),
   stashApply: (ctx, ref) => inTab(ctx, `stash apply ${ref}`, ["git", "stash", "apply", ref]),
-  status: (ctx) => inTab(ctx, "git status", ["git", "status"]),
+  status: () => run("office-apps.commit:WORKTREE"),
+  refresh: () => changed(),
   // 현재 브랜치에 이미 병합된 로컬 브랜치를 찾아, 확인을 받고 지운다. 기본 브랜치와 워크트리에 체크아웃된 것은 남긴다.
   pruneMerged: async (ctx) => {
     const r = await exec("git", ["branch", "--merged", "HEAD", "--format=%(refname:short)%00%(worktreepath)"], { cwd: ctx.top, on: ctx.on }).catch(() => null);
@@ -151,7 +184,11 @@ const ACT = {
     const url = r.stdout.trim().replace(/^git@([^:]+):/, "https://$1/").replace(/^ssh:\/\/git@([^/]+)\//, "https://$1/").replace(/\.git$/, "");
     await exec("open", [ctx.head ? `${url}/tree/${encodeURI(ctx.head)}` : url]);
   },
-  pr: (ctx) => inTab(ctx, `PR ${ctx.head}`, ["gh", "pr", "create", "--web"]),
+  // 브라우저에서 PR 만들기 화면만 연다. 탭 없이 바로 실행하고, 실패하면 알림으로.
+  pr: async (ctx) => {
+    const r = await exec("gh", ["pr", "create", "--web"], { cwd: ctx.top, on: ctx.on, timeout: 60000 }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+    if (r.code !== 0) notify({ title: "풀 리퀘스트 화면을 열지 못했습니다", body: (r.stderr || r.stdout || "").trim().slice(0, 400), level: "error" });
+  },
 };
 
 // ── 오버레이 열기 ────────────────────────────────────────────
@@ -165,8 +202,9 @@ const ask = (ctx, action, title, hint, value = "") => {
   openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 210, props: { role: "branch-prompt", ctx, action, title, hint, value } });
 };
 
-// ── 메뉴 항목(우클릭 메뉴와 오른쪽 동작 버튼이 같이 쓴다) ────────
-// 항목: { label, icon, color, fn, hint, danger, menuOnly } | "-"
+// ── 메뉴 항목(우클릭 메뉴·⋯ 버튼, 오른쪽 주 동작이 같이 쓴다) ────────
+// 항목: { label, icon, color, fn, hint, danger, primary } | "-"
+// primary: 오른쪽 칸에 버튼으로 꺼내는 주 동작(브랜치마다 많아야 하나). Enter(activate)도 이것을 부른다.
 
 function tidy(list) {
   const out = [];
@@ -186,7 +224,7 @@ function itemsFor(ctx) {
   const newBranch = item("새 브랜치...", B("branch-new"), C.new, () => ask(ctx, "newBranch", `${q(name)}에서 새 브랜치`, "만들고 바로 옮깁니다 (git switch -c)"), "git switch -c");
   const compare = !me && [
     item("커밋 비교", I("log"), C.cmp, () => ACT.compare(ctx), `HEAD...${name}`),
-    item("변경 보기", B("status"), C.cmp, () => ACT.diff(ctx), "git diff"),
+    item("변경 보기", B("status"), C.cmp, () => ACT.diff(ctx), "커밋 앱에서"),
   ];
   // 현재 브랜치가 있고, 아직 합쳐지지 않은 것만.
   const mix = !me && head && kind !== "tag" && !ctx.merged && [
@@ -194,9 +232,10 @@ function itemsFor(ctx) {
     item("리베이스...", I("branch"), C.mix, () => confirm(ctx, "rebase", "리베이스", `현재 브랜치 ${q(head)}를 ${q(name)} 위로 다시 쌓습니다. 새 탭에서 실행합니다.`), "git rebase"),
   ];
   const copies = [
-    { ...item("이름 복사", I("copy"), C.edit, () => ACT.copyName(ctx), name), menuOnly: true },
-    { ...item("커밋 해시 복사", I("copy"), C.edit, () => ACT.copyHash(ctx)), menuOnly: true },
+    item("이름 복사", I("copy"), C.edit, () => ACT.copyName(ctx), name),
+    item("커밋 해시 복사", I("copy"), C.edit, () => ACT.copyHash(ctx)),
   ];
+  const primary = (it) => it && { ...it, primary: true };
 
   if (kind === "local") {
     const { ahead, behind, gone, upstream } = ctx, elsewhere = Boolean(ctx.worktree);
@@ -221,6 +260,9 @@ function itemsFor(ctx) {
       sync.push(me ? item("끌어오기", B("pull"), C.remote, () => ACT.pull(ctx), "git pull --ff-only")
         : item("빨리 감기", B("pull"), C.remote, () => ACT.fastForward(ctx), "체크아웃 없이"));
     } else if (ahead) sync.push(item("푸시", B("push"), C.remote, () => ACT.push(ctx), `→ ${upstream.short}`));
+    // 주 동작: 다른 브랜치면 체크아웃(또는 워크트리 열기), 현재 브랜치면 원격 상태에 맞춘 푸시/끌어오기.
+    if (!me && go.length) go[go.length - 1] = primary(go[go.length - 1]);
+    if (me && sync.length && !sync[0].danger) sync[0] = primary(sync[0]);
 
     const remove = me || elsewhere || ctx.isDefault ? null
       : ctx.merged ? danger("삭제...", () => confirm(ctx, "remove", "브랜치 삭제", `${q(name)}를 삭제합니다. ${q(head)}에 이미 병합되어 커밋은 남습니다.`), "병합됨 · git branch -d")
@@ -237,9 +279,9 @@ function itemsFor(ctx) {
   }
 
   if (kind === "remote") return tidy([
-    ctx.localOf
+    primary(ctx.localOf
       ? item(`${q(ctx.localOf)}로 체크아웃`, I("branch"), C.go, () => ACT.checkoutLocal(ctx), "이미 추적 중")
-      : item("체크아웃", I("branch"), C.go, () => ACT.track(ctx), "추적 브랜치 만들기"),
+      : item("체크아웃", I("branch"), C.go, () => ACT.track(ctx), "추적 브랜치 만들기")),
     "-",
     newBranch, ...(compare || []), ...(mix || []), "-",
     ...copies, "-",
@@ -255,18 +297,23 @@ function itemsFor(ctx) {
   ]);
 }
 
+const primaryOf = (ctx) => itemsFor(ctx).find((it) => it !== "-" && it.primary) ?? null;
+
 // 툴바 ⋯: 덜 쓰는 것
 function moreItems(ctx) {
   const item = (label, icon, color, fn, hint) => ({ label, icon, color, fn, hint });
   return tidy([
+    ctx.dirty && item("변경 사항 임시 저장", B("stash"), C.edit, () => ACT.stash(ctx), "git stash push -u"),
     item("임시 저장 꺼내기...", B("unstash"), C.edit, () => ACT.stashMenu(ctx), "git stash pop"),
     ctx.head && item("현재 브랜치에 태그...", B("tag-new"), C.edit, () => ask(ctx, "newTag", `${q(ctx.head)}에 태그 만들기`, "태그 이름 (예: v1.2.0)"), ctx.head),
     "-",
-    item("작업 트리 상태", B("status"), C.view, () => ACT.status(ctx), "git status"),
+    item("작업 트리 상태", B("status"), C.view, () => ACT.status(ctx), "커밋 앱에서"),
     ctx.head && { ...item("병합된 브랜치 정리...", B("prune"), C.danger, () => ACT.pruneMerged(ctx), `${ctx.head}에 병합된 것`), danger: true },
     "-",
     item("저장소 웹에서 열기", B("web"), C.cmp, () => ACT.web(ctx)),
     ctx.gh && ctx.head && item("풀 리퀘스트 만들기", B("pr"), C.mix, () => ACT.pr(ctx), "gh pr create --web"),
+    "-",
+    item("다시 읽기", I("refresh"), C.view, () => ACT.refresh(ctx)),
   ]);
 }
 
@@ -355,7 +402,13 @@ export class BranchApp {
     this.refs = null;       // { head, detached, local[], remote[], tags[], dirty, defaults, defaultName }
     this.loading = false; this.error = null;
     this.sel = null;        // 고른 ref 전체 이름(refs/heads/x). main과 origin/main이 겹치지 않게.
-    this.info = null;       // 오른쪽 상세 { ref, log[], incoming[], unpushed:Set, vsHead }
+    this.closed = false;    // ✕로 상세를 닫았으면 다시 읽어도 현재 브랜치를 다시 고르지 않는다.
+    this.info = null;       // 오른쪽 상세 { ref, vsHead, cmp: { mine[], theirs[] } | null }
+    this.log = null;        // 커밋 그래프 { ref, raw[], rows[], more, loading }
+    this.cmpRef = null;     // 커밋 비교를 보고 있는 ref(오른쪽 칸이 그래프 대신 비교 목록)
+    this.cmpAt = shared(CMP)?.at ?? null;
+    this.scroll = ScrollHandle.new();
+    this.rowAt = new Map(); // 목록에 보이는 ref → br-list의 몇 번째 자식인지(키보드 이동·스크롤용, 보이는 순서)
     this.gh = false;
     this.searching = false; this.query = "";
     this.searchInput = InputState.new({ placeholder: "브랜치 이름" });
@@ -376,6 +429,7 @@ export class BranchApp {
     this.disposed = true;
     this.poll?.cancel(); this.poll = null;
     this.watchTask?.cancel(); this.watchTask = null;
+    try { this.scroll?.release(); } catch { /* 이미 해제됨 */ }
   }
 
   current(ctx) { return this.ctx === ctx && key() === ctx.key; }
@@ -384,7 +438,8 @@ export class BranchApp {
     const { cwd, on } = location(), k = key();
     if (k !== this.ctx?.key) {
       this.ctx = { key: k, cwd, on, top: null };
-      this.refs = null; this.sel = null; this.info = null; this.error = null; this.watching = null; this.loading = false;
+      this.refs = null; this.sel = null; this.info = null; this.log = null; this.cmpRef = null; this.closed = false;
+      this.error = null; this.watching = null; this.loading = false;
     }
     if (!cwd || this.loading) return;
     const ctx = this.ctx;
@@ -392,14 +447,15 @@ export class BranchApp {
     cx.spawn(async (cx) => {
       try {
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on });
-        if (top.code !== 0) { if (this.ctx === ctx) { this.error = "git 레포가 아닙니다"; this.refs = null; } return; }
+        if (top.code !== 0) { if (this.ctx === ctx) { this.error = NOT_REPO; this.refs = null; } return; }
         ctx.top = top.stdout.trim();
         const refs = await this.loadRefs(ctx);
         if (!this.current(ctx)) return;
         this.refs = refs; this.error = null;
-        // 고른 ref가 사라졌으면(삭제·이름 변경) 현재 브랜치로.
+        // 고른 ref가 사라졌으면(삭제·이름 변경) 현재 브랜치로. ✕로 닫아 둔 동안은 비워 둔다.
         const all = [...refs.local, ...refs.remote, ...refs.tags];
-        if (!this.sel || !all.some((b) => b.ref === this.sel)) this.sel = refs.head ? `refs/heads/${refs.head}` : null;
+        if (this.sel && !all.some((b) => b.ref === this.sel)) { this.sel = null; this.info = null; this.log = null; this.cmpRef = null; }
+        if (!this.sel && !this.closed) this.sel = refs.head ? `refs/heads/${refs.head}` : null;
         this.watch(ctx, cx);
         this.loadDetail(cx);
       } catch (e) {
@@ -494,43 +550,109 @@ export class BranchApp {
   }
 
   select(ref, cx) {
-    this.sel = ref;
-    this.info = null;
+    if (ref !== this.sel) { this.info = null; this.log = null; this.cmpRef = null; }
+    this.sel = ref; this.closed = false;
     this.loadDetail(cx);
     cx.notify();
   }
 
-  // 오른쪽 상세: 최근 커밋, 원격에 올리지 않은 커밋(표시용), 원격에서 받을 커밋, 현재 브랜치 대비.
+  // 오른쪽 상세: 현재 브랜치 대비 개수, 커밋 그래프(처음 PAGE개), 비교 중이면 양쪽에만 있는 커밋.
   loadDetail(cx) {
     const b = this.find(this.sel), ctx = this.ctx;
     if (!b || !ctx?.top) return;
     const sel = this.sel, o = { cwd: ctx.top, on: ctx.on }, r = this.refs;
-    const fmt = "--format=%H%x00%h%x00%an%x00%at%x00%s";
-    const parse = (res) => (res?.code === 0 ? res.stdout.split("\n").filter(Boolean).map((l) => { const [full, hash, author, at, subject] = l.split("\0"); return { full, hash, author, at: Number(at), subject }; }) : []);
-    const up = b.kind === "local" && b.upstream && !b.gone ? b.upstream.ref : null;
     const isHead = b.kind === "local" && b.name === r?.head;
+    const cmp = this.cmpRef === sel && !isHead && r?.head;
+    // 다시 읽을 때(15초마다·git 변경) 이미 더 불러온 만큼은 유지한다.
+    const n = Math.max(PAGE, this.log?.ref === sel ? this.log.raw.length : 0);
     cx.spawn(async (cx) => {
-      const [log, unpushed, incoming, vs] = await Promise.all([
-        exec("git", ["log", `-n${LOG_N}`, fmt, b.ref, "--"], o).catch(() => null),
-        up && b.ahead ? exec("git", ["rev-list", `-n${LOG_N}`, `${up}..${b.ref}`, "--"], o).catch(() => null) : null,
-        up && b.behind ? exec("git", ["log", `-n${IN_N}`, fmt, `${b.ref}..${up}`, "--"], o).catch(() => null) : null,
+      const [log, vs, mine, theirs] = await Promise.all([
+        exec("git", ["log", `-n${n + 1}`, "--date-order", LOG_FMT, b.ref, "--"], o).catch(() => null),
         !isHead && r?.head ? exec("git", ["rev-list", "--left-right", "--count", `HEAD...${b.ref}`, "--"], o).catch(() => null) : null,
+        cmp ? exec("git", ["log", `-n${CMP_N}`, LOG_FMT, `HEAD..${b.ref}`, "--"], o).catch(() => null) : null,
+        cmp ? exec("git", ["log", `-n${CMP_N}`, LOG_FMT, `${b.ref}..HEAD`, "--"], o).catch(() => null) : null,
       ]);
       if (this.sel !== sel || this.ctx !== ctx) return;
       const [left, right] = vs?.code === 0 ? vs.stdout.trim().split(/\s+/).map(Number) : [null, null];
       this.info = {
-        ref: sel, log: parse(log), incoming: parse(incoming),
-        unpushed: new Set((unpushed?.code === 0 ? unpushed.stdout : "").split("\n").filter(Boolean)),
+        ref: sel,
         vsHead: left === null ? null : { behind: left, ahead: right },
+        cmp: cmp ? { mine: parseLog(mine), theirs: parseLog(theirs) } : null,
       };
+      if (!this.log?.loading || this.log.ref !== sel) {
+        const raw = parseLog(log);
+        // 실패하면 그 자리에 원인을 흐리게 보여 준다.
+        const error = log?.code === 0 ? null : log ? (log.stderr || log.stdout || `종료 코드 ${log.code}`).trim().slice(0, 200) : "git을 실행하지 못했습니다";
+        this.log = { ref: sel, raw: raw.slice(0, n), rows: graph(raw.slice(0, n)), more: raw.length > n, loading: false, error };
+      }
       cx.notify();
     });
+  }
+
+  // 그래프 스크롤이 끝에 닿으면 다음 PAGE개를 더 읽는다. 레인은 처음부터 다시 계산한다(이어지는 선이 맞도록).
+  loadMore(cx) {
+    const lg = this.log, b = this.find(this.sel), ctx = this.ctx;
+    if (!lg || !lg.more || lg.loading || !b || lg.ref !== b.ref || !ctx?.top) return;
+    lg.loading = true;
+    cx.spawn(async (cx) => {
+      const res = await exec("git", ["log", `-n${PAGE + 1}`, `--skip=${lg.raw.length}`, "--date-order", LOG_FMT, b.ref, "--"], { cwd: ctx.top, on: ctx.on }).catch(() => null);
+      lg.loading = false;
+      if (this.log !== lg || this.ctx !== ctx) return;
+      const got = parseLog(res), raw = [...lg.raw, ...got.slice(0, PAGE)];
+      this.log = { ref: lg.ref, raw, rows: graph(raw), more: got.length > PAGE, loading: false };
+      cx.notify();
+    });
+  }
+
+  // 커밋 비교 켜기/끄기. 켜면 그래프 자리에 "이 브랜치에만 / 현재 브랜치에만 있는 커밋"을 보여 준다.
+  showCompare(ref, on, cx) {
+    if (ref !== this.sel) { this.sel = ref; this.info = null; this.log = null; }
+    this.closed = false;
+    this.cmpRef = on ? ref : null;
+    this.loadDetail(cx);
+    cx.notify();
   }
 
   // 앱 셸이 그릴 때마다 부른다: 스페이스가 바뀌었거나 다른 곳(메뉴·확인 창·파일 앱)이 git을 바꿨으면 다시 읽는다.
   sync(cx) {
     if (key() !== this.ctx?.key) this.reload(cx);
     if (shared(TICK) !== this.tick) { this.tick = shared(TICK); this.reload(cx); }
+    // 메뉴의 "커밋 비교": 오버레이가 공유 값으로 알려 준다.
+    const c = shared(CMP);
+    if (c && c.at !== this.cmpAt) {
+      this.cmpAt = c.at;
+      if (c.top === this.ctx?.top && this.find(c.ref)) this.showCompare(c.ref, true, cx);
+    }
+  }
+
+  // ── 셸 계약: 키보드·빈 상태 ──
+
+  // ↑↓: 보이는 목록(접힌 섹션·검색에 걸러진 것은 빼고)에서 선택을 delta만큼 옮긴다.
+  move(delta, cx) {
+    const list = [...this.rowAt.keys()];
+    if (!list.length) return;
+    const i = list.indexOf(this.sel);
+    const j = i < 0 ? (delta > 0 ? 0 : list.length - 1) : Math.max(0, Math.min(list.length - 1, i + delta));
+    if (list[j] !== this.sel || this.closed) this.select(list[j], cx);
+    this.scroll.scroll_to_item(this.rowAt.get(list[j]) ?? 0);
+    cx.notify();
+  }
+
+  // Enter: 고른 브랜치의 주 동작(체크아웃·푸시·끌어오기 등). 위험한 동작은 항목 쪽에서 확인 창을 띄운다.
+  activate(cx) {
+    const b = this.find(this.sel);
+    if (!b || !this.ctx?.top) return;
+    primaryOf(this.ctxFor(b))?.fn();
+    cx.notify();
+  }
+
+  // 상세가 없을 때 셸이 보여 줄 문구.
+  emptyState() {
+    if (!this.ctx?.cwd) return { text: "폴더가 없습니다", sub: "스페이스나 패인을 고르면 그 폴더의 저장소를 보여 줍니다" };
+    if (this.error === NOT_REPO) return { text: NOT_REPO, sub: this.ctx.cwd.replace(home(), "~") };
+    if (this.error) return { text: "브랜치를 읽지 못했습니다", sub: this.error };
+    if (!this.refs) return { text: "브랜치를 읽는 중" };
+    return { text: "고른 브랜치가 없습니다", sub: "왼쪽에서 브랜치를 고르세요" };
   }
 
   // ── 툴팁(files.js와 같은 방식) ──
@@ -551,6 +673,7 @@ export class BranchApp {
 
   // ── 왼쪽 ──
 
+  // 250px 한 줄: 검색 | 가져오기·끌어오기·푸시 | 새 브랜치 … 더보기. 임시 저장·다시 읽기는 더보기 안에.
   toolbar(t) {
     const r = this.refs, ok = Boolean(r && this.ctx?.top), hc = ok ? this.headCtx() : null, h = r?.head;
     const btn = (id, icon, tip, on, fn) => div().id(`br-t-${id}`).p(4).rounded(4).flex_none()
@@ -570,7 +693,7 @@ export class BranchApp {
     const pushFn = h && !(up && ahead && behind) && (() => (up ? ACT.push(hc) : ACT.publish(hc)));
     const base = this.find(this.sel) ?? (h ? r.local.find((x) => x.name === h) : null);
     return v_flex().flex_none()
-      .child(h_flex().min_h(32).py(2).px(6).gap(2).flex_wrap().items_center().border_b_1().border_color(t.border)
+      .child(h_flex().h(32).px(6).gap(2).items_center().border_b_1().border_color(t.border)
         .child(btn("search", I(this.searching ? "close" : "search"), this.searching ? "검색 중 · 누르면 닫기" : "브랜치 검색", this.searching, () => this.toggleSearch()))
         .child(sep())
         .child(btn("fetch", B("fetch"), "가져오기 (git fetch --all --prune)", false, ok && (() => ACT.fetch(hc))))
@@ -581,10 +704,8 @@ export class BranchApp {
           const c = this.ctxFor(base);
           ask(c, "newBranch", `${q(c.name)}에서 새 브랜치`, "만들고 바로 옮깁니다 (git switch -c)");
         })))
-        .child(btn("stash", B("stash"), r?.dirty ? "변경 사항 임시 저장 (git stash push -u)" : "임시 저장 (저장할 변경 없음)", false, ok && r.dirty && (() => ACT.stash(hc))))
-        .child(btn("more", B("more"), "더보기", false, ok && (() => { this.hideTip(); openMenu({ ...hc, kind: "more" }, 300); })))
         .child(div().flex_1())
-        .child(btn("refresh", I("refresh"), "다시 읽기", false, (cx) => this.reload(cx))))
+        .child(btn("more", B("more"), "더보기", false, ok && (() => { this.hideTip(); openMenu({ ...hc, kind: "more" }, 300); }))))
       .when(this.searching, (el) => el.child(h_flex().h(34).px(8).gap(6).items_center().border_b_1().border_color(t.border)
         .child(svg(I("search")).size(14).flex_none().text_color(t.muted))
         .child(div().flex_1().min_w(0).child(Input.new(this.searchInput).h(26).text_size(12).text_color(t.foreground)))));
@@ -628,41 +749,49 @@ export class BranchApp {
       .when(Boolean(track), (el) => el.child(track));
   }
 
+  // 목록 자식들. 브랜치 줄을 넣을 때 rowAt에 "보이는 순서·자식 번호"를 적어 둔다(move가 쓴다).
   rows(t) {
-    const r = this.refs, f = this.query, out = [];
+    const r = this.refs, f = this.query, out = [], at = new Map();
     const keep = (b) => !f || b.name.toLowerCase().includes(f);
     const local = r.local.filter(keep), remote = r.remote.filter(keep), tags = r.tags.filter(keep);
     const open = (id) => this.open[id] || Boolean(f);
+    const add = (b, label) => { at.set(b.ref, out.length); out.push(this.row(b, label, t)); };
     if (!r.head && r.detached) out.push(div().px(8).pt(6).text_size(12).text_color(t.muted).child(`분리된 HEAD · ${r.detached}`));
     out.push(this.section("local", "로컬", local.length, t));
-    if (open("local")) out.push(...local.map((b) => this.row(b, b.name, t)));
-    out.push(this.section("remote", "원격", remote.length, t));
-    if (open("remote")) {
-      // 원격이 여럿이면 원격 이름 아래에, 하나면 이름만.
-      const names = [...new Set(remote.map((b) => b.remote))];
-      for (const name of names) {
-        if (names.length > 1) out.push(div().px(8).pt(4).pb(2).text_size(11).text_color(t.dim).child(name));
-        out.push(...remote.filter((b) => b.remote === name).map((b) => this.row(b, names.length > 1 ? b.short : b.name, t)));
+    if (open("local")) for (const b of local) add(b, b.name);
+    // 원격·태그는 하나도 없으면 머리줄도 숨긴다.
+    if (remote.length) {
+      out.push(this.section("remote", "원격", remote.length, t));
+      if (open("remote")) {
+        // 원격이 여럿이면 원격 이름 아래에, 하나면 이름만.
+        const names = [...new Set(remote.map((b) => b.remote))];
+        for (const name of names) {
+          if (names.length > 1) out.push(div().px(8).pt(4).pb(2).text_size(11).text_color(t.dim).child(name));
+          for (const b of remote.filter((x) => x.remote === name)) add(b, names.length > 1 ? b.short : b.name);
+        }
       }
     }
-    out.push(this.section("tags", "태그", tags.length, t));
-    if (open("tags")) out.push(...tags.slice(0, 300).map((b) => this.row(b, b.name, t)));
+    if (tags.length) {
+      out.push(this.section("tags", "태그", tags.length, t));
+      if (open("tags")) for (const b of tags.slice(0, 300)) add(b, b.name);
+    }
     if (f && !local.length && !remote.length && !tags.length) out.push(div().p(8).text_size(12).text_color(t.dim).child("맞는 브랜치가 없습니다"));
+    this.rowAt = at;
     return out;
   }
 
   list(cx, t) {
     this.sync(cx);
     const r = this.refs;
+    if (!r) this.rowAt = new Map();
     return v_flex().flex_1().min_h(0)
       .child(this.toolbar(t))
-      .child(v_flex().id("br-list").flex_1().min_h(0).overflow_y_scrollbar().p(4)
+      .child(v_flex().id("br-list").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll).p(4)
         .when(Boolean(r), (el) => el.children(this.rows(t)))
-        .when(!r, (el) => el.child(div().p(8).text_size(12).text_color(t.dim)
-          .child(this.error || (this.ctx?.cwd ? "브랜치를 읽는 중" : "폴더가 없습니다")))));
+        .when(!r, (el) => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.emptyState().text))));
   }
 
-  // 타이틀 옆 부제: 레포 경로(누르면 Finder)
+  // 타이틀 옆 부제: 저장소 경로(누르면 Finder)
   subtitle(t) {
     const top = this.ctx?.top, where = top ? top.replace(home(), "~") : "";
     return div().id("br-path").truncate().text_size(12).text_color(t.dim)
@@ -672,49 +801,102 @@ export class BranchApp {
 
   // ── 오른쪽 ──
 
+  // 그래프 칸: 레인마다 세로선, 이 커밋의 레인에 점. flat이면(비교 목록처럼 줄이 끊긴 목록) 점만.
+  lanes(c, t, flat) {
+    const w = (flat ? 1 : c.width) * LANE + 6;
+    const lines = [];
+    if (!flat) for (let i = 0; i < c.width; i++) {
+      const color = LANES[i % LANES.length], x = 6 + i * LANE + LANE / 2 - 1;
+      if (c.before[i]) lines.push(div().absolute().left(x).top(0).w(2).h(GROW / 2).bg(color));
+      if (c.after[i]) lines.push(div().absolute().left(x).top(GROW / 2).w(2).h(GROW / 2).bg(color));
+    }
+    const x = 6 + (flat ? 0 : c.lane) * LANE + LANE / 2 - 5, color = LANES[(flat ? 0 : c.lane) % LANES.length];
+    const merge = c.parents.length > 1;
+    lines.push(div().absolute().left(x).top(GROW / 2 - 5).size(10).rounded_full()
+      .bg(merge ? t.background : color).border_2().border_color(color));
+    return div().relative().w(w).h(GROW).flex_none().children(lines);
+  }
+
+  // 커밋 한 줄: 레인 + 제목 + 짧은 시각. 누르면 커밋 앱에서 연다.
+  // 가상 목록(그래프) 안에서는 on_click을 걸면 렌더러가 예외를 던져 목록이 통째로 비므로, click=false로 부르고
+  // 목록의 on_item_click이 대신 받는다.
+  commitRow(c, t, flat, mark, click = true) {
+    return h_flex().id(`br-c-${mark}-${c.hash}`).w_full().h(GROW).pl(8).pr(14).gap(8).items_center().cursor_pointer()
+      .hover((s) => s.bg(t.hover)).when(click, (el) => el.on_click(() => run(`office-apps.commit:${c.hash}`)))
+      .child(this.lanes(c, t, flat))
+      .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child(c.subject))
+      .child(div().flex_none().text_size(12).text_color(t.dim).child(ago(c.at)));
+  }
+
+  // 비교 목록: 이 브랜치에만 / 현재 브랜치에만 있는 커밋.
+  compareView(b, info, t, cx) {
+    const r = this.refs, v = info?.vsHead, cmp = info?.cmp;
+    const heading = (text) => div().px(14).pt(10).pb(4).text_size(12).font_semibold().text_color(t.muted).child(text);
+    const part = (label, n, list, mark) => [
+      heading(`${label} · ${n ?? list.length}개`),
+      ...list.map((c) => this.commitRow(c, t, true, mark)),
+      ...(n > list.length ? [div().px(14).py(4).text_size(12).text_color(t.dim).child(`외 ${n - list.length}개`)] : []),
+    ];
+    const body = !cmp ? [div().px(14).py(10).text_size(12).text_color(t.dim).child("읽는 중")]
+      : !cmp.mine.length && !cmp.theirs.length ? [div().px(14).py(10).text_size(12).text_color(t.dim).child(`${r.head}와 같습니다`)]
+      : [...(cmp.mine.length ? part(`${b.name}에만 있는 커밋`, v?.ahead, cmp.mine, "mine") : []),
+        ...(cmp.theirs.length ? part(`${r.head}에만 있는 커밋`, v?.behind, cmp.theirs, "theirs") : [])];
+    return v_flex().id("br-cmp").flex_1().min_h(0).overflow_y_scrollbar().pb(10).children(body);
+  }
+
+  graphView(b, t) {
+    const lg = this.log?.ref === b.ref ? this.log : null, rows = lg?.rows ?? [];
+    const note = (text) => div().px(14).py(10).text_size(12).text_color(t.dim).child(text);
+    if (lg?.error) return note(`커밋을 읽지 못했습니다 · ${lg.error}`);
+    if (!rows.length) return note(lg ? "커밋이 없습니다" : "커밋을 읽는 중");
+    // 렌더러는 레이아웃 중에 불려 핸들러·상태 변경·notify가 막혀 있다. 끝 가까이 보였다는 표시만 남기고,
+    // 실제 더 읽기는 다음 스크롤(이벤트 핸들러)에서 한다.
+    return div().flex_1().min_h(0).relative()
+      .on_scroll_wheel((_e, cx) => { if (this.nearEnd) this.loadMore(cx); })
+      .child(v_virtual_list("br-graph", rows.length, GROW, (i) => rows[i].hash, (range) => {
+        this.nearEnd = range.end >= rows.length - 10;
+        return rows.slice(range.start, range.end).map((c) => this.commitRow(c, t, false, "g", false));
+      }).size_full().on_item_click((hash) => run(`office-apps.commit:${hash}`)))
+      .child(Scrollbar.vertical("br-graph").viewport_from_layout().absolute().inset_0());
+  }
+
+  // 상세 = 머리줄(이름·종류·✕) + 추적 상태 한 줄 + 주 동작·⋯ + 커밋 그래프(또는 커밋 비교).
   detail(cx, t) {
     const b = this.find(this.sel);
     if (!b) return null;
     const r = this.refs, c = this.ctxFor(b), info = this.info?.ref === b.ref ? this.info : null;
     const head = b.kind === "local" && b.name === r.head;
     const kindText = head ? "현재 브랜치" : b.kind === "local" ? "로컬 브랜치" : b.kind === "remote" ? "원격 브랜치" : "태그";
+    const comparing = this.cmpRef === b.ref && !head && Boolean(r.head);
 
-    // 이름: 값 줄. 꼭 필요한 것만.
-    const facts = [];
-    const fact = (label, value, color) => facts.push(h_flex().gap(12).items_start()
-      .child(div().w(84).flex_none().text_size(12).text_color(t.dim).child(label))
-      .child(div().flex_1().min_w(0).text_size(13).text_color(color ?? t.foreground).child(value)));
+    // 상태 한 줄: 원격 추적 · 현재 브랜치 대비(누르면 커밋 비교) · 워크트리 · 작업 트리.
+    const bits = [];
+    const text = (s, color) => div().flex_none().text_color(color ?? t.muted).child(s);
     if (b.kind === "local") {
-      if (!b.upstream) fact("원격", "추적하는 원격 없음", t.muted);
-      else if (b.gone) fact("원격", `${b.upstream.short} · 원격에서 지워짐`, t.muted);
-      else fact("원격", `${b.upstream.short}${counts(b.ahead, b.behind) ? ` · ${counts(b.ahead, b.behind)}` : " · 같음"}`);
+      bits.push(text(!b.upstream ? "추적하는 원격 없음" : b.gone ? `${b.upstream.short} · 원격에서 지워짐`
+        : `${b.upstream.short} · ${counts(b.ahead, b.behind) || "같음"}`));
     }
-    if (b.kind === "remote" && c.localOf) fact("로컬", `${c.localOf}가 추적 중`);
+    if (b.kind === "remote" && c.localOf) bits.push(text(`${c.localOf}가 추적 중`));
     if (!head && r.head && info?.vsHead) {
       const v = info.vsHead, s = counts(v.ahead, v.behind) || "같음";
-      fact(`${r.head} 대비`, c.merged && !v.ahead ? `${s} · 병합됨` : s);
+      bits.push(div().id("br-vs").flex_none().text_color(comparing ? t.foreground : t.muted).cursor_pointer().underline()
+        .hover((st) => st.text_color(t.foreground))
+        .on_click((_e, cx) => this.showCompare(b.ref, !comparing, cx))
+        .child(`${r.head} 대비 ${c.merged && !v.ahead ? `${s} · 병합됨` : s}`));
     }
-    if (c.worktree) fact("워크트리", c.worktree.replace(home(), "~"), t.muted);
-    if (head && r.dirty) fact("작업 트리", "커밋하지 않은 변경 있음", t.muted);
-    fact("마지막 커밋", [ago(b.at), b.hash].filter(Boolean).join(" · "), t.muted);
+    if (c.worktree) bits.push(text(`워크트리 ${c.worktree.replace(home(), "~")}`, t.dim));
+    if (head && r.dirty) bits.push(text("커밋하지 않은 변경 있음", t.dim));
+    const line = [];
+    bits.forEach((x, i) => { if (i) line.push(div().flex_none().text_color(t.dim).child("·")); line.push(x); });
 
-    // 동작 버튼: 메뉴와 같은 항목에서 복사 항목만 뺀다.
-    const items = itemsFor(c).filter((it) => it === "-" || !it.menuOnly);
-    const actions = tidy(items).map((it, i) => it === "-"
-      ? div().w(1).h(18).mx(2).bg(t.border)
-      : h_flex().id(`br-act-${i}`).h(26).px(10).gap(6).items_center().rounded(6).border_1().border_color(t.border).text_size(12)
-        .text_color(it.danger ? DANGER : t.foreground).cursor_pointer().hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => { it.fn(); cx.notify(); })
-        .child(svg(it.icon).size(13).flex_none().text_color(it.danger ? DANGER : t.muted))
-        .child(it.label));
-
-    const heading = (text) => div().pt(4).text_size(12).font_semibold().text_color(t.muted).child(text);
-    const commit = (x, mark) => h_flex().id(`br-c-${mark}-${x.hash}`).h(26).px(6).gap(10).items_center().rounded(4).cursor_pointer()
-      .hover((s) => s.bg(t.hover)).on_click(() => ACT.show(c, x.full))
-      .child(div().w(56).flex_none().text_size(11).text_color(t.dim).child(x.hash))
-      .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child(x.subject))
-      .when(mark === "up" && info?.unpushed?.has(x.full), (el) => el.child(div().flex_none().text_size(11).text_color(t.muted).child("올리지 않음")))
-      .child(div().w(150).flex_none().truncate().text_right().text_size(12).text_color(t.dim).child(`${x.author} · ${ago(x.at)}`));
+    // 주 동작 하나 + ⋯(우클릭 메뉴와 같은 메뉴를 그 자리에).
+    const p = primaryOf(c);
+    const button = (id, child, fn) => h_flex().id(id).h(26).px(10).gap(6).items_center().rounded(6).border_1().border_color(t.border)
+      .text_size(12).text_color(t.foreground).cursor_pointer().hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { fn(); cx.notify(); }).children(child);
+    const actions = h_flex().gap(6).items_center()
+      .when(Boolean(p), (el) => el.child(button("br-primary", [svg(p.icon).size(13).flex_none().text_color(t.muted), div().child(p.label)], () => p.fn())))
+      .child(button("br-more", [svg(B("more")).size(13).flex_none().text_color(t.muted)], () => { this.hideTip(); openMenu(c); }));
 
     return v_flex().size_full().min_h(0)
       .child(h_flex().h(40).flex_none().px(14).gap(8).items_center().border_b_1().border_color(t.border)
@@ -722,18 +904,11 @@ export class BranchApp {
         .child(div().flex_none().text_size(14).font_semibold().text_color(t.foreground).child(b.name))
         .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(kindText))
         .child(div().id("br-close").px(6).rounded(4).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => { this.sel = null; this.info = null; cx.notify(); }).child("✕")))
-      .child(v_flex().id("br-detail").flex_1().min_h(0).overflow_y_scrollbar().px(20).py(16).gap(14)
-        .child(v_flex().gap(6).children(facts))
-        .when(actions.length > 0, (el) => el.child(h_flex().flex_wrap().gap(6).items_center().children(actions)))
-        .when(Boolean(info?.incoming?.length), (el) => el
-          .child(heading(`받을 커밋 · ${b.upstream.short}`))
-          .child(v_flex().children(info.incoming.map((x) => commit(x, "in")))))
-        .child(heading("최근 커밋"))
-        .child(info
-          ? v_flex().children(info.log.map((x) => commit(x, "up")))
-            .when(!info.log.length, (el) => el.child(div().px(6).text_size(12).text_color(t.dim).child("커밋이 없습니다")))
-          : div().px(6).text_size(12).text_color(t.dim).child("읽는 중")));
+          .on_click((_e, cx) => { this.closed = true; this.sel = null; this.info = null; this.log = null; this.cmpRef = null; cx.notify(); }).child("✕")))
+      .child(v_flex().flex_none().px(14).py(10).gap(10).border_b_1().border_color(t.border)
+        .when(line.length > 0, (el) => el.child(h_flex().flex_wrap().gap(6).items_center().text_size(12).children(line)))
+        .child(actions))
+      .child(comparing ? this.compareView(b, info, t, cx) : this.graphView(b, t));
   }
 }
 
