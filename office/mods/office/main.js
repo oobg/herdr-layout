@@ -186,7 +186,7 @@ class Floor {
   }
 
   // ── 오버뷰: 고른 워크트리 한눈에 ───────────────────────────
-  // git 상태(브랜치, 앞섬·뒤처짐, 바뀐 파일)는 열려 있는 동안 10초마다 읽는다.
+  // git 상태(브랜치, 앞섬·뒤처짐)는 열려 있는 동안 10초마다 읽는다.
   gitFor(s, cx) {
     const cwd = this.where(s, panes());
     const k = `${s.id}|${cwd}`, g = this.git?.[k];
@@ -194,14 +194,13 @@ class Floor {
     (this.gitBusy ??= new Set()).add(k);
     cx.spawn(async (cx) => {
       try {
-        const r = await exec("git", ["--no-optional-locks", "status", "--porcelain=v1", "-b", "-uall"], { cwd, on: s.machine });
+        const r = await exec("git", ["--no-optional-locks", "status", "--porcelain=v1", "-b", "-uno"], { cwd, on: s.machine });
         const lines = r.code === 0 ? r.stdout.split("\n").filter(Boolean) : [];
         const head = lines[0]?.startsWith("## ") ? lines.shift().slice(3) : "";
-        const files = lines.map((l) => ({ xy: l.slice(0, 2), path: l.slice(3) }));
-        (this.git ??= {})[k] = { at: Date.now(), ok: r.code === 0, files,
+        (this.git ??= {})[k] = { at: Date.now(), ok: r.code === 0,
           ahead: Number(/ahead (\d+)/.exec(head)?.[1] ?? 0), behind: Number(/behind (\d+)/.exec(head)?.[1] ?? 0), gone: /\[gone\]/.test(head),
           upstream: /\.\.\.(\S+)/.exec(head)?.[1] ?? null };
-      } catch { (this.git ??= {})[k] = { at: Date.now(), ok: false, files: [] }; }
+      } catch { (this.git ??= {})[k] = { at: Date.now(), ok: false }; }
       this.gitBusy.delete(k);
       cx.notify();
     });
@@ -210,7 +209,7 @@ class Floor {
 
   overview(s, groups, ags, terms, cx, t) {
     const mine = ags.filter((a) => a.space === s.id);
-    const g = this.gitFor(s, cx) ?? { files: [], ahead: 0, behind: 0 };
+    const g = this.gitFor(s, cx) ?? { ahead: 0, behind: 0 };
     const repo = [...groups.values()].find((z) => z.spaces.some((x) => x.id === s.id))?.name ?? s.name;
     const blocked = mine.filter((a) => a.status === "blocked");
     const tabOf = (a) => s.tabs.find((x) => x.id === a.tab);
@@ -220,9 +219,8 @@ class Floor {
     const goto = (a) => () => run("agent.focus", { terminal: a.address });
     const STATUS = { working: ["작업 중", C.working], blocked: ["입력 대기", C.blocked], done: ["완료", C.done], idle: ["대기", t.muted] };
 
-    const H = (text, extra) => h_flex().pt(18).pb(6).items_baseline().gap(8)
-      .child(div().text_size(12).font_semibold().text_color(t.muted).child(text))
-      .when(Boolean(extra), (el) => el.child(extra));
+    const H = (text) => h_flex().pt(18).pb(6).items_baseline().gap(8)
+      .child(div().text_size(12).font_semibold().text_color(t.muted).child(text));
     // 에이전트 줄: 1행 상태·이름·경과, 2행 하는 일(창 제목). 상태 단어에만 색.
     const agentRow = (a, sub) => {
       const [label, color] = STATUS[a.status] ?? ["", t.muted];
@@ -236,15 +234,6 @@ class Floor {
           .when(m != null, (el) => el.child(div().flex_none().w(52).text_right().text_size(12).text_color(t.muted).child(ago(m)))))
         .when(Boolean(a.title), (el) => el.child(div().pl(24).truncate().text_size(12).text_color(t.muted).child(a.title)));
     };
-    const fileRow = (f) => {
-      const mark = f.xy === "??" ? ["새", "#d1675a"] : f.xy.includes("D") ? ["삭제", t.muted] : f.xy.includes("A") ? ["추가", "#629755"] : ["수정", "#6897bb"];
-      const dir = f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/")) : "";
-      return h_flex().py(4).px(8).gap(10).items_center()
-        .child(div().flex_none().w(28).text_size(12).text_color(mark[1]).child(mark[0]))
-        .child(div().flex_none().text_size(13).text_color(t.foreground).child(f.path.split("/").pop()))
-        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(dir));
-    };
-    const link = (id, text, fn) => div().id(id).text_size(12).text_color(t.accent).cursor_pointer().hover((st) => st.underline()).on_click(fn).child(text);
     const sync = [g.ahead ? `↑${g.ahead}` : null, g.behind ? `↓${g.behind}` : null].filter(Boolean).join(" ");
 
     return v_flex().id("ov").size_full().border_t_1().border_color(t.border).bg(t.chrome).overflow_y_scrollbar().px(16).pb(16)
@@ -254,7 +243,7 @@ class Floor {
         .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.muted).child(`${s.branch ?? "브랜치 없음"}${s.machine ? ` · ${s.machine}` : ""}`))
         .when(Boolean(sync), (el) => el.child(div().flex_none().text_size(13).text_color(t.foreground).child(sync))))
       // 목록이 이미 보여 주는 것은 다시 글로 쓰지 않는다. 비어 있을 때만 한 줄.
-      .when(!mine.length && !g.files.length, (el) => el.child(div().pt(10).text_size(13).text_color(t.muted).child("에이전트도 변경도 없습니다")))
+      .when(!mine.length, (el) => el.child(div().pt(10).text_size(13).text_color(t.muted).child("에이전트가 없습니다")))
       // 답을 기다리는 에이전트가 있으면 바로 열 수 있게
       .when(blocked.length > 0, (el) => el.child(h_flex().mt(12).gap(10).items_center()
         .child(div().id("ov-open").px(12).py(5).rounded(6).bg(C.blocked).text_size(13).font_semibold().text_color("#ffffff").cursor_pointer()
@@ -264,11 +253,7 @@ class Floor {
         .child(H(`에이전트 ${mine.length}`))
         .children(mine.flatMap((a) => [agentRow(a, false), this.activityView(a, cx, t),
           ...terms.filter((x) => x.parent === a.address && x.status)
-            .map((k) => agentRow({ address: k.address, status: k.status, program: k.program, app: k.report?.app, title: k.name ?? "", tab: a.tab }, true))])))
-      .when(g.files.length > 0, (el) => el
-        .child(H(`변경 파일 ${g.files.length}`, link("ov-log", "커밋 로그 보기", () => setShared("office-git.show", { name: s.branch, ref: "HEAD", top: this.where(s, panes()), at: Date.now() }))))
-        .children(g.files.slice(0, 10).map(fileRow))
-        .when(g.files.length > 10, (x) => x.child(div().px(8).pt(4).text_size(12).text_color(t.muted).child(`외 ${g.files.length - 10}개`))));
+            .map((k) => agentRow({ address: k.address, status: k.status, program: k.program, app: k.report?.app, title: k.name ?? "", tab: a.tab }, true))])));
   }
 
   // 아이소메트릭 장면. 구역(레포)마다 한 줄, 그 줄에 워크트리 테이블을 월드 x축으로 늘어놓는다.
