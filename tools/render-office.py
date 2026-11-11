@@ -183,7 +183,7 @@ def rooms(o):
     global sc, cam
     # 방 부품: 칸마다 바닥 판, 구역의 왼쪽(xmin)·뒤(ymax) 가장자리 칸에 벽. 그림자 판 없이 렌더한다.
     global WALL_H
-    WALL_H, WALL_T, SLAB = 1.2, 0.1, 0.12
+    WALL_H, WALL_T, SLAB = 2.0, 0.1, 0.12
     FLOOR_MAT, WALL_MAT = (0.86, 0.86, 0.85), (0.94, 0.94, 0.93)
     ROOM = SIZE * 2   # 방 부품은 테이블 캔버스보다 커서 같은 축척의 두 배 캔버스에 렌더한다
     for name, center, size, rgb in [

@@ -281,9 +281,11 @@ class Floor {
         for (const [side, cc, rr] of [["xmin", c - 1, r], ["xmax", c + 1, r], ["ymax", c, r - 1], ["ymin", c, r + 1]])
           if (!has(cc, rr)) edges.push({ j, side, x, y });
       });
-      // 명패: 왼쪽 벽의 앞쪽(그 앞에 가구가 없는 빈 벽), 바닥에서 0.8m
-      const [px0, py0] = at(zx - CX / 2, zy - (rows - 1) * CY - CY / 2 + 1.0);
-      plates.push({ key, z, j, x: px0 + ez[0] * 0.8, y: py0 + ez[1] * 0.8 });
+      // 명패: 왼쪽 벽 윗부분
+      // 화면에서 왼쪽 벽 앞쪽 윗부분은 가구 뒤에 겹치지 않는 빈 벽면이다(첫 줄 테이블 중심보다 0.9m 앞).
+      const [px0, py0] = at(zx - CX / 2, zy - 0.9);
+      const zh = (M.wall ?? 1.2) - 0.45;
+      plates.push({ key, z, j, x: px0 + ez[0] * zh, y: py0 + ez[1] * zh });
       // 소품: 구역 이름을 시드로 무작위(다시 그려도 같은 자리). 앞쪽(화면 아래)은 비운다.
       const L = zx - CX / 2 + 0.35, R = zx + (cols - 1) * CX + CX / 2 - 0.35, B = zy + CY / 2 - 0.35, F = zy - (rows - 1) * CY - CY / 2 + 0.35;
       const rnd = seeded(key);
@@ -310,7 +312,7 @@ class Floor {
       x0 = Math.min(x0, tb.x + fx); x1 = Math.max(x1, tb.x + fx + fw);
       y0 = Math.min(y0, tb.y + M.hit[1] - 50); y1 = Math.max(y1, tb.y + fy + fh, tb.bottom[1] + M.origin[1] + 70);
     }
-    for (const w of L.walls) if (use(w.key)) { y0 = Math.min(y0, w.y + M.origin[1] + M.ez[1] * 1.3 - 40); x0 = Math.min(x0, w.x + fx); }
+    for (const w of L.walls) if (use(w.key)) { y0 = Math.min(y0, w.y + M.origin[1] + M.ez[1] * ((M.wall ?? 1.2) + 0.1) - 40); x0 = Math.min(x0, w.x + fx); }
     for (const pl of L.plates) if (use(pl.key)) y0 = Math.min(y0, pl.y + M.origin[1] - 40);
     for (const pr of L.props) if (use(pr.key)) {
       const m = M.props[pr.name];
@@ -358,13 +360,6 @@ class Floor {
       else if (tb.id === this.hoverId) els.push(tile("floor", tb.x, tb.y, `${t.accent}14`));
     }
     for (const w of [...L.walls].sort((a, b) => a.y - b.y)) els.push(room(`room_wall_${w.side}`, w.x, w.y));
-    // 명패: 뒤 벽 면에 붙인 이름판(벽 바로 다음에 그려 앞의 가구·소품이 가린다). 벽 기울기대로 비튼 SVG(이름이 바뀌어도 되게 실행 중에 만든다).
-    for (const pl of L.plates) {
-      const plate = this.plate(pl.z.name, EDGE[pl.j % EDGE.length], cx);
-      if (!plate) continue;
-      const [l, tp] = P(pl.x + M.origin[0], pl.y + M.origin[1]);
-      els.push(image(plate.path).absolute().left(l - plate.w / 2).top(tp - plate.h / 2).w(plate.w).h(plate.h));
-    }
     // 2) 테이블·자리·소품: 화면 뒤쪽부터
     const seated = [];
     const things = [...L.tables.map((tb) => ({ tb, y: tb.y })), ...L.props.map((pr) => ({ pr, y: pr.y }))].sort((a, b) => a.y - b.y);
@@ -389,6 +384,13 @@ class Floor {
         }
       }
       tb.n = mine.length;
+    }
+    // 명패: 왼쪽 벽 앞쪽 윗부분. 그 자리 앞엔 가구가 없지만 혹시 겹쳐도 읽히게 가구 다음에 그린다. 벽 기울기대로 비튼 SVG(이름이 바뀌어도 되게 실행 중에 만든다).
+    for (const pl of L.plates) {
+      const plate = this.plate(pl.z.name, EDGE[pl.j % EDGE.length], cx);
+      if (!plate) continue;
+      const [l, tp] = P(pl.x + M.origin[0], pl.y + M.origin[1]);
+      els.push(image(plate.path).absolute().left(l - plate.w / 2).top(tp - plate.h / 2).w(plate.w).h(plate.h));
     }
     // 3) 말풍선
     const z = Math.round(Math.max(18, Math.min(28, 40 * k)));
