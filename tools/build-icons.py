@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Material Icon Theme(npm material-icon-theme) 패키지에서 office-files 아이콘을 만든다.
+"""Material Icon Theme(npm material-icon-theme) 패키지에서 office-apps 아이콘을 만든다.
 
 사용법:
   npm pack material-icon-theme && tar -xzf material-icon-theme-*.tgz
   python3 tools/build-icons.py package
-결과: office/mods/office-files/icons/*.svg, icons.json(이름 → 아이콘 표), LICENSE-material-icon-theme
+결과: office/mods/office-apps/icons/*.svg, icons.json(이름 → 아이콘 표), LICENSE-material-icon-theme
 """
 import json
 import os
@@ -12,7 +12,7 @@ import shutil
 import sys
 
 pkg = sys.argv[1]
-out = os.path.join(os.path.dirname(__file__), "..", "office", "mods", "office-files")
+out = os.path.join(os.path.dirname(__file__), "..", "office", "mods", "office-apps")
 icons_out = os.path.join(out, "icons")
 shutil.rmtree(icons_out, ignore_errors=True)
 os.makedirs(icons_out)

@@ -60,14 +60,14 @@
       "gap": 8,
       "children": [
         {
-          "id": "office-files",
+          "id": "office-apps",
           "type": "block",
           "size": { "weight": 1 },
           "min": 200,
           "radius": 10,
           "border": { "width": 1, "color": "border" },
           "background": "chrome",
-          "content": { "mod": "office-files" }
+          "content": { "mod": "office-apps" }
         },
         {
           "id": "office-git",

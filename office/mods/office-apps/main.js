@@ -8,9 +8,9 @@ import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, InputState, Input } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, home, appHome, props, run, openOverlay, closeOverlay, notify, shared, setShared } from "herdr";
 import { Menu, Confirm, ACTIONS, TICK, menuHeight, popupAt } from "./menu.js";
-const PREVIEW = "office-files.preview";
+const PREVIEW = "office-apps.preview";
 
-const ME = "mods/office-files";
+const ME = "mods/office-apps";
 const PER_FOLDER = 500, TOTAL = 5000;
 // 툴바 아이콘 색: 기능마다 하나.
 const TOOL = { search: "#a7c080", hidden: "#7fbbb3", ignored: "#a07850", file: "#83c092", folder: "#dbbc7f",
@@ -235,7 +235,7 @@ class Tree {
     this.hideTip();
     const name = ctx.abs.split("/").pop().toLowerCase(), dirOf = ctx.kind === "file" ? ctx.abs.slice(0, ctx.abs.lastIndexOf("/")) : ctx.abs;
     const needsPm = ctx.kind === "file" && /^(package\.json|package-lock\.json|bun\.lockb?|pnpm-lock\.yaml|yarn\.lock)$|\.(test|spec)\.|\.[cm]?[jt]sx?$/.test(name);
-    const open = () => { const h = menuHeight(ctx); openOverlay({ mod: "office-files", kind: "popup", at: popupAt(320, h), width: 320, height: h, props: { role: "menu", ctx } }); };
+    const open = () => { const h = menuHeight(ctx); openOverlay({ mod: "office-apps", kind: "popup", at: popupAt(320, h), width: 320, height: h, props: { role: "menu", ctx } }); };
     if (!needsPm && name !== "makefile" && name !== "gnumakefile") return open();
     exec("sh", ["-c", `
       d="$1"; while [ "$d" != "/" ] && [ -n "$d" ]; do
@@ -265,7 +265,7 @@ class Tree {
       .when(Boolean(fn), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.hideTip(); fn(cx); cx.notify(); }))
       .child(svg(`${ME}/${icon}.svg`).size(16).text_color(fn ? TOOL[id] : t.dim));
     const sep = () => div().w(1).h(16).mx(4).flex_none().bg(t.border);
-    const ask = (action, title, hint) => openOverlay({ mod: "office-files", kind: "dialog", width: 420, height: 210,
+    const ask = (action, title, hint) => openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 210,
       props: { role: "prompt", action, title, hint, ctx: this.ctxFor(this.sel, true) } });
     const ok = Boolean(this.root);
     return v_flex().flex_none()
@@ -336,7 +336,7 @@ class Tree {
     if (!b) return;
     const w = Math.round([...text].reduce((n, ch) => n + (ch.charCodeAt(0) > 0x2e80 ? 12 : 7), 0) + 20);
     this.tipFor = id;
-    this.tipId = openOverlay({ mod: "office-files", kind: "window", key: "office-files-tip", frame: "none", width: w, height: 26,
+    this.tipId = openOverlay({ mod: "office-apps", kind: "window", key: "office-apps-tip", frame: "none", width: w, height: 26,
       at: { x: Math.max(4, Math.round(b.x + b.width / 2 - w / 2)), y: Math.max(4, Math.round(b.y - 30)) },
       props: { role: "tip", text } });
   }
@@ -368,7 +368,7 @@ class Tree {
     const name = this.root?.split("/").pop() ?? "";
     const where = this.root ? this.root.replace(home(), "~") : "";
     const rootIcon = ICONS ? `${ME}/icons/${ICONS.folderExpanded}.svg` : null;
-    return v_flex().id("office-files").size_full().min_h(0).bg(t.chrome).text_color(t.foreground).text_size(13)
+    return v_flex().id("office-apps").size_full().min_h(0).bg(t.chrome).text_color(t.foreground).text_size(13)
       .child(h_flex().h(36).flex_none().px(10).gap(6).items_center().border_b_1().border_color(t.border)
         .when(Boolean(this.file), (el) => el.child(div().id("files-back").px(4).rounded(4).cursor_pointer().text_color(t.muted)
           .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("←")))

@@ -1,4 +1,4 @@
-// 파일트리 우클릭 메뉴와 확인 창. office-files의 오버레이 역할이다.
+// 파일트리 우클릭 메뉴와 확인 창. office-apps의 오버레이 역할이다.
 //   menu     props { ctx }   ctx = { kind, path(루트 기준), abs, dir, root, on, mark, ignored, tools[], home, icon, scripts?, pm?, targets? }
 //   confirm  props { ctx, action, title, detail }
 // 파일을 바꾼 뒤에는 TICK을 바꿔 트리가 다시 읽게 한다. 삭제는 휴지통으로 보내 되돌릴 수 있게 한다.
@@ -7,7 +7,7 @@ import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { props, closeOverlay, openOverlay, run, exec, theme, notify, setShared } from "herdr";
 
-export const TICK = "office-files.tick";
+export const TICK = "office-apps.tick";
 
 // 팝업 위치: 마우스 오른쪽 아래가 기본, 창에 공간이 모자라면 위·왼쪽으로 뒤집는다.
 export function popupAt(w, h) {
@@ -50,7 +50,7 @@ async function copy(text, what) {
 
 // 입력 창(이름)과 확인 창이 부르는 동작들.
 export const ACTIONS = {
-  preview: (ctx) => setShared("office-files.preview", { path: ctx.path, root: ctx.root, at: Date.now() }),
+  preview: (ctx) => setShared("office-apps.preview", { path: ctx.path, root: ctx.root, at: Date.now() }),
   openDefault: (ctx) => exec("open", [ctx.abs]),
   openWith: (ctx, app) => exec(app, [ctx.abs]),
   reveal: (ctx) => exec("open", ["-R", ctx.abs]),
@@ -98,16 +98,16 @@ export const ACTIONS = {
 };
 
 const ask = (ctx, action, title, hint, value = "") =>
-  openOverlay({ mod: "office-files", kind: "dialog", width: 420, height: 210, props: { role: "prompt", ctx, action, title, hint, value } });
+  openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 210, props: { role: "prompt", ctx, action, title, hint, value } });
 const confirm = (ctx, action, title, detail) =>
-  openOverlay({ mod: "office-files", kind: "dialog", width: 420, height: 190, props: { role: "confirm", ctx, action, title, detail } });
+  openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", ctx, action, title, detail } });
 
 const EDITORS = { code: "VS Code", cursor: "Cursor", webstorm: "WebStorm", zed: "Zed", idea: "IntelliJ IDEA", subl: "Sublime Text" };
 
 // 메뉴 구조. 자주 쓰는 것만 맨 위에 두고 나머지는 하위 메뉴(▸)로 묶는다. 쓸 수 없는 항목은 숨긴다.
 // 항목: { label, icon, color, fn } | { label, icon, color, sub: [...] } | "-"
 const C = { open: "#7aa2f7", new: "#83c092", copy: "#d699b6", edit: "#dbbc7f", git: "#e69875", danger: "#e67e80", view: "#7fbbb3", run: "#a7c080" };
-const I = (n) => `mods/office-files/${n}.svg`;
+const I = (n) => `mods/office-apps/${n}.svg`;
 
 // 상황별 메뉴. ctx.kind: "root"(빈 영역) | "dir" | "file". 확장자·파일 이름·git 상태에 따라 항목이 달라진다.
 // openMenu가 미리 읽어 둔 정보: ctx.scripts(package.json), ctx.pm(패키지 매니저), ctx.targets(Makefile)
@@ -318,7 +318,7 @@ export class Menu {
       .when(Boolean(parent), (el) => el.child(h_flex().id("fm-back").h(HEAD - 6).mb(4).px(6).gap(8).items_center().rounded(5).cursor_pointer()
         .border_b_1().border_color(t.border).hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => this.back(cx))
-        .child(svg("mods/office-files/chevron-left.svg").size(14).text_color(t.foreground))
+        .child(svg("mods/office-apps/chevron-left.svg").size(14).text_color(t.foreground))
         .child(svg(parent.icon).size(14).text_color(parent.color))
         .child(div().font_semibold().text_color(t.foreground).child(parent.label))))
       .children(list.map((it, i) => it === "-"
@@ -330,7 +330,7 @@ export class Menu {
           .child(svg(it.icon).size(15).flex_none().text_color(it.color))
           .child(div().flex_none().text_color(it.danger ? C.danger : t.foreground).child(it.label))
           .child(div().flex_1().min_w(0).truncate().text_right().text_size(11).text_color(t.dim).child(it.hint ?? ""))
-          .when(Array.isArray(it.sub), (el) => el.child(svg("mods/office-files/chevron-right.svg").size(14).flex_none().text_color(t.foreground)))));
+          .when(Array.isArray(it.sub), (el) => el.child(svg("mods/office-apps/chevron-right.svg").size(14).flex_none().text_color(t.foreground)))));
   }
 }
 
