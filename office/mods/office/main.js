@@ -164,80 +164,63 @@ class Floor {
     const mine = ags.filter((a) => a.space === s.id);
     const g = this.gitFor(s, cx) ?? { files: [], ahead: 0, behind: 0 };
     const repo = [...groups.values()].find((z) => z.spaces.some((x) => x.id === s.id))?.name ?? s.name;
-    const working = mine.filter((a) => a.status === "working"), blocked = mine.filter((a) => a.status === "blocked"), done = mine.filter((a) => a.status === "done");
-    const kids = (a) => terms.filter((x) => x.parent === a.address && x.status);
+    const blocked = mine.filter((a) => a.status === "blocked");
     const tabOf = (a) => s.tabs.find((x) => x.id === a.tab);
-    const since = (ms) => { if (!ms) return ""; const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 60 ? `${m}분` : `${Math.floor(m / 60)}시간 ${m % 60}분`; };
-    const goto = (a) => () => { run("agent.focus", { terminal: a.address }); };
+    const mins = (ms) => (ms ? Math.max(0, Math.round((Date.now() - ms) / 60000)) : null);
+    const ago = (m) => (m == null ? "" : m < 1 ? "방금" : m < 60 ? `${m}분` : `${Math.floor(m / 60)}시간 ${m % 60}분`);
+    const name = (a) => a.program?.name ?? a.app ?? "에이전트";
+    const goto = (a) => () => run("agent.focus", { terminal: a.address });
+    const STATUS = { working: ["작업 중", C.working], blocked: ["입력 대기", C.blocked], done: ["완료", C.done], idle: ["대기", t.muted] };
 
-    // 지금 챙길 일 하나: 입력 대기 > 원격 뒤처짐 > 커밋 안 한 변경 > 순조로움
-    const alert = blocked.length ? { color: C.blocked, title: `${blocked.length}명이 입력을 기다립니다`, body: blocked.map((a) => a.program?.name ?? a.app).join(", "), action: ["보러 가기", goto(blocked[0])] }
-      : g.behind ? { color: C.working, title: `원격보다 ${g.behind}개 뒤처졌습니다`, body: g.upstream ?? "", action: null }
-      : g.files.length ? { color: "#7aa2f7", title: `커밋하지 않은 변경 ${g.files.length}개`, body: g.files.slice(0, 2).map((f) => f.path.split("/").pop()).join(", "), action: null }
-      : { color: C.done, title: "모두 순조롭습니다", body: mine.length ? `${mine.length}명이 이 워크트리에서 일하고 있습니다` : "이 워크트리에 에이전트가 없습니다", action: null };
-
-    const stat = (n, label, color) => v_flex().flex_1().py(8).items_center().gap(2).border_r_1().border_color(t.border)
-      .child(div().text_size(17).font_semibold().text_color(color ?? t.foreground).child(String(n)))
-      .child(div().text_size(11).text_color(color ?? t.muted).child(label));
-    const STATUS = { working: ["작업 중", C.working], blocked: ["입력 대기", C.blocked], done: ["완료", C.done], idle: ["대기", t.dim] };
-    const row = (a, depth) => {
-      const [label, color] = STATUS[a.status] ?? ["", t.dim];
-      const tab = tabOf(a);
-      return h_flex().id(`ov-${a.address}`).h(28).pl(depth * 18).pr(6).gap(8).items_center().rounded(5).cursor_pointer()
+    const H = (text, extra) => h_flex().pt(18).pb(6).items_baseline().gap(8)
+      .child(div().text_size(12).font_semibold().text_color(t.muted).child(text))
+      .when(Boolean(extra), (el) => el.child(extra));
+    // 에이전트 줄: 1행 상태·이름·경과, 2행 하는 일(창 제목). 상태 단어에만 색.
+    const agentRow = (a, sub) => {
+      const [label, color] = STATUS[a.status] ?? ["", t.muted];
+      const m = a.status === "working" ? mins(tabOf(a)?.working_since) : null;
+      return v_flex().id(`ov-${a.address}`).py(7).px(8).ml(sub ? 16 : 0).rounded(6).gap(2).cursor_pointer()
         .hover((st) => st.bg(t.hover)).on_click(goto(a))
-        .child(div().w(14).h(1).flex_none().bg(a.status === "blocked" ? C.blocked : t.border))
-        .child(div().size(7).flex_none().rounded_full().bg(color))
-        .child(programIcon(a.program, 15, t))
-        .child(div().flex_none().font_semibold().text_color(t.foreground).child(a.program?.name ?? a.app ?? "agent"))
-        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(a.title ?? ""))
-        .child(div().flex_none().text_size(11).text_color(color).child(a.status === "working" && tab?.working_since ? `${label} ${since(tab.working_since)}` : label));
+        .child(h_flex().gap(8).items_center()
+          .child(programIcon(a.program, 16, t))
+          .child(div().flex_1().min_w(0).truncate().text_size(13).font_semibold().text_color(t.foreground).child(name(a)))
+          .child(div().flex_none().text_size(12).text_color(color).child(label))
+          .when(m != null, (el) => el.child(div().flex_none().w(52).text_right().text_size(12).text_color(t.muted).child(ago(m)))))
+        .when(Boolean(a.title), (el) => el.child(div().pl(24).truncate().text_size(12).text_color(t.muted).child(a.title)));
     };
-    const section = (title, color, items) => items.length ? v_flex().gap(2).pt(10)
-      .child(div().px(2).pb(2).text_size(11).font_semibold().text_color(color).child(`${title} · ${items.length}`))
-      .children(items) : null;
-    const fileRow = (f) => h_flex().h(24).px(2).gap(8).items_center()
-      .child(div().size(6).flex_none().rounded_full().bg(f.xy === "??" ? "#d1675a" : f.xy.includes("A") ? "#629755" : "#6897bb"))
-      .child(div().flex_none().text_color(t.foreground).child(f.path.split("/").pop()))
-      .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/")) : ""));
+    const fileRow = (f) => {
+      const mark = f.xy === "??" ? ["새", "#d1675a"] : f.xy.includes("D") ? ["삭제", t.muted] : f.xy.includes("A") ? ["추가", "#629755"] : ["수정", "#6897bb"];
+      const dir = f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/")) : "";
+      return h_flex().py(4).px(8).gap(10).items_center()
+        .child(div().flex_none().w(28).text_size(12).text_color(mark[1]).child(mark[0]))
+        .child(div().flex_none().text_size(13).text_color(t.foreground).child(f.path.split("/").pop()))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(dir));
+    };
+    const link = (id, text, fn) => div().id(id).text_size(12).text_color(t.accent).cursor_pointer().hover((st) => st.underline()).on_click(fn).child(text);
+    const sync = [g.ahead ? `↑${g.ahead}` : null, g.behind ? `↓${g.behind}` : null].filter(Boolean).join(" ");
 
-    return v_flex().size_full().border_t_1().border_color(t.border).bg(t.chrome).text_size(12)
-      // 머리줄
-      .child(h_flex().h(40).px(12).gap(8).items_center().flex_none()
-        .child(div().font_semibold().text_size(14).text_color(t.foreground).child(repo))
-        .child(div().px(6).py(1).rounded(4).bg(t.raised).text_size(11).text_color(t.muted).truncate()
-          .child(`${s.branch ?? "브랜치 없음"} · ${s.machine ?? "이 컴퓨터"}`)))
-      .child(v_flex().id("ov-body").flex_1().min_h(0).overflow_y_scrollbar().px(12).pb(10).gap(10)
-        // 알림 카드
-        .child(h_flex().gap(10).items_center().p(10).rounded(8).border_1().border_color(`${alert.color}66`).bg(`${alert.color}14`)
-          .child(div().size(9).flex_none().rounded_full().bg(alert.color))
-          .child(v_flex().flex_1().min_w(0).gap(2)
-            .child(div().font_semibold().text_color(t.foreground).child(alert.title))
-            .child(div().truncate().text_size(11).text_color(t.muted).child(alert.body)))
-          .when(Boolean(alert.action), (el) => el.child(div().id("ov-alert").px(10).py(4).rounded(6).bg(t.foreground).text_color(t.background)
-            .font_semibold().cursor_pointer().on_click(alert.action[1]).child(alert.action[0]))))
-        // 숫자 카드
-        .child(h_flex().rounded(8).border_1().border_color(t.border).overflow_hidden()
-          .child(stat(mine.length, "에이전트"))
-          .child(stat(working.length, "작업 중", working.length ? C.working : null))
-          .child(stat(blocked.length, "입력 대기", blocked.length ? C.blocked : null))
-          .child(stat(g.files.length, "변경", g.files.length ? "#7aa2f7" : null))
-          .child(stat(g.gone ? "–" : `${g.ahead}/${g.behind}`, "↑앞섬/↓뒤처짐")))
-        // 에이전트 트리(서브에이전트는 들여서)
-        .child(v_flex().gap(1).children(mine.length ? mine.flatMap((a) => [row(a, 0), ...kids(a).map((k) => row({ ...k, program: k.program, app: k.report?.app, title: k.name ?? "", tab: a.tab }, 1))])
-          : [div().py(6).text_color(t.dim).child("에이전트가 없습니다. 테이블에 새 에이전트를 앉혀 보세요.")]))
-        .children([
-          section("입력 대기", C.blocked, blocked.map((a) => row(a, 0))),
-          section("완료", C.done, done.map((a) => row(a, 0))),
-          section("바뀐 파일", "#7aa2f7", g.files.slice(0, 8).map(fileRow)),
-        ].filter(Boolean)))
-      // 바닥줄
-      .child(h_flex().h(36).px(12).gap(8).items_center().flex_none().border_t_1().border_color(t.border)
-        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(C.working)
-          .child(`${s.branch ?? ""} · 변경 ${g.files.length}${g.ahead ? ` · ↑${g.ahead}` : ""}${g.behind ? ` · ↓${g.behind}` : ""}`))
-        .child(div().id("ov-log").px(8).py(3).rounded(6).border_1().border_color(t.border).text_size(11).text_color(t.foreground).cursor_pointer()
-          .hover((st) => st.bg(t.hover))
-          .on_click(() => setShared("office-git.show", { name: s.branch, ref: "HEAD", top: this.where(s, panes()), at: Date.now() }))
-          .child("커밋 로그")));
+    return v_flex().id("ov").size_full().border_t_1().border_color(t.border).bg(t.chrome).overflow_y_scrollbar().px(16).pb(16)
+      // 제목: 레포 이름이 가장 크고, 브랜치·머신은 한 단계 낮게
+      .child(h_flex().pt(16).gap(8).items_baseline()
+        .child(div().text_size(16).font_semibold().text_color(t.foreground).child(repo))
+        .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.muted).child(`${s.branch ?? "브랜치 없음"}${s.machine ? ` · ${s.machine}` : ""}`))
+        .when(Boolean(sync), (el) => el.child(div().flex_none().text_size(13).text_color(t.foreground).child(sync))))
+      // 목록이 이미 보여 주는 것은 다시 글로 쓰지 않는다. 비어 있을 때만 한 줄.
+      .when(!mine.length && !g.files.length, (el) => el.child(div().pt(10).text_size(13).text_color(t.muted).child("에이전트도 변경도 없습니다")))
+      // 답을 기다리는 에이전트가 있으면 바로 열 수 있게
+      .when(blocked.length > 0, (el) => el.child(h_flex().mt(12).gap(10).items_center()
+        .child(div().id("ov-open").px(12).py(5).rounded(6).bg(C.blocked).text_size(13).font_semibold().text_color("#ffffff").cursor_pointer()
+          .hover((st) => st.opacity(0.9)).on_click(goto(blocked[0])).child(`${name(blocked[0])} 답하기`))
+        .when(blocked.length > 1, (x) => x.child(div().text_size(12).text_color(t.muted).child(`외 ${blocked.length - 1}명`)))))
+      .when(mine.length > 0, (el) => el
+        .child(H(`에이전트 ${mine.length}`))
+        .children(mine.flatMap((a) => [agentRow(a, false),
+          ...terms.filter((x) => x.parent === a.address && x.status)
+            .map((k) => agentRow({ address: k.address, status: k.status, program: k.program, app: k.report?.app, title: k.name ?? "", tab: a.tab }, true))])))
+      .when(g.files.length > 0, (el) => el
+        .child(H(`변경 파일 ${g.files.length}`, link("ov-log", "커밋 로그 보기", () => setShared("office-git.show", { name: s.branch, ref: "HEAD", top: this.where(s, panes()), at: Date.now() }))))
+        .children(g.files.slice(0, 10).map(fileRow))
+        .when(g.files.length > 10, (x) => x.child(div().px(8).pt(4).text_size(12).text_color(t.muted).child(`외 ${g.files.length - 10}개`))));
   }
 
   // 아이소메트릭 장면. 구역(레포)마다 한 줄, 그 줄에 워크트리 테이블을 월드 x축으로 늘어놓는다.
