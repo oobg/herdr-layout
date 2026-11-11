@@ -1,6 +1,9 @@
 // 파일트리 우클릭 메뉴와 확인 창. office-apps의 오버레이 역할이다.
 //   menu     props { ctx }   ctx = { kind, path(루트 기준), abs, dir, root, on, mark, ignored, tools[], home, icon, scripts?, pm?, targets? }
 //   confirm  props { ctx, action, title, detail }
+//   ctx.kind "tools"는 정해 둔 항목 목록 메뉴(파일 앱 툴바 ⋯): ctx.items = [{ label, icon(이름), color, hint?, check?, cmd? | action? } | "-"]
+//     cmd는 office-apps.<cmd> 명령으로 보내고(오버레이 복사본이라 앱 상태는 명령으로 바꾼다), action은 ACTIONS[action](ctx).
+//     check가 true/false인 항목은 오른쪽에 체크 칸을 그린다. 머리줄 이름은 ctx.title.
 // 파일을 바꾼 뒤에는 TICK을 바꿔 트리가 다시 읽게 한다. 삭제는 휴지통으로 보내 되돌릴 수 있게 한다.
 
 import { div, svg, image } from "gpui-kit";
@@ -116,6 +119,7 @@ const ARCHIVE = /\.(zip|tar|tgz|tar\.gz|tar\.bz2|tar\.xz)$/i;
 const TEST = /\.(test|spec)\.[cm]?[jt]sx?$/i;
 
 export function status(ctx) {
+  if (ctx.kind === "tools") return null;
   if (ctx.kind === "root") return { text: "프로젝트 폴더", color: "#7fbbb3" };
   if (ctx.ignored) return { text: "무시됨", color: "#a07850" };
   return {
@@ -125,6 +129,10 @@ export function status(ctx) {
 }
 
 export function menuTree(ctx) {
+  if (ctx.kind === "tools") return tidy((ctx.items ?? []).map((it) => it === "-" ? "-" : {
+    ...it, icon: I(it.icon),
+    fn: it.cmd ? () => run(`office-apps.${it.cmd}`) : it.action ? () => ACTIONS[it.action]?.(ctx) : () => {},
+  }));
   const name = ctx.abs.split("/").pop(), lower = name.toLowerCase(), kind = ctx.kind;
   const ext = lower.includes(".") ? lower.slice(lower.lastIndexOf(".") + 1) : "";
   const isDir = kind !== "file", here = isDir ? `'${kind === "root" ? "맨 위" : name}'` : "같은 폴더";
@@ -286,7 +294,7 @@ export class Menu {
 
   // 맨 위 머리줄: 무엇을 우클릭했는지(아이콘, 이름, git 상태).
   title(t, ctx) {
-    const st = status(ctx), name = ctx.kind === "root" ? ctx.abs.split("/").pop() : ctx.abs.split("/").pop();
+    const st = status(ctx), name = ctx.title ?? ctx.abs.split("/").pop();
     return h_flex().h(HEAD - 6).mb(4).px(6).gap(8).items_center().border_b_1().border_color(t.border)
       .child(ctx.icon ? image(ctx.icon).size(16).flex_none() : div().w(16))
       .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).child(name))
@@ -330,6 +338,8 @@ export class Menu {
           .child(svg(it.icon).size(15).flex_none().text_color(it.color))
           .child(div().flex_none().text_color(it.danger ? C.danger : t.foreground).child(it.label))
           .child(div().flex_1().min_w(0).truncate().text_right().text_size(11).text_color(t.dim).child(it.hint ?? ""))
+          // 켜고 끄는 항목: 켜져 있으면 체크
+          .when(typeof it.check === "boolean", (el) => el.child(div().w(14).flex_none().text_size(13).text_color(t.accent).child(it.check ? "✓" : "")))
           .when(Array.isArray(it.sub), (el) => el.child(svg("mods/office-apps/chevron-right.svg").size(14).flex_none().text_color(t.foreground)))));
   }
 }

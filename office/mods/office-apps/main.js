@@ -5,15 +5,21 @@
 //   런처는 렌더 때 이전 값과 비교해 새로 꺼진 앱을 dispose()로 멈추고(타이머·폴더 감시) 인스턴스를 버린다.
 //   앱 관리 앱은 끌 수 없다(끄면 다시 켤 길이 없다): 스위치 대신 "항상 켜짐", 우클릭 메뉴에 "앱 끄기" 없음, disable-manage 무시.
 // 앱 계약: init(props, cx) · list(cx, t) · detail?(cx, t) · subtitle?(t) · dispose?() — dispose는 선택, 끌 때 한 번 부른다.
+//   move?(d, cx) — 왼쪽 칸에서 ↑(-1)/↓(+1). activate?(cx) — 왼쪽 칸에서 Enter.
+//   emptyState?() → { text, sub } — detail이 null일 때 오른쪽 빈 화면 문구(없으면 기본 문구).
+//   커밋 앱만: openCommit?(해시|"WORKTREE", cx) · openRange?(a, b, cx) — commit:/range: 명령이 부른다.
+// 런처 격자는 APPS의 group으로 줄을 나눈다: "apps"(들어가는 앱) · "system"(설정·앱 관리처럼 창을 띄우는 것).
 // 오버레이 역할(props.role): menu·prompt·confirm·tip — 파일 앱의 우클릭 메뉴와 입력·확인 창, 툴팁.
 //   manage — 앱 관리 대화 상자(앱마다 켜고 끄기).
 //   launcherMenu — 런처 격자의 앱 아이콘 우클릭 메뉴(열기 · 앱 끄기 · 앱 관리…, 앱 관리 앱은 열기만).
 // 키·명령: office-apps.home(런처로), office-apps.open-<앱 id>(앱 열기), office-apps.show:<경로>(파일 열기),
-//   office-apps.manage(앱 관리 대화 상자), office-apps.disable-<앱 id>(앱 끄기)
+//   office-apps.manage(앱 관리 대화 상자), office-apps.disable-<앱 id>(앱 끄기),
+//   office-apps.commit:<해시|WORKTREE>(커밋 앱에서 그 커밋 열기), office-apps.range:<a>...<b>(커밋 앱에서 범위 비교),
+//   office-apps.files-toggle-hidden · files-toggle-ignored(파일 앱 ⋯ 메뉴가 보낸다: 숨김 파일 · gitignore 항목 보이기 전환)
 
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { props, theme, shared, setShared, nextCommand, run, openOverlay, closeOverlay } from "herdr";
+import { props, theme, shared, setShared, nextCommand, run, openOverlay, closeOverlay, notify } from "herdr";
 import { FilesApp, ROLES } from "./files.js";
 import { popupAt } from "./menu.js";
 import { BranchApp } from "./branch.js";
@@ -25,17 +31,21 @@ import { ServerApp } from "./server.js";
 const ME = "mods/office-apps";
 const DISABLED = "office-apps.disabled";   // { 앱 id: true } — 끈 앱
 // 앱 목록. make가 없는 앱은 아직 준비 중(격자에는 보이되 들어가면 안내만). action이 있는 앱은 들어가지 않고 그 동작만 한다.
-//   locked 앱은 끌 수 없다.
+//   locked 앱은 끌 수 없다. group은 격자·앱 관리에서 나누는 줄(GROUPS 순서): 동작 방식이 아니라 여기 적은 값으로만 나눈다.
 const APPS = [
-  { id: "files", name: "파일", desc: "파일트리와 뷰어(코드·마크다운·이미지)", color: "#3d7de5", make: () => new FilesApp() },
-  { id: "branch", name: "브랜치", desc: "로컬·원격 브랜치 관리", color: "#2f9e6f", make: () => new BranchApp() },
-  { id: "commit", name: "커밋", desc: "커밋 기록과 변경 내용", color: "#e07b39", make: () => new CommitApp() },
-  { id: "pr", name: "PR", desc: "풀 리퀘스트 목록과 리뷰", color: "#8b5cf6", make: () => new PrApp() },
-  { id: "agent", name: "에이전트", desc: "에이전트와 서브에이전트가 하는 일", color: "#d97757", make: () => new AgentApp() },
-  { id: "server", name: "서버", desc: "Herdr에 등록한 머신(서버) 관리", color: "#4f8fa8", make: () => new ServerApp() },
-  { id: "settings", name: "설정", desc: "Herdr 설정 창 열기", color: "#6b7280", action: () => run("app.settings") },
-  { id: "manage", name: "앱 관리", desc: "앱 켜고 끄기", color: "#475569", locked: true, action: () => openManage() },
+  { id: "files", group: "apps", name: "파일", desc: "파일트리와 뷰어(코드·마크다운·이미지)", color: "#3d7de5", make: () => new FilesApp() },
+  { id: "branch", group: "apps", name: "브랜치", desc: "로컬·원격 브랜치 관리", color: "#2f9e6f", make: () => new BranchApp() },
+  { id: "commit", group: "apps", name: "커밋", desc: "커밋 기록과 변경 내용", color: "#e07b39", make: () => new CommitApp() },
+  { id: "pr", group: "apps", name: "PR", desc: "풀 리퀘스트 목록과 리뷰", color: "#8b5cf6", make: () => new PrApp() },
+  { id: "agent", group: "apps", name: "에이전트", desc: "에이전트와 서브에이전트가 하는 일", color: "#d97757", make: () => new AgentApp() },
+  { id: "server", group: "apps", name: "서버", desc: "Herdr에 등록한 머신(서버) 관리", color: "#4f8fa8", make: () => new ServerApp() },
+  { id: "settings", group: "system", name: "설정", desc: "Herdr 설정 창 열기", color: "#6b7280", action: () => run("app.settings") },
+  { id: "manage", group: "system", name: "앱 관리", desc: "앱 켜고 끄기", color: "#475569", locked: true, action: () => openManage() },
 ];
+// 격자·앱 관리의 줄 순서와 줄 제목
+const GROUPS = [{ id: "apps", title: "앱" }, { id: "system", title: "설정" }];
+// 줄 제목: 작은 흐린 글자, 장식 없이
+const groupTitle = (title, t) => div().text_size(12).text_color(t.muted).child(title);
 const isLocked = (id) => Boolean(APPS.find((a) => a.id === id)?.locked);
 
 // 끈 앱 { id: true }. 공유 상태에 끌 수 없는 앱이 꺼져 있다고 적혀 있어도 빼고 돌려준다.
@@ -66,6 +76,7 @@ function openManage() {
 class Launcher {
   init(_p, cx) {
     this.app = null;          // 들어가 있는 앱 id
+    this.lh = cx.focus_handle();   // 앱 화면 왼쪽 칸의 키보드 포커스(↑↓ · Enter를 앱의 move/activate로)
     this.seen = disabled();   // 마지막으로 본 끈 앱 목록(새로 꺼진 앱을 찾는 기준)
     this.inst = {};           // 앱 id → 인스턴스(켜진 앱을 처음 열 때 만든다)
     this.query = "";
@@ -76,6 +87,16 @@ class Launcher {
       for (;;) {
         const c = await nextCommand();
         if (c === "home") this.go(null, cx);
+        // commit:<해시|WORKTREE>  커밋 앱에서 그 커밋(또는 작업 트리 변경)을 연다
+        else if (c.startsWith("commit:")) this.toCommit(cx, (app) => app.openCommit?.(c.slice(7), cx));
+        // range:<a>...<b>  커밋 앱에서 두 지점 사이를 비교한다(첫 "..."로 나눈다)
+        else if (c.startsWith("range:")) {
+          const s = c.slice(6), i = s.indexOf("...");
+          if (i > 0 && i + 3 < s.length) this.toCommit(cx, (app) => app.openRange?.(s.slice(0, i), s.slice(i + 3), cx));
+        }
+        // 파일 앱 ⋯ 메뉴(오버레이 복사본)가 보내는 보기 전환
+        else if (c === "files-toggle-hidden") this.inst.files?.toggleView?.("showHidden", cx);
+        else if (c === "files-toggle-ignored") this.inst.files?.toggleView?.("hideIgnored", cx);
         else if (c.startsWith("open-")) this.go(c.slice(5), cx);
         // 런처 우클릭 메뉴(오버레이 복사본)가 보내는 명령
         else if (c === "manage") openManage();
@@ -89,6 +110,17 @@ class Launcher {
   }
 
   disabled() { return disabled(); }
+
+  // 커밋 앱을 열고 그 인스턴스에 일을 넘긴다. 꺼져 있으면 열지 않고 알린다.
+  toCommit(cx, fn) {
+    if (this.disabled().commit) {
+      notify({ title: "커밋 앱이 꺼져 있습니다", body: "앱 관리에서 켜면 열 수 있습니다", level: "info" });
+      return;
+    }
+    this.go("commit", cx);
+    const app = this.inst.commit;
+    if (app) fn(app);
+  }
 
   // 공유 상태의 끈 앱 목록을 이전 값과 비교해, 새로 꺼진 앱을 정리한다. 렌더마다 부른다
   //   (setShared는 모든 모드를 다시 그리므로 대화 상자에서 끈 것도 여기로 온다).
@@ -132,7 +164,8 @@ class Launcher {
   }
 
   tile(a, size, t) {
-    return tile(a, size).border_1().border_color("#ffffff22").shadow_md();
+    // 격자(56)에서만 유리 판이 바탕에서 살짝 떠 보이게 옅은 그림자. 작은 크기는 그림자가 번져 보여 뺀다.
+    return size >= 48 ? tile(a, size).rounded(Math.round(size * 0.24)).shadow_sm() : tile(a, size);
   }
 
   // 앱 아이콘 우클릭 메뉴. 오버레이는 이 모드의 새 복사본이라 상태를 나누지 않으므로, 고른 동작은 명령으로 돌려받는다.
@@ -146,18 +179,24 @@ class Launcher {
   home(t) {
     const q = this.query, off = this.disabled();
     const list = APPS.filter((a) => !off[a.id] && (!q || a.name.toLowerCase().includes(q) || a.desc.toLowerCase().includes(q) || a.id.includes(q)));
+    // 그룹별 줄. 걸러서 빈 줄은 제목째 숨긴다
+    const rows = GROUPS.map((g) => ({ ...g, apps: list.filter((a) => a.group === g.id) })).filter((g) => g.apps.length);
+    const icon = (a) => v_flex().id(`app-${a.id}`).w(92).py(8).gap(8).items_center().rounded(10).cursor_pointer()
+      .hover((s) => s.bg(t.hover))
+      // 격자에서 눌러 들어가면 왼쪽 칸이 키보드를 받는다(검색창에 있던 포커스를 옮김).
+      //   go()에서는 하지 않는다: 시작할 때 복원·명령(show:·commit: 등)으로 열릴 때 터미널의 키보드를 뺏지 않게.
+      .on_click((_e, cx) => { this.go(a.id, cx); if (this.app) this.lh?.focus(); cx.notify(); })
+      .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(a); })
+      .child(this.tile(a, 56, t))
+      .child(div().text_size(13).text_color(t.foreground).child(a.name));
     return v_flex().size_full().min_h(0)
       .child(h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b_1().border_color(t.border)
         .child(svg(`${ME}/search.svg`).size(16).flex_none().text_color(t.muted))
         .child(div().flex_1().min_w(0).child(Input.new(this.search).h(30).text_size(15).text_color(t.foreground))))
-      .child(div().id("apps-grid").flex_1().min_h(0).overflow_y_scrollbar().p(20)
-        .child(h_flex().flex_wrap().gap(18).children(list.map((a) =>
-          v_flex().id(`app-${a.id}`).w(92).py(8).gap(8).items_center().rounded(10).cursor_pointer()
-            .hover((s) => s.bg(t.hover))
-            .on_click((_e, cx) => { this.go(a.id, cx); cx.notify(); })
-            .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(a); })
-            .child(this.tile(a, 56, t))
-            .child(div().text_size(13).text_color(t.foreground).child(a.name)))))
+      .child(v_flex().id("apps-grid").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(18)
+        .children(rows.map((g) => v_flex().gap(6)
+          .child(div().px(4).child(groupTitle(g.title, t)))
+          .child(h_flex().flex_wrap().gap(18).children(g.apps.map(icon)))))
         .when(list.length === 0, (el) => el.child(div().pt(8).text_color(t.muted).child(q ? "맞는 앱이 없습니다" : "켜진 앱이 없습니다"))));
   }
 
@@ -172,6 +211,8 @@ class Launcher {
   appView(id, cx, t) {
     const a = APPS.find((x) => x.id === id), app = this.instance(id);
     const detail = app?.detail?.(cx, t) ?? null;
+    // 빈 화면 문구: 앱이 emptyState()로 정하면 그것, 아니면 기본. 준비 중인 앱(인스턴스 없음)은 앱 설명
+    const empty = (!detail && app?.emptyState?.()) || null;
     return v_flex().size_full().min_h(0)
       .child(h_flex().h(44).flex_none().px(10).gap(8).items_center().border_b_1().border_color(t.border)
         .child(this.back(t))
@@ -181,22 +222,39 @@ class Launcher {
         .child(div().flex_1().min_w(0).child(app?.subtitle?.(t) ?? div())))
       .child(h_flex().flex_1().min_h(0).items_stretch()
         // 왼쪽: 관리 목록(좁게)
-        .child(v_flex().w(LEFT).h_full().flex_none().min_h(0).border_r_1().border_color(t.border)
+        //   포커스(this.lh)를 달아 ↑↓ → app.move(-1|+1), Enter → app.activate(). 이 칸을 누르면 GPUI가 포커스를 이 칸에 준다
+        //   (안쪽 입력 상자를 누르면 입력 상자가 먼저 포커스를 가져가 이 칸은 뺏지 않는다). 키는 이 칸 자체가 포커스를
+        //   가졌을 때만 받는다: 입력 상자에 포커스가 있으면 같은 키가 이리로 올라와도 그냥 둔다.
+        //   (코드를 다시 불러와 init 없이 남은 인스턴스라 this.lh가 없으면 키 처리 없이 그린다)
+        .child(v_flex().id("apps-left").when(Boolean(this.lh), (el) => el.track_focus(this.lh)).w(LEFT).h_full().flex_none().min_h(0).border_r_1().border_color(t.border)
+          .on_key_down((e, cx) => {
+            if (!app || !this.lh?.is_focused()) return;
+            const m = e.modifiers;
+            if (m.shift || m.alt || m.control || m.platform) return;
+            if (e.key === "up" || e.key === "down") { if (!app.move) return; app.move(e.key === "up" ? -1 : 1, cx); }
+            else if (e.key === "enter") { if (!app.activate) return; app.activate(cx); }
+            else return;
+            cx.stop_propagation(); cx.notify();
+          })
           .child(app ? app.list(cx, t) : v_flex().p(16).gap(6).child(div().text_color(t.muted).child("준비 중인 앱입니다"))
             .child(div().text_size(12).text_color(t.dim).child(a.desc))))
         // 오른쪽: 고른 항목(강조: 더 넓고 밝은 바탕)
         .child(v_flex().flex_1().h_full().min_w(0).min_h(0).bg(t.background)
           .child(detail ?? v_flex().size_full().items_center().justify_center().gap(10)
             .child(this.tile(a, 40, t).opacity(0.5))
-            .child(div().text_size(14).text_color(t.muted).child("선택 내용이 없습니다"))
-            .child(div().text_size(12).text_color(t.dim).child(app ? "왼쪽에서 항목을 고르세요" : a.desc)))));
+            .child(div().text_size(14).text_color(t.muted).child(empty?.text ?? "선택 내용이 없습니다"))
+            .child(div().text_size(12).text_color(t.dim).child(app ? (empty ? empty.sub ?? "" : "왼쪽에서 항목을 고르세요") : a.desc)))));
   }
 }
 
 const LEFT = 250;   // 왼쪽 관리 칸 폭(가운데 내용 칸을 강조하려고 좁게)
 
-// 앱 색 바탕 + 흰 아이콘. 크기에 맞춰 모서리와 아이콘을 줄인다.
+// 앱 타일 그림(리퀴드 글래스): apps/tiles/<id>.svg 한 장이 바탕(앱 색 단색 + 광택·림)과 흰 글리프를 다 담는다.
+//   image()는 원래 색 그대로 그린다(svg()처럼 테마색 마스크가 아님). 모든 그림이 같은 조명·림·글리프 굵기를 쓴다.
+//   그림이 없는 앱(TILES에 없음)은 예전처럼 앱 색 div + 흰 선 아이콘으로 그린다.
+const TILES = new Set(["files", "branch", "commit", "pr", "agent", "server", "settings", "manage"]);
 function tile(a, size) {
+  if (TILES.has(a.id)) return image(`${ME}/apps/tiles/${a.id}.svg`).size(size).flex_none();
   return div().size(size).flex_none().rounded(Math.round(size * 0.24)).bg(a.color).flex().items_center().justify_center()
     .child(svg(`${ME}/apps/${a.id}.svg`).size(Math.round(size * 0.52)).text_color("#ffffff"));
 }
@@ -286,13 +344,14 @@ class ManageDialog {
           .on_click(() => closeOverlay(p.overlay))
           .child(svg(`${ME}/close.svg`).size(14).text_color(t.muted))))
       .child(div().flex_none().px(18).pb(8).text_size(12).text_color(t.muted).child("끈 앱은 런처에서 숨기고, 열려 있던 화면과 타이머(git·네트워크 요청)도 멈춥니다."))
+      // 격자와 같은 줄 순서·제목으로 나눈다
       .child(v_flex().id("apps-manage-list").flex_1().min_h(0).overflow_y_scrollbar().px(12).pb(12).gap(2)
-        .children(APPS.map((a) => {
+        .children(GROUPS.flatMap((g) => [div().px(6).pt(8).pb(2).child(groupTitle(g.title, t)), ...APPS.filter((a) => a.group === g.id).map((a) => {
           const on = !off[a.id];
           // 끌 수 없는 앱은 누를 수 없고, 스위치 대신 흐린 "항상 켜짐"
           return h_flex().id(`apps-tg-${a.id}`).py(8).px(6).gap(12).items_center().rounded(8)
             .when(!a.locked, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => setDisabled(a.id, on)))
-            .child(tile(a, 32).border_1().border_color("#ffffff22"))
+            .child(tile(a, 32))
             .child(v_flex().flex_1().min_w(0).gap(1)
               .child(div().text_size(13).font_semibold().text_color(on ? t.foreground : t.muted).child(a.name))
               .child(div().truncate().text_size(12).text_color(t.muted).child(a.desc + (a.make || a.action ? "" : " · 준비 중"))))
@@ -301,7 +360,7 @@ class ManageDialog {
               ? div().flex_none().text_size(12).text_color(t.dim).child("항상 켜짐")
               : div().w(36).h(20).flex_none().rounded(10).bg(on ? t.accent : t.border).p(2).flex().when(on, (el) => el.justify_end())
                 .child(div().size(16).rounded_full().bg("#ffffff")));
-        })));
+        })])));
   }
 }
 

@@ -22,7 +22,7 @@ const MD_LINE = 19;             // 편집기 줄 높이(글자 12px): 화면 실
 const ALERT = { note: ["참고", "ansi4"], tip: ["팁", "ansi2"], important: ["중요", "ansi5"], warning: ["주의", "ansi3"], caution: ["경고", "ansi1"] };
 // 툴바 아이콘 색: 기능마다 하나.
 const TOOL = { search: "#a7c080", hidden: "#7fbbb3", ignored: "#a07850", file: "#83c092", folder: "#dbbc7f",
-  reveal: "#7aa2f7", terminal: "#83c092", copy: "#d699b6", collapse: "#9da9a0", refresh: "#7fbbb3" };
+  reveal: "#7aa2f7", terminal: "#83c092", copy: "#d699b6", collapse: "#9da9a0", refresh: "#7fbbb3", more: "#9da9a0" };
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
 // git 상태 색 (WebStorm 기본 다크 테마 톤)
 const GIT = { M: "#6897bb", A: "#629755", "?": "#d1675a", U: "#d1675a", D: "#8c8c8c", I: "#a07850" };
@@ -171,7 +171,7 @@ export class FilesApp {
   }
 
   toggle(path, cx) {
-    this.sel = path;
+    this.sel = path; this.cur = path;
     if (this.folders.has(path)) {
       for (const folder of [...this.folders]) if (folder === path || folder.startsWith(path + "/")) {
         this.folders.delete(folder);
@@ -198,6 +198,7 @@ export class FilesApp {
   show(path, cx) {
     const req = this.req = (this.req ?? 0) + 1;
     this.releaseEditors(); this.file = path; this.view = null; this.sheet = 0;
+    if (path) this.cur = path;   // 키보드 커서(move)도 연 파일로
     if (!path || !cx) return;
     const context = this.context, root = this.root, on = this.on, ext = path.includes(".") ? path.split(".").pop().toLowerCase() : "", abs = `${root}/${path}`;
     const latest = () => this.req === req && this.file === path && this.current(context);
@@ -236,6 +237,55 @@ export class FilesApp {
   isIgnored(abs) {
     for (let p = abs; p.length > (this.root?.length ?? 0); p = p.slice(0, p.lastIndexOf("/"))) if (this.ignored.has(p)) return true;
     return false;
+  }
+
+  // 트리에서 지금 보이는 줄(rows와 같은 순서·같은 거르기)의 { path, dir } 목록. 키보드 이동(move)이 쓴다.
+  visible(prefix = "", depth = 0, out = []) {
+    if (out.length >= TOTAL || depth > 40) return out;
+    for (const entry of this.entries.get(prefix) ?? []) {
+      if (out.length >= TOTAL) break;
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if ((!this.showHidden && entry.name.startsWith(".")) || (this.hideIgnored && this.isIgnored(`${this.root}/${path}`))) continue;
+      out.push({ path, dir: entry.dir });
+      if (entry.dir && this.folders.has(path)) this.visible(path, depth + 1, out);
+    }
+    return out;
+  }
+
+  // 셸 계약: 왼쪽 칸에서 ↑(-1)/↓(+1). 커서(this.cur)를 보이는 줄로 옮긴다.
+  //   폴더면 고른 폴더(this.sel, 새 파일·폴더를 만들 곳)도 그 폴더로, 파일이면 미리보기를 연다(클릭과 같게 sel은 그대로).
+  //   검색 중이면 검색 결과를 오간다.
+  move(d, cx) {
+    const list = this.searching ? this.hits().map((path) => ({ path, dir: false })) : this.visible();
+    if (!list.length) return;
+    const i = list.findIndex((r) => r.path === this.cur);
+    const next = list[i < 0 ? (d > 0 ? 0 : list.length - 1) : Math.max(0, Math.min(list.length - 1, i + d))];
+    if (next.dir) { this.sel = next.path; this.cur = next.path; }
+    else if (next.path !== this.file) this.show(next.path, cx);
+    else this.cur = next.path;
+  }
+
+  // 셸 계약: 왼쪽 칸에서 Enter. 폴더면 펼치기/접기, 파일이면 미리보기.
+  activate(cx) {
+    const p = this.cur;
+    if (!p) return;
+    // 검색 중이면 커서가 검색 결과에 있을 때만(트리에서 남은 폴더 경로를 파일로 열지 않게)
+    const row = this.searching ? (this.hits().includes(p) ? { path: p, dir: false } : null) : this.visible().find((r) => r.path === p);
+    if (!row) return;
+    if (row.dir) this.toggle(p, cx); else this.show(p, cx);
+  }
+
+  // 셸 계약: 오른쪽이 비었을 때 문구
+  emptyState() {
+    return { text: "열린 파일이 없습니다", sub: "왼쪽 트리에서 파일을 고르세요 · ↑↓ 이동 · Enter 열기" };
+  }
+
+  // ⋯ 메뉴의 보기 전환(main.js가 files-toggle-hidden · files-toggle-ignored 명령으로 부른다)
+  toggleView(k, cx) {
+    if (k !== "showHidden" && k !== "hideIgnored") return;
+    this[k] = !this[k];
+    this.save(k, this[k]);
+    cx?.notify();
   }
 
   rows(prefix, depth, out, t) {
@@ -305,26 +355,41 @@ export class FilesApp {
       props: { role: "prompt", action, title, hint, ctx: this.ctxFor(this.sel, true) } });
     const ok = Boolean(this.root);
     return v_flex().flex_none()
-      .child(h_flex().min_h(32).py(2).px(6).gap(2).flex_wrap().items_center().border_b_1().border_color(t.border)
+      // 250px 칸에서 한 줄에 들어가게: 숨김 파일·gitignore 전환과 경로 복사는 ⋯ 메뉴(moreMenu)로 옮겼다
+      .child(h_flex().h(32).flex_none().px(6).gap(2).items_center().overflow_hidden().border_b_1().border_color(t.border)
         // 켜고 끄는 버튼은 한 자리에서 아이콘으로 지금 상태를 보여 준다(걸러 내는 중이면 배경도 칠함).
         .child(btn("search", this.searching ? "close" : "search", this.searching ? "검색 중 · 누르면 닫기" : "파일 검색 (이름으로)", this.searching, ok && ((cx) => this.toggleSearch(cx))))
-        .child(btn("hidden", this.showHidden ? "eye" : "eye-off", this.showHidden ? "숨김 파일(.으로 시작) 보이는 중 · 누르면 감추기" : "숨김 파일 감추는 중 · 누르면 보이기", !this.showHidden, () => { this.showHidden = !this.showHidden; this.save("showHidden", this.showHidden); }))
-        .child(btn("ignored", this.hideIgnored ? "ignored-off" : "ignored", this.hideIgnored ? "gitignore 항목 감추는 중 · 누르면 보이기" : "gitignore 항목 보이는 중 · 누르면 감추기", this.hideIgnored, () => { this.hideIgnored = !this.hideIgnored; this.save("hideIgnored", this.hideIgnored); }))
         .child(sep())
         .child(btn("file", "file-new", `새 파일 (${where}에)`, false, ok && (() => ask("file", "새 파일", `${where}에 만들 파일 이름 (하위 폴더는 a/b.ts처럼)`))))
         .child(btn("folder", "folder-new", `새 폴더 (${where}에)`, false, ok && (() => ask("folder", "새 폴더", `${where}에 만들 폴더 이름`))))
         .child(sep())
         .child(btn("terminal", "terminal", `여기서 터미널 열기 (${where})`, false, ok && (() => { run("tab.new", { folder: dir }); run("layout.show", { id: "office-term" }); })))
-        .child(btn("copy", "copy", this.file ? `경로 복사 (${this.file})` : `경로 복사 (${where})`, false, ok && (() => this.copy(this.file ? `${this.root}/${this.file}` : dir))))
         .child(div().flex_1())
         // 펼치기/접기도 한 자리: 열린 폴더가 있으면 모두 접기, 없으면 맨 위 폴더들을 펼치기.
         .child(this.folders.size
           ? btn("collapse", "collapse", "모두 접기", false, ok && (() => { this.folders = new Set(); this.sel = ""; }))
           : btn("collapse", "expand", "맨 위 폴더 모두 펼치기", false, ok && ((cx) => { for (const e of this.entries.get("") ?? []) if (e.dir && !this.folders.has(e.name)) this.toggle(e.name, cx); this.sel = ""; })))
-        .child(btn("refresh", "refresh", "다시 읽기", false, ok && ((cx) => { this.all = null; this.refresh(cx); }))))
+        .child(btn("refresh", "refresh", "다시 읽기", false, ok && ((cx) => { this.all = null; this.refresh(cx); })))
+        // 걸러 내는 중이면(숨김 감춤 · gitignore 감춤) ⋯도 배경을 칠해 지금 상태를 알린다
+        .child(btn("more", "more", "보기 · 복사", !this.showHidden || this.hideIgnored, ok && (() => this.moreMenu(dir)))))
       .when(this.searching, (el) => el.child(h_flex().h(34).px(8).gap(6).items_center().border_b_1().border_color(t.border)
         .child(svg(`${ME}/search.svg`).size(14).flex_none().text_color(t.muted))
         .child(div().flex_1().min_w(0).child(Input.new(this.searchInput).h(26).text_size(12).text_color(t.foreground)))));
+  }
+
+  // ⋯ 메뉴: 보기 전환 두 개(체크 표시) + 경로 복사. 메뉴는 오버레이 복사본에서 그려지므로
+  //   전환은 명령(office-apps.files-toggle-*)으로 런처에 돌려보내고, 복사는 menu.js ACTIONS가 바로 한다.
+  moreMenu(dir) {
+    this.hideTip();
+    const target = this.file ? `${this.root}/${this.file}` : dir;
+    const ctx = { ...this.ctxFor("", true), kind: "tools", title: "보기 · 복사", abs: target, items: [
+      { label: "숨김 파일 보이기", icon: "eye", color: TOOL.hidden, check: this.showHidden, cmd: "files-toggle-hidden", hint: ".으로 시작" },
+      { label: "gitignore 항목 감추기", icon: "ignored-off", color: TOOL.ignored, check: this.hideIgnored, cmd: "files-toggle-ignored" },
+      "-",
+      { label: "경로 복사", icon: "copy", color: TOOL.copy, action: "copyPath", hint: (this.file ?? (this.sel || "맨 위")) },
+    ] };
+    const h = menuHeight(ctx);
+    openOverlay({ mod: "office-apps", kind: "popup", at: popupAt(280, h), width: 280, height: h, props: { role: "menu", ctx } });
   }
 
   save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 이번 실행 동안만 */ } }
@@ -349,16 +414,23 @@ export class FilesApp {
     });
   }
 
+  // 검색 결과 경로(최대 300개). 그리기(results)와 키보드 이동(move)이 함께 쓴다.
+  hits() {
+    const q = this.query;
+    if (!this.all || !q) return [];
+    return this.all.filter((p) => p.split("/").pop().toLowerCase().includes(q)).slice(0, 300);
+  }
+
   results(t) {
     const q = this.query;
     if (!this.all) return [div().p(8).text_size(12).text_color(t.dim).child("파일 목록을 읽는 중")];
     if (!q) return [div().p(8).text_size(12).text_color(t.dim).child(`파일 ${this.all.length.toLocaleString()}개에서 찾습니다`)];
-    const hits = this.all.filter((p) => p.split("/").pop().toLowerCase().includes(q)).slice(0, 300);
+    const hits = this.hits();
     if (!hits.length) return [div().p(8).text_size(12).text_color(t.dim).child("맞는 파일이 없습니다")];
     return hits.map((path) => {
       const name = path.split("/").pop(), icon = iconFor(name, false, false), mark = this.marks[`${this.root}/${path}`];
       return h_flex().id(`hit-${path}`).h(24).flex_none().px(6).gap(6).items_center().rounded(4).cursor_pointer()
-        .hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.show(path, cx))
+        .hover((s) => s.bg(t.hover)).when(this.file === path, (el) => el.bg(t.selected)).on_click((_e, cx) => this.show(path, cx))
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(this.ctxFor(path, false, mark, false)); })
         .child(icon ? image(icon).size(16).flex_none() : div().w(16).flex_none())
         .child(div().flex_none().text_color(mark ? GIT[mark] : t.foreground).child(name))
