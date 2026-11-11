@@ -1,29 +1,99 @@
 # herdr-layout
 
-Herdr 앱용 **Office** 레이아웃입니다. 만드는 방법은 [office/RECIPE.md](office/RECIPE.md)에 있습니다.
+Herdr 앱용 **Office** 레이아웃입니다. 위쪽은 코딩 에이전트들이 일하는 사무실이고, 아래쪽은 파일트리·브랜치·LLM 사용량 패널입니다. 처음부터 다시 만드는 방법은 [office/RECIPE.md](office/RECIPE.md)에 있습니다.
 
-<!-- TODO: 화면 구조가 정해지면 미리보기 추가 -->
+<!-- TODO: 사무실 그래픽이 들어가면 미리보기 추가 (터미널 내용·이메일이 찍히지 않게 찍는다) -->
 <!-- ![Office](office/preview.png) -->
+
+```
+┌──────────── 사무실 ────────────┬──────────── 터미널 ────────────┐
+│ 레포마다 구역, 워크트리마다 테이블   │ 테이블을 누르면 열림 (1 : 2)       │
+├──────────┬───────────────────┴──────────┬────────────────────┤
+│ 파일트리   │ 브랜치 · 커밋 그래프              │ LLM 사용량 (300px)   │
+└──────────┴──────────────────────────────┴────────────────────┘
+```
 
 ## 설치
 
 에이전트에게 이 레이아웃을 추가해 달라고 하거나, 직접 설치합니다.
 
-1. `office/layouts/*`를 `~/.config/herdr-app/layouts/`에 복사합니다.
-2. <!-- TODO: 모드가 생기면 --> `office/mods/office`를 `~/.config/herdr-app/mods/`에 복사합니다.
-3. Herdr 설정에서 **office**를 고르거나 다음 명령을 실행합니다.
-   ```sh
-   herdr-app do layout.switch --name office
-   ```
+```sh
+./install.sh                                # office/layouts, office/mods/* 를 ~/.config/herdr-app 으로 복사
+herdr-app do layout.switch --name office    # 또는 Herdr 설정에서 office 선택
+```
 
-`ctrl-shift-l`을 누르면 이전 레이아웃으로 돌아갑니다. 지우려면 복사한 파일을 삭제합니다.
+`install.sh`는 같은 이름의 파일을 덮어씁니다. `HERDR_APP_HOME`을 주면 그 폴더에 설치합니다. `ctrl-shift-l`로 이전 레이아웃으로 돌아가고, 지우려면 `layouts/office.json`과 `mods/office*` 폴더를 삭제합니다.
 
-<!-- TODO: 네트워크 요청, 외부 프로그램 실행, 모드 폴더 밖 파일 읽기 여부를 밝힌다 -->
+### 필요한 것
+
+- 터미널·패널 글꼴은 [D2Coding](https://github.com/naver/d2codingfont)입니다. 설치되어 있지 않으면 JetBrains Mono로 보입니다.
+- 사용량 패널은 Claude Code, Codex, Antigravity(`agy`), Grok CLI 중 설치되어 로그인된 것만 보여 줍니다.
+- 브랜치 패널의 풀 리퀘스트 버튼은 `gh`가 있을 때만 나옵니다.
+
+### 이 레이아웃이 하는 일 (설치 전에 확인하세요)
+
+Herdr 모드는 신뢰받는 코드라 네트워크와 프로그램 실행에 제한이 없습니다. 이 레이아웃은 다음을 합니다.
+
+| 모드 | 네트워크 | 실행하는 프로그램 | 모드 폴더 밖 파일 |
+|---|---|---|---|
+| `office` | 없음 | `git` (레포 이름 확인) | 없음 |
+| `office-files` | 없음 | `git`, `sh`, `open`, `pbcopy`, `trash`, 에디터 CLI, 우클릭으로 고른 명령 | 현재 레포를 읽고, 우클릭·툴바로 고른 파일을 만들기·이름 변경·휴지통 이동 |
+| `office-git` | `git fetch/pull/push`, `gh` (누를 때만) | `git`, `gh`, `open`, `pbcopy` | 현재 레포 |
+| `office-usage` | `api.anthropic.com`, `chatgpt.com`, `cli-chat-proxy.grok.com`, `auth.x.ai` | `security`(키체인), `agy`, `pgrep`, `python3` | `~/.codex/auth.json`, `~/.grok/auth.json` 읽기, **Grok 토큰이 만료되면 `~/.grok/auth.json`에 새 토큰을 씀** |
+
+- 사용량 조회는 각 CLI가 로그인해 둔 계정의 토큰을 요청 헤더에만 씁니다. 토큰을 저장하거나 출력하지 않습니다.
+- 사용량 API는 공개 API가 아니라 각 CLI와 Orca가 쓰는 내부 엔드포인트입니다. 바뀌면 그 칸에 오류가 뜹니다.
+- Grok 토큰 갱신은 Grok CLI가 꺼져 있을 때만, Grok과 같은 잠금 파일(`auth.json.lock`)을 잡고 합니다. 드물게 Grok 로그인이 풀리면 `grok login`으로 복구됩니다.
 
 ## 화면 구성
 
-<!-- TODO: 화면 구조가 정해지면 위에서 아래로 블록별 설명 -->
+### 사무실 (위 왼쪽)
+
+- 레포 하나가 구역 하나, 워크트리 스페이스 하나가 테이블 하나입니다. 레포가 아닌 스페이스는 "기타" 구역에 모입니다.
+- 에이전트는 테이블에 앉은 캐릭터입니다. 머리 위 말풍선에 에이전트 로고, 그 우상단에 상태가 붙습니다.
+
+  | 상태 | 표시 |
+  |---|---|
+  | 작업 중 | 노란 로딩 원 |
+  | 입력 대기 | 빨간 `?` |
+  | 완료 | 채워진 초록 원 |
+  | 서브에이전트에 위임 | 속이 빈 원 안에 서브에이전트 로고 |
+
+- 테이블을 누르면 그 워크트리로 바뀌고 오른쪽에 터미널 칸이 열립니다(사무실 1 : 터미널 2). 같은 테이블, 빈 바닥, `✕`, `Esc`로 닫으면 사무실이 가운데로 돌아옵니다.
+
+> 지금 그래픽은 도형 자리표시자입니다. 로우폴리 사무실·사람 모델을 렌더한 이미지로 바꿀 예정입니다.
+
+### 파일트리 (아래 왼쪽)
+
+- 헤더에 `프로젝트 ~/경로`. 경로를 누르면 Finder에서 엽니다.
+- Material Icon Theme 아이콘, git 상태별 이름 색(수정 파랑, 추가 초록, 새 파일 빨강, 무시됨 갈색).
+- 툴바: 검색, 숨김 파일·gitignore 항목 보이기, 새 파일·폴더, 터미널, 경로 복사, 펼치기·접기, 다시 읽기.
+- 우클릭 메뉴는 대상에 따라 다릅니다. 빈 영역·폴더·파일, 확장자(`package.json` 스크립트 실행, 테스트 실행, 이미지 훑어보기, `.env.example` 만들기 등), git 상태(새 파일·수정·stage·충돌·무시됨)마다 항목이 바뀝니다.
+
+### 브랜치 · 커밋 (아래 가운데)
+
+- 로컬(이름의 `/`로 폴더 묶음)·원격·태그 트리. 현재 브랜치는 분홍, 즐겨찾기와 기본 브랜치는 노란 별, 원격과의 차이는 `↑n ↓n`.
+- 브랜치를 누르면 커밋 그래프(최근 400개)와 검색. `←`로 돌아옵니다.
+- 툴바: 즐겨찾기만 보기, 검색, 가져오기, 끌어오기(`↓n`), 푸시(`↑n`), 새 브랜치, 임시 저장과 목록, 커밋 로그, PR, 더보기.
+- 우클릭 메뉴는 브랜치 상태에 따라 다릅니다. 현재·기본·병합됨·원격과 갈라짐·다른 워크트리에 있음 등에 맞춰 맨 위 "할 일"과 삭제 방식이 바뀝니다. 충돌이 날 수 있는 작업은 새 터미널 탭에서 실행합니다.
+
+### LLM 사용량 (아래 오른쪽)
+
+- 프로바이더마다 5시간·주간 사용률 막대와 초기화까지 남은 시간. 70% 노랑, 90% 주황, 100% 빨강.
+- Antigravity처럼 모델이 많으면 사용률이 같은 모델을 한 줄로 묶고, 긴 이름은 흘려 보여 줍니다.
+- 프로바이더 접기, `⠿`로 끌어서 순서 바꾸기, 사용률 높은 순 정렬, 자동 갱신 주기(1·5·15·30분), 웹 사용량 페이지 열기.
+
+## 개발
+
+```sh
+herdr-app check office/mods/<모드>   # 수정할 때마다
+./install.sh                         # 설치본에 반영 (Herdr가 바로 다시 불러옴)
+python3 tools/build-icons.py <material-icon-theme 패키지 폴더>   # 파일 아이콘 다시 만들기
+```
+
+모드를 여러 번 다시 불러오면 Herdr의 JS 런타임이 메모리 부족이 될 수 있습니다. `herdr-app status`에 `out of memory`가 보이면 Herdr를 재시작하세요.
 
 ## 라이선스
 
 <!-- TODO: 라이선스 결정 -->
+파일 아이콘은 [Material Icon Theme](https://github.com/material-extensions/vscode-material-icon-theme)(MIT, `office/mods/office-files/LICENSE-material-icon-theme`), Claude·OpenAI 로고는 [Simple Icons](https://simpleicons.org)(CC0)에서 가져왔습니다.
