@@ -1,10 +1,12 @@
-// Claude Code 대화 기록(jsonl) 끝부분을 읽어 "에이전트가 지금 하는 일"을 뽑는다.
+// Claude Code 대화 기록(jsonl)을 해석한다. herdr를 부르지 않아 node로도 시험할 수 있다.
 // office-apps/agent/parse.js(에이전트 앱)에서 고친 내용을 옮겨 왔다(다른 모드라 import로 나눠 쓸 수 없다).
 //   - api-request-blob 같은 줄은 지난 메시지를 다시 담고 있어서 대화 줄(user·assistant)만 본다
-//   - 같은 tool_use id가 두 번 적혀 있으면 한 번만 센다(서브에이전트가 두 줄씩 나오던 원인)
+//   - 같은 tool_use id가 두 번 적혀 있으면 한 번만 센다
 //   - 일하는 중에 보낸 메시지(queued_command)도 새 턴으로 본다
-//   - 완료 알림의 task-id(=agentId)로도 끝난 서브에이전트를 맞춘다
-// herdr를 부르지 않아 node로도 시험할 수 있다. 반환 모양은 main.js의 activityView가 쓰는 그대로다.
+//   - 서브에이전트 기록(subagents/agent-<id>.jsonl)은 모든 줄이 isSidechain이라 sidechain 옵션으로 읽는다
+// 두 가지를 낸다.
+//   parse(text)      기록 끝부분 → 이번 턴의 도구 흐름, 완료 알림(task-id → 상태·도구 수·걸린 시간)
+//   scanLines(lines) 셸의 grep 결과 → 세션 전체의 파일 도구와 완료 알림(끝부분만으로는 세션 앞쪽을 모른다)
 
 // 도구 → [종류, 대상]. 종류는 흐름 줄에서 같은 것끼리 묶는 데 쓴다.
 export function describe(name, input) {
@@ -20,26 +22,53 @@ export function describe(name, input) {
     case "WebFetch": return ["웹", s(input.url)];
     case "WebSearch": return ["웹", s(input.query)];
     case "Skill": return ["스킬", s(input.skill)];
-    default: return [name, ""];
+    default: return [String(name).replace(/^mcp__/, "").replace(/__/g, " "), ""];
   }
 }
 
 const textOf = (content) => (typeof content === "string" ? content
   : Array.isArray(content) ? content.filter((it) => it.type === "text").map((it) => it.text).join("\n") : "");
 
-// text: 기록 끝부분. cut: 앞이 잘렸는지(잘렸으면 첫 줄은 깨진 줄이라 버린다).
-// 반환: { running, agents, files, flow }
-export function parse(text, { cut = true } = {}) {
+// 셸이 기록 전체(또는 지난번 뒤로 새로 붙은 부분)에서 grep -o로 뽑는 두 모양. activity.js가 이 식을 셸에 넘긴다.
+//   파일 도구: "name":"Read","input":{"file_path":"/절대/경로"
+//   완료 알림: <task-id>id</task-id> … <status>completed   (백그라운드 서브에이전트·셸 작업)
+export const SCAN = '"name":"(Read|Edit|MultiEdit|Write|NotebookEdit)","input":\\{"(file_path|notebook_path)":"[^"]*"'
+  + '|<task-id>[A-Za-z0-9_-]+</task-id>[^<]*<tool-use-id>[^<]*</tool-use-id>[^<]*(<output-file>[^<]*</output-file>[^<]*)?<status>[a-z_]+';
+const FILE_KIND = { Read: "읽음", Edit: "수정", MultiEdit: "수정", NotebookEdit: "수정", Write: "작성" };
+
+// grep 결과 줄을 세션 누적 상태에 더한다. files: Map(경로 → 종류), 나중에 본 것이 뒤로 간다. ended: { task-id: 상태 }.
+export function scanLines(lines, files, ended) {
+  for (const l of lines) {
+    if (l.startsWith('"name"')) {
+      const m = /^"name":"(\w+)","input":\{"\w+":"(.*)"$/.exec(l);
+      if (!m || !m[2].startsWith("/")) continue;
+      const path = m[2].replace(/\\\\/g, "\\");
+      files.delete(path);
+      files.set(path, FILE_KIND[m[1]] ?? "읽음");
+    } else if (l.startsWith("<task-id>")) {
+      const id = /^<task-id>([^<]+)</.exec(l)?.[1], st = /<status>([a-z_]+)$/.exec(l)?.[1];
+      if (id && st) ended[id] = st;
+    }
+  }
+}
+
+// text: 기록 끝부분. cut: 앞이 잘렸는지(잘렸으면 첫 줄은 깨진 줄). sidechain: 서브에이전트 기록인지.
+// 반환: { flow, tools, running, ended, agents }
+//   flow    이번 턴의 도구를 연속된 같은 종류끼리 묶은 것(길면 마지막 24묶음)
+//   tools   이번 턴 도구 호출 수
+//   ended   완료 알림에서 읽은 task-id → { status, tools, ms }
+//   agents  끝부분에서 본 서브에이전트 호출(세션의 subagents 목록이 없을 때만 쓴다: 옛 기록 형식)
+export function parse(text, { cut = true, sidechain = false } = {}) {
   const lines = text.split("\n");
   if (cut) lines.shift();
   let calls = [], askAt = 0;
-  const agentCalls = [];   // 서브에이전트 호출은 턴이 바뀌어도 남긴다(백그라운드는 다음 턴까지 돈다)
+  const agentCalls = [];
   const done = new Set(), finished = {}, ended = {}, names = {}, agentIds = {};
   for (const line of lines) {
     if (!line) continue;
     let d;
     try { d = JSON.parse(line); } catch { continue; }
-    if (d.isSidechain) continue; // 서브에이전트 내부 기록은 묶어서 하나로 본다
+    if (d.isSidechain && !sidechain) continue; // 옛 기록 형식: 서브에이전트 내부 줄이 섞여 있으면 건너뛴다
     const at = Date.parse(d.timestamp) || 0;
     const content = d.message?.content;
     // 백그라운드 서브에이전트 완료 알림은 도구 결과와 같은 메시지에 섞여 오기도 한다: 줄 전체에서 찾는다
@@ -54,18 +83,17 @@ export function parse(text, { cut = true } = {}) {
           tools: Number(/<tool_uses>(\d+)<\/tool_uses>/.exec(m[0])?.[1] ?? NaN),
           ms: Number(/<duration_ms>(\d+)<\/duration_ms>/.exec(m[0])?.[1] ?? NaN),
         };
-        // task-id는 서브에이전트의 agentId: tool-use-id가 안 맞아도 이것으로 끝난 것을 안다
+        // task-id는 서브에이전트의 agentId
         if (task) ended[task] = finished[id];
       }
     }
-    // 일하는 중에 사람이 보낸 메시지는 queued_command 첨부로 들어온다: 이것도 새 턴
     const queued = d.type === "attachment" && d.attachment?.type === "queued_command" && d.attachment.commandMode === "prompt"
       ? textOf(d.attachment.prompt).trim() : "";
-    // 대화 줄(user·assistant)만 본다. api-request-blob 같은 줄은 지난 메시지를 다시 담고 있어 겹친다.
     if (!queued && d.type !== "user" && d.type !== "assistant") continue;
     if (queued || (d.type === "user" && !(Array.isArray(content) && content.some((it) => it.type === "tool_result")))) {
       const t = queued || textOf(content).trim();
-      // 사람이 보낸 메시지면 새 턴(자동 알림·시스템 메시지는 "<"로 시작해 제외): 그 앞 단계는 버린다
+      // 사람이 보낸 메시지면 새 턴(자동 알림·시스템 메시지는 "<"로 시작해 제외): 그 앞 단계는 버린다.
+      // 서브에이전트 기록의 첫 줄(부모가 맡긴 일)도 같은 모양이라 그 서브에이전트의 턴이 된다.
       if (!d.isMeta && t && !t.startsWith("<") && !t.startsWith("[Request interrupted")) { calls = []; askAt = at; }
       continue;
     }
@@ -95,27 +123,15 @@ export function parse(text, { cut = true } = {}) {
     return { ...c, kind, target, running: !done.has(c.id) && !end, end };
   };
   const steps = calls.map(step);
-  // 실행 중인 스크립트
   const running = steps.filter((x) => x.running && x.kind === "실행").slice(-2);
-  // 서브에이전트: 아직 도는 것은 언제 띄웠든, 끝난 것은 이번 턴 것만(최근 4개)
-  const agents = agentCalls.map(step).filter((x) => x.running || x.at >= askAt).slice(-4)
-    .map((x) => ({ type: x.input.subagent_type || "general-purpose", what: x.target, running: x.running, at: x.at,
-      failed: Boolean(x.end && x.end.status !== "completed"), tools: x.end?.tools, ms: x.end?.ms }));
-  // 최근 파일(겹치면 최근 것 하나)
-  const files = [];
-  for (const x of [...steps].reverse()) {
-    if (!["읽음", "수정", "작성"].includes(x.kind) || !x.target) continue;
-    if (files.some((f) => f.path === x.target)) continue;
-    files.push({ kind: x.kind, path: x.target });
-    if (files.length >= 6) break;
-  }
-  // 흐름: 이번 턴의 단계를 연속된 같은 종류끼리 묶는다(길면 마지막 10묶음)
+  const agents = agentCalls.map(step).map((x) => ({ id: agentIds[x.id] ?? x.id, toolUse: x.id, type: x.input.subagent_type || "general-purpose",
+    what: x.target, running: x.running, start: x.at, status: x.end?.status ?? null }));
   const flow = [];
   for (const x of steps) {
     const last = flow[flow.length - 1];
     if (last && last.kind === x.kind) { last.n++; last.running ||= x.running; last.target = x.target; }
     else flow.push({ kind: x.kind, n: 1, running: x.running, target: x.target });
   }
-  flow.splice(0, Math.max(0, flow.length - 10));
-  return { running, agents, files, flow };
+  flow.splice(0, Math.max(0, flow.length - 24));
+  return { flow, tools: steps.length, askAt, running, ended, agents };
 }
