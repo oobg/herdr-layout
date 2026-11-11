@@ -509,7 +509,12 @@ class Floor {
         .child(g.running ? svg(SPINNER).size(13).flex_none().text_color(C.working).spin(900) : icon("서브에이전트"))
         .child(div().flex_none().px(5).rounded(4).bg("#d699b622").text_size(11).text_color("#d699b6").child(g.type))
         .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(g.what))
-        .child(div().flex_none().text_size(11).text_color(g.running ? C.working : t.muted).child(g.running ? "작업 중" : "완료")))))
+        .child(div().flex_none().text_size(11).text_color(g.running ? C.working : g.failed ? C.blocked : t.muted)
+          .child(g.running ? "작업 중" : g.failed ? "실패" : [
+            "완료",
+            Number.isFinite(g.tools) ? `도구 ${g.tools}번` : null,
+            Number.isFinite(g.ms) ? (g.ms < 60000 ? `${Math.round(g.ms / 1000)}초` : `${Math.round(g.ms / 60000)}분`) : null,
+          ].filter(Boolean).join(" · "))))))
       // 이번 턴에 본 파일: 위치 칩 + 짧은 경로
       .when(v.files.length > 0, (el) => el.child(head("파일")).children(v.files.map((f) => {
         const [where, path] = place(f.path);

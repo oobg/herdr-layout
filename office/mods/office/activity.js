@@ -1,9 +1,9 @@
 // 에이전트가 지금 무엇을 하는지: Claude Code 대화 기록(jsonl)의 끝부분에서 최근 도구 호출을 읽는다.
 //   기록 위치: ~/.claude/projects/<에이전트 폴더 경로의 영문·숫자 외 글자를 '-'로>/<세션>.jsonl (가장 최근 것)
-//   큰 기록(수십 MB)도 끝 300KB만 읽는다. 결과(tool_result)가 아직 없는 호출은 "지금 하는 중".
+//   큰 기록(수십 MB)도 끝 2MB만 읽는다. 결과(tool_result)가 아직 없는 호출은 "지금 하는 중".
 import { exec, home } from "herdr";
 
-const TAIL = 300000;
+const TAIL = 2000000;   // 이미지를 읽은 결과는 기록에 수백 KB로 들어가서, 턴 하나를 담으려면 넉넉히 읽는다
 
 // 도구 → [종류, 대상]. 종류는 흐름 줄에서 같은 것끼리 묶는 데 쓴다.
 function describe(name, input, cwd) {
@@ -32,30 +32,54 @@ export async function readActivity(cwd, on) {
   const lines = r.stdout.split("\n");
   lines.shift(); // 잘린 첫 줄
   let calls = [];
-  const done = new Set();
+  const done = new Set(), launched = new Set(), finished = {}, names = {};
+  const textOf = (content) => (typeof content === "string" ? content
+    : Array.isArray(content) ? content.filter((it) => it.type === "text").map((it) => it.text).join("\n") : "");
   for (const line of lines) {
     if (!line) continue;
     let d;
     try { d = JSON.parse(line); } catch { continue; }
     if (d.isSidechain) continue; // 서브에이전트 내부 기록은 묶어서 하나로 본다
     const content = d.message?.content;
-    // 사람이 보낸 메시지(도구 결과가 아닌 user 메시지)가 오면 새 턴: 그 앞 단계는 버린다
-    if (d.type === "user" && !d.isMeta && (typeof content === "string" || (Array.isArray(content) && content.some((it) => it.type === "text"))
-        && !(Array.isArray(content) && content.some((it) => it.type === "tool_result")))) { calls = []; continue; }
+    // 백그라운드 서브에이전트 완료 알림은 도구 결과와 같은 메시지에 섞여 오기도 한다: 줄 전체에서 찾는다
+    if (line.includes("<task-notification>")) {
+      const raw = line.replace(/\\n/g, "\n");
+      for (const m of raw.matchAll(/<task-notification>[\s\S]*?<\/task-notification>/g)) {
+        const id = /<tool-use-id>([^<]+)<\/tool-use-id>/.exec(m[0])?.[1];
+        if (!id) continue;
+        finished[id] = {
+          status: /<status>([^<]+)<\/status>/.exec(m[0])?.[1] ?? "completed",
+          tools: Number(/<tool_uses>(\d+)<\/tool_uses>/.exec(m[0])?.[1] ?? NaN),
+          ms: Number(/<duration_ms>(\d+)<\/duration_ms>/.exec(m[0])?.[1] ?? NaN),
+        };
+      }
+    }
+    if (d.type === "user" && !(Array.isArray(content) && content.some((it) => it.type === "tool_result"))) {
+      const text = textOf(content).trim();
+      // 사람이 보낸 메시지면 새 턴(자동 알림·시스템 메시지는 "<"로 시작해 제외): 그 앞 단계는 버린다
+      if (!d.isMeta && text && !text.startsWith("<")) calls = [];
+      continue;
+    }
     if (!Array.isArray(content)) continue;
     for (const it of content) {
-      if (it.type === "tool_use") calls.push({ id: it.id, name: it.name, input: it.input ?? {}, at: Date.parse(d.timestamp) || 0 });
-      else if (it.type === "tool_result") done.add(it.tool_use_id);
+      if (it.type === "tool_use") { calls.push({ id: it.id, name: it.name, input: it.input ?? {}, at: Date.parse(d.timestamp) || 0 }); names[it.id] = it.name; }
+      else if (it.type === "tool_result") {
+        // 백그라운드로 띄운 서브에이전트는 "시작했다"는 결과가 바로 온다: 끝난 게 아니다
+        if (/^(Agent|Task)$/.test(names[it.tool_use_id] ?? "") && /Async agent launched/.test(textOf(it.content))) launched.add(it.tool_use_id);
+        else done.add(it.tool_use_id);
+      }
     }
   }
   const steps = calls.map((c) => {
     const [kind, target] = describe(c.name, c.input, cwd);
-    return { ...c, kind, target, running: !done.has(c.id) };
+    const end = finished[c.id];
+    return { ...c, kind, target, running: !done.has(c.id) && !end, end };
   });
   // 실행 중인 스크립트, 서브에이전트, 최근 파일, 흐름
   const running = steps.filter((x) => x.running && x.kind === "실행").slice(-2);
   const agents = steps.filter((x) => x.kind === "서브에이전트").slice(-4)
-    .map((x) => ({ type: x.input.subagent_type || "general-purpose", what: x.target, running: x.running, at: x.at }));
+    .map((x) => ({ type: x.input.subagent_type || "general-purpose", what: x.target, running: x.running, at: x.at,
+      failed: x.end && x.end.status !== "completed", tools: x.end?.tools, ms: x.end?.ms }));
   const files = [];
   for (const x of [...steps].reverse()) {
     if (!["읽음", "수정", "작성"].includes(x.kind) || !x.target) continue;
