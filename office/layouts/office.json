@@ -2,7 +2,7 @@
   "id": "root",
   "type": "column",
   "font": "D2Coding",
-  "ui_font": "D2Coding",
+  "ui_font": "Pretendard GOV",
   "background": "canvas",
   "terminal_padding": [12, 10],
   "padding": 8,

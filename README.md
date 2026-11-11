@@ -26,7 +26,8 @@ herdr-app do layout.switch --name office    # 또는 Herdr 설정에서 office �
 
 ### 필요한 것
 
-- 터미널·패널 글꼴은 [D2Coding](https://github.com/naver/d2codingfont)입니다. 설치되어 있지 않으면 JetBrains Mono로 보입니다.
+- 터미널 글꼴은 [D2Coding](https://github.com/naver/d2codingfont)입니다. 설치되어 있지 않으면 JetBrains Mono로 보입니다.
+- 패널 글꼴은 [Pretendard GOV](https://github.com/orioncactus/pretendard)이고, 레이아웃에 함께 들어 있어(`office/mods/office/fonts/`, OFL) 따로 설치하지 않아도 됩니다.
 - 사용량 패널은 Claude Code, Codex, Antigravity(`agy`), Grok CLI 중 설치되어 로그인된 것만 보여 줍니다.
 - 브랜치 패널의 풀 리퀘스트 버튼은 `gh`가 있을 때만 나옵니다.
 
