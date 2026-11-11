@@ -172,6 +172,7 @@ def render(sc, name):
 
 
 def px(sc, cam, p):
+    bpy.context.view_layer.update()   # 카메라를 옮긴 직후에도 맞는 행렬로 계산되게
     v = world_to_camera_view(sc, cam, Vector(p))
     n = sc.render.resolution_x
     return [round(v.x * n, 1), round((1 - v.y) * n, 1)]

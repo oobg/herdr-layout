@@ -118,9 +118,28 @@ class Floor {
     });
   }
 
+  // 일을 마친 에이전트는 다음 일을 시작할 때까지 "완료"로 둔다.
+  // Herdr는 완료를 한 번 보면 대기(idle)로 바꾸지만, 사무실에서는 끝났다는 표시가 남아 있는 편이 읽기 쉽다.
+  // 끝난 시각도 기억해 "완료 n분 전"으로 보여 준다. 켜기 전에 이미 끝나 있었으면 탭이 마지막으로 바뀐 시각.
+  withDone(list) {
+    const fin = (this.finished ??= new Map()), seen = (this.lastStatus ??= {});
+    const tabTime = (a) => spaces().flatMap((s) => s.tabs).find((x) => x.id === a.tab)?.changed_at;
+    const out = list.map((a) => {
+      const prev = seen[a.address];
+      seen[a.address] = a.status;
+      if (a.status === "working" || a.status === "blocked") { fin.delete(a.address); return a; }
+      if (a.status === "done" || (a.status === "idle" && (prev === "working" || prev === "done" || fin.has(a.address)))) {
+        if (!fin.has(a.address)) fin.set(a.address, prev === "working" || prev === "blocked" ? Date.now() : tabTime(a) ?? Date.now());
+        return { ...a, status: "done", doneAt: fin.get(a.address) };
+      }
+      return a;
+    });
+    return out;
+  }
+
   render(cx) {
     this.loadSprites(cx);
-    const t = theme(), ps = panes(), ags = agents(), terms = terminals();
+    const t = theme(), ps = panes(), ags = this.withDone(agents()), terms = terminals();
     const groups = new Map();
     // 홈 폴더(~) 스페이스는 늘 있는 "사장님방"(임원용 책상), 레포는 레포 이름 방, 나머지는 "기타".
     groups.set("~boss", { name: "사장님방", boss: true, spaces: [] });
@@ -283,7 +302,8 @@ class Floor {
       });
       // 명패: 왼쪽 벽 윗부분
       // 화면에서 왼쪽 벽 앞쪽 윗부분은 가구 뒤에 겹치지 않는 빈 벽면이다(첫 줄 테이블 중심보다 0.9m 앞).
-      const [px0, py0] = at(zx - CX / 2, zy + CY / 2 - 1.5);   // 벽 뒤쪽 윗부분(화면 왼쪽 위). 이 높이면 칸막이·모니터보다 위
+      // 벽 기준 좌상단: 왼쪽 벽의 앞쪽 끝(화면 왼쪽) 꼭대기. 명패 왼쪽 끝이 벽 모서리 가까이 오게.
+      const [px0, py0] = at(zx - CX / 2, zy - (rows - 1) * CY - CY / 2 + 1.05);
       const zh = (M.wall ?? 1.2) - 0.3;   // 벽 꼭대기 바로 아래
       plates.push({ key, z, j, x: px0 + ez[0] * zh, y: py0 + ez[1] * zh });
       // 소품: 구역 이름을 시드로 무작위(다시 그려도 같은 자리). 앞쪽(화면 아래)은 비운다.
@@ -398,7 +418,7 @@ class Floor {
       const [l, tp] = P(w.x, w.y);
       // 상태 표시: 머리 위 가운데. 폭을 넉넉히 잡고 가운데 정렬해 글 길이가 달라도 머리 위에 온다.
       const tab = w.tab;
-      els.push(h_flex().absolute().left(l - 90).top(tp - (w.a.status === "idle" ? 16 : 32)).w(180).justify_center()
+      els.push(h_flex().absolute().left(l - 90).top(tp - 32).w(180).justify_center()
         .child(this.bubble(w.a, terms, t, tab)));
     }
     // 4) 클릭 영역: 칸 가운데를 중심으로 이웃 칸과 겹치지 않게(그림의 투명한 곳도 사각형으로 눌리므로).
@@ -473,16 +493,18 @@ class Floor {
   // 말풍선: 흰 바탕에 에이전트 로고, 우상단에 상태 뱃지. 아래 꼬리로 머리를 가리킨다.
   // 머리 위 상태 표시. 상태가 먼저 읽히도록 색 알약에 상태 낱말을 쓰고, 로고는 작게.
   //   입력 대기: 빨강 "답 필요", 깜빡이며 살짝 튄다(가장 먼저 봐야 하므로)
-  //   작업 중: 노랑 "작업 중 4분"   완료: 초록 "완료"   대기: 작은 회색 점만(화면을 어지럽히지 않게)
+  //   작업 중: 노랑 "작업 중 4분"   완료: 초록 "완료"   대기: 회색 "대기"
   //   서브에이전트가 일하는 중이면 "+n"
   bubble(a, terms, t, tab) {
-    if (a.status === "idle") return div().size(8).rounded_full().bg("#9aa0a6").border_1().border_color("#ffffff");
+    const ago = (ms) => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 1 ? "방금" : m < 60 ? `${m}분 전` : m < 1440 ? `${Math.floor(m / 60)}시간 전` : `${Math.floor(m / 1440)}일 전`; };
+
     const m = a.status === "working" && tab?.working_since ? Math.max(0, Math.round((Date.now() - tab.working_since) / 60000)) : null;
     const [bg, fg, text] = {
       blocked: [C.blocked, "#ffffff", "답 필요"],
       working: [C.working, "#2a2100", m == null ? "작업 중" : m < 1 ? "작업 중" : `작업 중 ${m < 60 ? `${m}분` : `${Math.floor(m / 60)}시간`}`],
-      done: [C.done, "#ffffff", "완료"],
-    }[a.status] ?? ["#9aa0a6", "#ffffff", ""];
+      done: [C.done, "#ffffff", a.doneAt ? `완료 ${ago(a.doneAt)}` : "완료"],
+      idle: ["#5f6670", "#ffffff", "대기"],
+    }[a.status] ?? ["#5f6670", "#ffffff", ""];
     const kids = terms.filter((x) => x.parent === a.address && x.status === "working").length;
     const icon = a.status === "working" ? svg(SPINNER).size(12).text_color(fg).spin(900)
       : a.status === "done" ? div().text_size(12).font_semibold().text_color(fg).child("✓")
