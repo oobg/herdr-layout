@@ -30,6 +30,25 @@ export function sshTarget(user, hostField, port) {
   return `${u ? `${u}@` : ""}${host}${p ? `:${p}` : ""}`;
 }
 
+// 기기 이름 규칙(hc 오류 문구): 1~32자, a-z 0-9 - _ ., 영문·숫자로 시작, 터미널 주소(t7, t1b) 모양 금지
+const ID_SHAPE = /^t\d+[a-z]*$/;
+export function nameProblem(n) {
+  if (!n) return "기기 이름이 필요합니다";
+  if (n.length > 32) return "32자를 넘습니다";
+  if (/[^a-z0-9._-]/.test(n)) return /^[A-Za-z0-9._-]+$/.test(n) ? "대문자는 쓸 수 없습니다" : "영문 소문자·숫자·- _ . 만 쓸 수 있습니다";
+  if (!/^[a-z0-9]/.test(n)) return "영문이나 숫자로 시작해야 합니다";
+  if (ID_SHAPE.test(n)) return "t7 같은 터미널 주소 모양은 쓸 수 없습니다";
+  return null;
+}
+// 규칙에 맞게 고친 이름(호스트 등에서)
+export function suggestName(src) {
+  let n = String(src ?? "").toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "").replace(/[-_.]+$/, "").slice(0, 32);
+  if (!n) return null;
+  if (ID_SHAPE.test(n)) n = `${n}-m`;
+  return nameProblem(n) ? null : n;
+}
+const hostOf = (target) => (target ?? "").replace(/^.*@/, "").replace(/:\d+$/, "");
+
 export class AddForm {
   // 입력 상자는 렌더 중에 만들 수 없어 여기(서버 앱 init)에서 만든다.
   init(onChange) {
@@ -41,9 +60,10 @@ export class AddForm {
       s.on("submit", (_e, cx) => this.submit(cx));
       return s;
     };
-    this.user = make("woong");
-    this.target = make("192.168.0.10, example.com, ssh config의 Host");
-    this.port = make("22");
+    // 예시 값을 placeholder로 두면 채워진 것처럼 보여 비워 둔다(설치본에서 woong이 입력된 줄 안 혼동).
+    this.user = make("비우면 ssh 기본 계정");
+    this.target = make("IP, 도메인 또는 ssh config의 Host");
+    this.port = make("비우면 22");
     this.name = make("비우면 호스트");
     this.via = make("ssh -p 2222 -i ~/.ssh/key user@ip");
     this.viaName = make("Herdr 목록에 보일 이름");
@@ -72,9 +92,26 @@ export class AddForm {
     return target.replace(/^.*@/, "").replace(/:\d+$/, "");
   }
 
+  // 기기 이름 문제: { text, suggest } 또는 null. SSH에서 비우면 hc가 호스트를 이름으로 쓰므로 그것을 검사한다.
+  problem() {
+    const v = (s) => s.value().trim();
+    if (this.mode === "ssh") {
+      const target = sshTarget(v(this.user), v(this.target), v(this.port));
+      if (!target) return null;
+      const typed = v(this.name), host = hostOf(target);
+      const text = nameProblem(typed || host);
+      if (!text) return null;
+      return { text: typed ? text : `호스트 '${host}'를 이름으로 쓸 수 없습니다: ${text}`, suggest: suggestName(host) ?? suggestName(typed) };
+    }
+    const typed = v(this.viaName);
+    if (!typed) return null;   // 비었을 때는 버튼만 꺼진다(args가 null)
+    const text = nameProblem(typed);
+    return text ? { text, suggest: suggestName(typed) } : null;
+  }
+
   submit(cx) {
     const args = this.args();
-    if (!args || this.busy) return;
+    if (!args || this.busy || this.problem()) return;
     this.busy = true; this.result = null;
     cx.notify();
     cx.spawn(async (cx) => {
@@ -102,11 +139,21 @@ export class AddForm {
   view(t, W) {
     const args = this.args();
     const preview = args ? ["hc", ...args].map(shellArg).join(" ") : "hc machine add …";
-    const field = (label, state, hint) => v_flex().gap(4)
+    const bad = this.problem();
+    const nameState = this.mode === "ssh" ? this.name : this.viaName;
+    // 이름 칸 아래: 빨간 이유 + 누르면 채우는 제안
+    const nameNote = bad ? v_flex().gap(2)
+      .child(div().text_size(11).text_color(t.ansi1).child(bad.text))
+      .when(Boolean(bad.suggest), (el) => el.child(div().id("sv-add-suggest").text_size(11).text_color(t.muted).cursor_pointer()
+        .hover((s) => s.text_color(t.foreground).underline())
+        .on_click((_e, cx) => { nameState.set_value(bad.suggest); this.result = null; cx.notify(); })
+        .child(`'${bad.suggest}'(으)로 쓰기`))) : null;
+    const field = (label, state, hint, note = null) => v_flex().gap(4)
       .child(h_flex().gap(6).items_baseline()
         .child(div().text_size(12).text_color(t.muted).child(label))
         .when(Boolean(hint), (el) => el.child(div().text_size(11).text_color(t.dim).child(hint))))
-      .child(Input.new(state).w(Math.min(420, W)).h(30).px(8).rounded(6).border_1().border_color(t.input).bg(t.background).text_size(13).text_color(t.foreground));
+      .child(Input.new(state).w(Math.min(420, W)).h(30).px(8).rounded(6).border_1().border_color(t.input).bg(t.background).text_size(13).text_color(t.foreground))
+      .when(Boolean(note), (el) => el.child(note));
     const tab = (id, text) => div().id(`sv-add-${id}`).px(10).py(3).rounded(5).text_size(12).cursor_pointer()
       .text_color(this.mode === id ? t.foreground : t.muted).when(this.mode === id, (el) => el.bg(t.selected))
       .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.mode = id; this.result = null; this.focus(); cx.notify(); }).child(text);
@@ -130,13 +177,13 @@ export class AddForm {
           .child(field("사용자", this.user, "선택 · ssh로 접속할 계정"))
           .child(field("호스트", this.target, "필수 · IP, 도메인, ssh config의 Host"))
           .child(field("포트", this.port, "선택 · 비우면 22(또는 ssh config)"))
-          .child(field("기기 이름", this.name, "Herdr 목록에 보일 이름 · 비우면 호스트")))
+          .child(field("기기 이름", this.name, "영문 소문자·숫자·-_. 1~32자 · 비우면 호스트", nameNote)))
         .when(this.mode === "via", (el) => el
           .child(field("명령", this.via, "마지막 인자로 셸 한 줄을 받아 그쪽에서 돌리는 명령. 아무것도 묻지 않아야 합니다"))
-          .child(field("기기 이름", this.viaName, "필수 · Herdr 목록에 보일 이름")))
+          .child(field("기기 이름", this.viaName, "필수 · 영문 소문자·숫자·-_. 1~32자", nameNote)))
         .child(div().pt(2).text_size(12).font_family(MONO).text_color(t.dim).child(preview))
         .child(h_flex().gap(10).items_center()
-          .child(btn("sv-add-go", this.busy ? "추가하는 중" : "추가", args && !this.busy && ((_e, cx) => this.submit(cx)), true))
+          .child(btn("sv-add-go", this.busy ? "추가하는 중" : "추가", args && !bad && !this.busy && ((_e, cx) => this.submit(cx)), true))
           .child(div().id("sv-add-builtin").text_size(12).text_color(t.dim).cursor_pointer()
             .hover((s) => s.text_color(t.foreground).underline())
             .on_click(() => run("mod.open", { name: "machine-add" })).child("Herdr 기본 추가 창 열기")))
