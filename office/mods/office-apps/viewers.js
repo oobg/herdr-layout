@@ -1,7 +1,8 @@
 // 파일 앱의 뷰어: 확장자에 따라 알맞은 미리보기를 만든다. 추가 설치 없이 macOS 기본 도구와 Python 표준 라이브러리만 쓴다.
 //   돌려주는 모양(kind):
 //     code   { text, lang }            코드·텍스트·JSON(정렬)·압축 파일 목록·16진수 덤프
-//     md     { blocks }                마크다운(markdown.js가 나눈 블록, 그림은 캐시에 복사한 경로·크기)
+//     md     { blocks, pendingRemote? }  마크다운(markdown.js가 나눈 블록, 그림은 캐시에 복사한 경로·크기).
+//                                      pendingRemote면 아직 못 받은 원격 그림이 있다 → mdRemoteImages(blocks, abs)로 마저 채운다
 //     pages  { pages: [{path,w,h}], count, note? }   이미지·PDF 페이지·Quick Look 미리보기(세로로 이어 보기)
 //     table  { sheets: [{name, rows, more}] }        CSV·TSV·엑셀
 //     slides { slides: [{n, texts}], thumb? }        파워포인트
@@ -145,7 +146,7 @@ export async function preview(abs, ext, on) {
   const text = await readTextFile(abs);
   if (text === null) return { kind: "error", message: "파일이 더 이상 없습니다" };
   if (!text.includes("\0")) {
-    if (MD.has(ext)) return { kind: "md", blocks: await mdImages(parseMarkdown(text.slice(0, 300000)), abs) };
+    if (MD.has(ext)) return { kind: "md", ...(await mdImages(parseMarkdown(text.slice(0, 300000)), abs)) };
     if ((ext === "json" || ext === "geojson") && text.length < 3000000) {
       try { return { kind: "code", text: JSON.stringify(JSON.parse(text), null, 2).slice(0, 400000), lang: "json" }; } catch { /* 원문 그대로 */ }
     }
@@ -168,45 +169,84 @@ async function quicklook(abs) {
 }
 
 // 마크다운 그림: md 파일 폴더 기준 상대 경로·절대 경로·http(s) 주소를 캐시 폴더로 가져와 image()가 읽을 수 있게 한다.
+//   preview()는 로컬 그림과 지난번에 받아 둔 원격 그림까지만 채우고 바로 돌려준다(글을 먼저 그린다).
+//   아직 못 받은 원격 그림은 pending: true로 표시해 두고, 파일 앱이 mdRemoteImages()로 이어서 받는다.
+//   md-images.json에는 받기에 성공한 원격 그림만 { src: {path, w, h} }로 남긴다.
+//     - 실패한 것은 남기지 않는다: 오프라인에서 한 번 열어도 다음에 다시 받는다.
+//     - 로컬 그림은 남기지 않는다: 복사는 가벼우니 매번 새로 복사해 그림만 바뀌어도 새 그림이 나온다.
 const MAX_IMAGES = 40;
-async function mdImages(blocks, abs) {
-  const items = blocks.filter((b) => b.kind === "images").flatMap((b) => b.items).slice(0, MAX_IMAGES);
-  if (!items.length) return blocks;
-  const dir = await cacheDir(abs), base = abs.slice(0, abs.lastIndexOf("/")), saved = `${appHome()}/${dir}/md-images.json`;
-  // 같은 파일(경로·수정 시각이 같으면 캐시 폴더도 같다)은 지난번 결과를 다시 쓴다: 원격 그림을 매번 받지 않게
+const REMOTE = /^https?:\/\//i;
+const mdItems = (blocks) => blocks.filter((b) => b.kind === "images").flatMap((b) => b.items).slice(0, MAX_IMAGES);
+const savedPath = (dir) => `${appHome()}/${dir}/md-images.json`;
+async function readSaved(dir) {
   try {
-    const prev = JSON.parse((await readTextFile(saved)) ?? "null");
-    if (Array.isArray(prev) && prev.length === items.length && prev.every((p, i) => p.src === items[i].src)) {
-      prev.forEach((p, i) => Object.assign(items[i], p));
-      return blocks;
-    }
-  } catch { /* 새로 만든다 */ }
+    const j = JSON.parse((await readTextFile(savedPath(dir))) ?? "null");
+    return j && typeof j === "object" && !Array.isArray(j) ? j : {};
+  } catch { return {}; }
+}
+
+async function mdImages(blocks, abs) {
+  const items = mdItems(blocks);
+  if (!items.length) return { blocks, pendingRemote: false };
+  const dir = await cacheDir(abs), base = abs.slice(0, abs.lastIndexOf("/")), saved = await readSaved(dir);
+  let pendingRemote = false;
   await Promise.all(items.map(async (it, i) => {
     try {
       const src = it.src.trim();
-      if (/^https?:\/\//i.test(src)) {
-        const tmp = `${appHome()}/${dir}/md-${i}`;
-        const r = await exec("curl", ["-sfL", "--max-time", "8", "-o", tmp, "-w", "%{content_type}", src], { timeout: 12000 }).catch(() => null);
-        if (r?.code !== 0) return;
-        const type = r.stdout.toLowerCase();
-        const ext = type.includes("svg") ? "svg" : type.includes("png") ? "png" : type.includes("gif") ? "gif" : type.includes("webp") ? "webp" : type.includes("jpeg") ? "jpg"
-          : (/\.(\w{3,4})(?:[?#]|$)/.exec(src)?.[1]?.toLowerCase() ?? "png");
-        await exec("mv", ["-f", tmp, `${tmp}.${ext}`]);
-        Object.assign(it, { path: `${dir}/md-${i}.${ext}`, ...(await size(`${tmp}.${ext}`, ext)) });
+      if (REMOTE.test(src)) {
+        const hit = saved[src];
+        if (hit?.path && (await exists(`${appHome()}/${hit.path}`))) Object.assign(it, { path: hit.path, w: hit.w, h: hit.h });
+        else { it.pending = true; pendingRemote = true; }
         return;
       }
       if (/^data:/i.test(src)) return;
       let p = decodeURIComponent(src.replace(/^file:\/\//i, "").replace(/[?#].*$/, ""));
       if (!p.startsWith("/")) p = normalize(`${base}/${p}`);
       if (!(await exists(p))) return;
-      const ext = p.split(".").pop().toLowerCase(), out = `${dir}/md-${i}.${IMG.has(ext) ? ext : "png"}`;
+      // 출력 이름에 원본 수정 시각·크기를 넣는다: md가 그대로면 캐시 폴더도 그대로라, 같은 경로면 image()가 옛 그림을 다시 쓸 수 있다
+      const st = (await exec("stat", ["-f", "%m.%z", p]).catch(() => null))?.stdout?.trim() ?? "";
+      const ext = p.split(".").pop().toLowerCase(), out = `${dir}/md-${i}-${hash(st)}.${IMG.has(ext) ? ext : "png"}`;
       if (IMG.has(ext)) await copy(p, `${appHome()}/${out}`);
       else if ((await exec("sips", ["-s", "format", "png", p, "--out", `${appHome()}/${out}`])).code !== 0) return;
       Object.assign(it, { path: out, ...(await size(`${appHome()}/${out}`, ext)) });
     } catch { /* 못 가져온 그림은 대체 글로 */ }
   }));
-  await fs.writeFile(saved, JSON.stringify(items)).catch(() => {});
-  return blocks;
+  return { blocks, pendingRemote };
+}
+
+// 남은 원격 그림(pending)을 받아 블록의 그림 항목에 바로 채운다. 끝나면 pending 표시를 모두 지운다(실패한 것은 대체 글로).
+// abs는 preview()에 넘긴 것과 같은 절대 경로. 받은 개수를 돌려준다.
+export async function mdRemoteImages(blocks, abs) {
+  const items = mdItems(blocks).filter((it) => it.pending);
+  if (!items.length) return 0;
+  let got = 0;
+  try {
+    const dir = await cacheDir(abs);
+    const done = {};
+    // 같은 주소가 여러 번 나와도 한 번만 받는다(같은 임시 파일에 동시에 쓰지 않게)
+    const bySrc = new Map();
+    for (const it of items) { const k = it.src.trim(); if (!bySrc.has(k)) bySrc.set(k, []); bySrc.get(k).push(it); }
+    await Promise.all([...bySrc].map(async ([src, its]) => {
+      try {
+        const name = `md-r-${hash(src)}`, tmp = `${appHome()}/${dir}/${name}`;
+        const r = await exec("curl", ["-sfL", "--max-time", "8", "-o", tmp, "-w", "%{content_type}", src], { timeout: 12000 }).catch(() => null);
+        if (r?.code !== 0) return;
+        const type = r.stdout.toLowerCase();
+        const ext = type.includes("svg") ? "svg" : type.includes("png") ? "png" : type.includes("gif") ? "gif" : type.includes("webp") ? "webp" : type.includes("jpeg") ? "jpg"
+          : (/\.(\w{3,4})(?:[?#]|$)/.exec(src)?.[1]?.toLowerCase() ?? "png");
+        await exec("mv", ["-f", tmp, `${tmp}.${ext}`]);
+        const hit = { path: `${dir}/${name}.${ext}`, ...(await size(`${tmp}.${ext}`, ext)) };
+        for (const it of its) Object.assign(it, hit);
+        done[src] = hit;
+        got += its.length;
+      } catch { /* 대체 글로 */ }
+    }));
+    // 다른 창에서 같은 파일을 동시에 열었을 수 있으니 저장 직전에 다시 읽어 합친다
+    if (got) await fs.writeFile(savedPath(dir), JSON.stringify({ ...(await readSaved(dir)), ...done })).catch(() => {});
+  } finally {
+    for (const it of items) delete it.pending;
+  }
+  return got;
 }
 
 function normalize(p) {

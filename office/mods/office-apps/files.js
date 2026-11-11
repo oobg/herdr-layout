@@ -8,7 +8,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, InputState, Input, TextView } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, home, appHome, props, run, openOverlay, closeOverlay, notify, shared, setShared } from "herdr";
 import * as fs from "fs/promises";
-import { preview } from "./viewers.js";
+import { preview, mdRemoteImages } from "./viewers.js";
 import { codeLang } from "./markdown.js";
 import { Menu, Confirm, ACTIONS, TICK, menuHeight, popupAt } from "./menu.js";
 const PREVIEW = "office-apps.preview";
@@ -17,7 +17,7 @@ const ME = "mods/office-apps";
 const PER_FOLDER = 500, TOTAL = 5000;
 const CODE_FONT = "D2Coding";   // 코드·스크립트·마크다운 뷰어 글꼴(패널은 Pretendard GOV)
 const MD_CODE_MAX = 30;         // 마크다운 코드 블록 중 색을 입힐(편집기를 만들) 최대 개수. 넘치면 TextView로
-const MD_LINE = 18;             // 편집기 줄 높이(글자 12px)
+const MD_LINE = 19;             // 편집기 줄 높이(글자 12px): 화면 실측 19px(22줄 간격 418px)
 // GitHub 알림 종류 → 이름·색(테마 ansi)
 const ALERT = { note: ["참고", "ansi4"], tip: ["팁", "ansi2"], important: ["중요", "ansi5"], warning: ["주의", "ansi3"], caution: ["경고", "ansi1"] };
 // 툴바 아이콘 색: 기능마다 하나.
@@ -185,16 +185,19 @@ export class FilesApp {
   }
 
   // 오른쪽 뷰어에 파일을 연다. 형식별 미리보기는 viewers.js가 만든다.
+  // 요청 번호(this.req): 같은 파일을 연달아 열면 비동기 작업 둘이 모두 `this.file === path`를 통과해
+  // 먼저 만든 편집기 상태가 release 없이 덮였다. 마지막 요청만 결과를 반영한다.
   show(path, cx) {
-    this.code?.release(); this.code = null; this.file = path; this.view = null; this.sheet = 0;
-    for (const c of this.mdCode ?? []) c?.release();
-    this.mdCode = [];
+    const req = this.req = (this.req ?? 0) + 1;
+    this.releaseEditors(); this.file = path; this.view = null; this.sheet = 0;
     if (!path || !cx) return;
-    const context = this.context, root = this.root, on = this.on, ext = path.includes(".") ? path.split(".").pop().toLowerCase() : "";
+    const context = this.context, root = this.root, on = this.on, ext = path.includes(".") ? path.split(".").pop().toLowerCase() : "", abs = `${root}/${path}`;
+    const latest = () => this.req === req && this.file === path && this.current(context);
     cx.spawn(async (cx) => {
       let v;
-      try { v = await preview(`${root}/${path}`, ext, on); } catch (e) { v = { kind: "error", message: `미리보기를 만들지 못했습니다: ${String(e?.message ?? e).slice(0, 80)}` }; }
-      if (this.file !== path || !this.current(context)) return;
+      try { v = await preview(abs, ext, on); } catch (e) { v = { kind: "error", message: `미리보기를 만들지 못했습니다: ${String(e?.message ?? e).slice(0, 80)}` }; }
+      if (!latest()) return;
+      this.releaseEditors();   // 만일을 위해: 남아 있는 상태가 있으면 덮기 전에 놓아 준다
       const t = theme(), syntax = { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 };
       if (v.kind === "code") this.code = EditorState.new({ language: v.lang, readonly: true, value: v.text, font_family: CODE_FONT, font_size: 12, syntax });
       // 마크다운 코드 블록: 블록마다 읽기 전용 편집기(줄 번호·접기 없음). 편집기는 렌더 중에 만들 수 없어 여기서 만든다.
@@ -206,7 +209,19 @@ export class FilesApp {
       }
       this.view = v;
       cx.notify();
+      // 글을 먼저 그린 뒤, 남은 원격 그림을 받아 채우고 다시 그린다(그동안 그 자리는 흐린 대체 글)
+      if (v.kind === "md" && v.pendingRemote) {
+        await mdRemoteImages(v.blocks, abs).catch(() => 0);
+        v.pendingRemote = false;
+        if (latest() && this.view === v) cx.notify();
+      }
     });
+  }
+
+  releaseEditors() {
+    this.code?.release(); this.code = null;
+    for (const c of this.mdCode ?? []) c?.release();
+    this.mdCode = [];
   }
 
   // 무시됨: 자기 경로나 상위 폴더가 무시 목록에 있으면.
@@ -454,7 +469,7 @@ export class FilesApp {
         const lines = b.text.split("\n").length;
         return v_flex().rounded(4).bg(t.surface).border_1().border_color(t.border).px(12).py(10).gap(4)
           .when(Boolean(b.lang), (el) => el.child(div().text_size(11).text_color(t.dim).child(b.lang)))
-          .child(Editor.new(st).w_full().h(lines * MD_LINE + 4));
+          .child(Editor.new(st).w_full().h(lines * MD_LINE + 6));
       }
       if (b.kind === "alert") {
         const [label, color] = ALERT[b.type] ?? ALERT.note;
@@ -463,7 +478,8 @@ export class FilesApp {
           .child(md(id, b.text));
       }
       if (b.kind === "images") return h_flex().flex_wrap().gap(6).items_end().when(Boolean(b.center), (el) => el.justify_center()).children(b.items.map((it, j) => {
-        if (!it.path) return div().text_size(12).text_color(t.dim).child(`[그림${it.alt ? `: ${it.alt}` : ""}]`);
+        // 받는 중(pending)인 원격 그림은 대체 글을 더 흐리게, 못 가져온 그림은 대체 글로
+        if (!it.path) return div().text_size(12).text_color(t.dim).when(Boolean(it.pending), (el) => el.opacity(0.45)).child(`[그림${it.alt ? `: ${it.alt}` : ""}]`);
         const w = Math.min(W, it.width ?? it.w), h = Math.round((w * it.h) / Math.max(1, it.w));
         const img = image(it.path).w(w).h(h);
         return it.link ? div().id(`${id}-${j}`).cursor_pointer().on_click((_e, cx) => this.openLink(it.link, dir, cx)).child(img) : img;
