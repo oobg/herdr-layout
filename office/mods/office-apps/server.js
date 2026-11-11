@@ -1,6 +1,6 @@
-// office-apps의 서버 앱: Herdr에 등록한 머신(이 컴퓨터 + `hc machine ls`)을 본다.
-//   왼쪽: 툴바(머신 추가·다시 읽기) + 머신 목록(연결 상태 점·글자, 스페이스 수)
-//   오른쪽: 고른 머신의 정보(주소·연결 방식·호스트·hc 버전), 그 머신의 스페이스·에이전트, 동작(새 스페이스·새 터미널·제거)
+// office-apps의 서버 앱: Herdr에 등록한 기기(이 컴퓨터 + `hc machine ls`)를 본다. 앱 안의 낱말은 "기기"로 통일한다.
+//   왼쪽: 툴바(다시 읽기) + 기기 목록(연결 상태 점·글자, 스페이스 수) + 맨 아래 "기기 추가" 줄(추가 입구는 여기 하나)
+//   오른쪽: 고른 기기의 정보(평소엔 주소·연결 방식만, 문제가 있으면 hc 버전·세션·화면 배치까지), 스페이스·에이전트, 동작(새 스페이스·새 터미널·제거)
 //   리소스(CPU·메모리·저장 용량·배터리·네트워크): 오른쪽 칸이 넓으면 오른쪽 열(260px), 좁으면 정보 줄 아래. server/resources.js가 읽는다.
 // 기기 추가는 오른쪽 칸의 추가 화면(server/add.js, `hc machine add`). Herdr 기본 machine-add 창은 그 안의 링크로 남긴다. 제거는 확인 창(menu.js Confirm)을 거쳐 `hc machine rm`.
 import { div, svg } from "gpui-kit";
@@ -11,15 +11,15 @@ import { sample, gb, pct, rate } from "./server/resources.js";
 import { AddForm, runHere } from "./server/add.js";
 
 const ME = "mods/office-apps";
-const LOCAL = "";                          // 이 컴퓨터의 키(머신 이름은 비어 있지 않다)
+const LOCAL = "";                          // 이 컴퓨터의 키(기기 이름은 비어 있지 않다)
 const TICK = "office-apps.server.tick";    // 제거 뒤 목록을 다시 읽으라는 신호
-const TOOL = { add: "#83c092", refresh: "#7fbbb3" };
+const TOOL = { refresh: "#7fbbb3" };
 const DANGER = "#e67e80";
 const RES_EVERY = 2000, RES_SLOW = 30000;   // 리소스 갱신: 2초, 무거운 명령(diskutil·ioreg 등)은 30초
 const WIDE = 720;                           // 오른쪽 칸이 이보다 넓으면 리소스를 오른쪽 열로
 const RES_W = 260;
 
-// hc 상태 → 글자·색 이름(theme). 이 컴퓨터는 늘 "여기".
+// hc 상태 → 글자·색 이름(theme). 이 컴퓨터는 늘 "이 기기".
 const STATE = {
   connected: ["연결됨", "ansi2"],
   connecting: ["연결 중", "ansi3"],
@@ -27,14 +27,15 @@ const STATE = {
   unreachable: ["연결 안 됨", "dim"],
 };
 const LAYOUT = { ready: "준비됨", loading: "불러오는 중", unavailable: "쓸 수 없음" };
-const AGENT = { working: ["작업 중", "working"], blocked: ["응답 필요", "blocked"], done: ["끝남", "done"], idle: ["쉬는 중", "idle"] };
+// 에이전트 앱과 같은 낱말
+const AGENT = { working: ["작업 중", "working"], blocked: ["입력 대기", "blocked"], done: ["끝남", "done"], idle: ["대기 중", "idle"] };
 
 // 확인 창(Confirm)은 menu.js의 ACTIONS[action](ctx)를 부른다. 확인 창은 따로 뜨는 복사본이라 함수를 넘길 수 없어,
 // 이 모듈이 불릴 때 서버 앱 전용 동작을 하나 등록해 둔다(menu.js 파일은 고치지 않는다).
 ACTIONS.serverRemove = async (ctx) => {
   const r = await hc(["machine", "rm", ctx.name, "--json"]).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
-  if (r.code === 0) notify({ title: "머신을 지웠습니다", body: ctx.name, level: "info" });
-  else notify({ title: "머신을 지우지 못했습니다", body: errorText(r), level: "error" });
+  if (r.code === 0) notify({ title: "기기를 지웠습니다", body: ctx.name, level: "info" });
+  else notify({ title: "기기를 지우지 못했습니다", body: errorText(r), level: "error" });
   setShared(TICK, Date.now());
 };
 
@@ -50,6 +51,13 @@ function whereOf(s, all) {
     if (p) return p.cwd;
   }
   return s.folder || "";
+}
+// 스페이스 줄의 경로 글자: 이름과 같으면("~ ~") 빼고, 마지막 부분이 이름과 같으면 상위 폴더만 남긴다(이름이 이미 말해 주므로).
+function placeOf(name, path) {
+  if (!path || path === name) return "";
+  const cut = path.lastIndexOf("/");
+  if (cut > 0 && path.slice(cut + 1) === name) return path.slice(0, cut);
+  return path;
 }
 const short = (path) => { const h = home(); return path === h ? "~" : path.startsWith(h + "/") ? "~" + path.slice(h.length) : path; };
 
@@ -71,6 +79,7 @@ export class ServerApp {
     this.tick = shared(TICK);
     this.copied = null;
     this.adding = false;      // 오른쪽 칸에 추가 화면
+    this.cursorAdd = false;   // 키보드로 "기기 추가" 줄에 와 있음(Enter 전까지 추가 화면은 열지 않는다)
     this.form = new AddForm();
     this.form.init((name, cx) => {
       notify({ title: "기기를 추가했습니다", body: name, level: "success" });
@@ -92,7 +101,7 @@ export class ServerApp {
     });
   }
 
-  // 앱을 끌 때(main.js toggle): 머신 목록 10초 타이머와 리소스 2초 타이머(30초 무거운 명령은 이 안에서 고름)를 끊는다.
+  // 앱을 끌 때(main.js toggle): 기기 목록 10초 타이머와 리소스 2초 타이머(30초 무거운 명령은 이 안에서 고름)를 끊는다.
   dispose() {
     this.disposed = true;
     this.poll?.cancel(); this.poll = null;
@@ -108,18 +117,18 @@ export class ServerApp {
         if (r.code !== 0) throw new Error(errorText(r));
         this.list_ = (JSON.parse(r.stdout).machines ?? []).filter((m) => !m.temporary);
         this.error = null;
-      } catch (e) { this.error = `머신 목록을 읽지 못했습니다: ${String(e?.message ?? e).slice(0, 120)}`; }
+      } catch (e) { this.error = `기기 목록을 읽지 못했습니다: ${String(e?.message ?? e).slice(0, 120)}`; }
       finally { this.loading = false; this.loaded = true; cx.notify(); }
     });
   }
 
   pick(key, cx) {
-    this.sel = key; this.adding = false;
+    this.sel = key; this.adding = false; this.cursorAdd = false;
     if (cx) { this.seen = Date.now(); this.readRes(cx); }
     try { localStorage.setItem("server.sel", JSON.stringify(key)); } catch { /* 이번 실행 동안만 */ }
   }
 
-  // 목록: 이 컴퓨터 + hc가 아는 머신 + 레이아웃·스페이스에만 보이는 머신(이름순)
+  // 목록: 이 컴퓨터 + hc가 아는 기기 + 레이아웃·스페이스에만 보이는 기기(이름순)
   entries() {
     const layouts = machines(), sp = spaces();
     const names = new Set([...this.list_.map((m) => m.name), ...layouts.map((m) => m.name), ...sp.map((s) => s.machine)].filter(Boolean));
@@ -134,7 +143,7 @@ export class ServerApp {
 
   // 상태 글자와 색. hc 상태가 우선, 없으면 레이아웃 상태로 짐작.
   status(e, t) {
-    if (!e.name) return ["여기", t.ansi2];
+    if (!e.name) return ["이 기기", t.ansi2];
     const s = e.hc?.state;
     if (s && STATE[s]) return [STATE[s][0], t[STATE[s][1]]];
     if (e.layout === "ready") return ["연결됨", t.ansi2];
@@ -152,25 +161,47 @@ export class ServerApp {
       .on_hover((h) => { if (!h && this.tipFor === id) this.hideTip(); })
       .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.hideTip(); fn(cx); cx.notify(); })
       .child(svg(icon).size(16).text_color(TOOL[id]));
+    // 기기 추가 입구는 목록 맨 아래 줄 하나뿐이라 툴바에는 다시 읽기만 둔다.
     return h_flex().min_h(32).flex_none().py(2).px(6).gap(2).items_center().border_b_1().border_color(t.border)
-      .child(btn("add", `${ME}/server/machine-add.svg`, "기기 추가", () => this.openAdd()))
       .child(div().flex_1())
       .child(btn("refresh", `${ME}/refresh.svg`, "다시 읽기", (cx) => this.refresh(cx)));
   }
 
-  openAdd() { this.adding = true; this.form.focus(); }
+  openAdd() { this.adding = true; this.cursorAdd = false; this.form.focus(); }
+
+  // 셸 계약: 왼쪽 칸 포커스에서 ↑↓. 기기 줄들 + 맨 아래 "기기 추가" 줄 사이를 옮긴다.
+  move(delta, cx) {
+    const keys = this.entries().map((e) => e.key);
+    const last = keys.length;                 // "기기 추가" 줄의 자리
+    let i = this.adding || this.cursorAdd ? last : keys.indexOf(this.sel);
+    if (i < 0) i = 0;
+    const j = Math.max(0, Math.min(last, i + delta));
+    if (j === last) { if (!this.adding) this.cursorAdd = true; }
+    else this.pick(keys[j], cx);
+    cx?.notify?.();
+  }
+
+  // 셸 계약: Enter. "기기 추가" 줄이면 추가 화면을 열고, 기기 줄이면 할 일이 없다.
+  activate(cx) {
+    if (!this.cursorAdd) return;
+    this.openAdd();
+    cx?.notify?.();
+  }
+
+  // 셸 계약: 상세가 없을 때(보통은 이 컴퓨터가 골라져 있어 거의 안 쓰인다)
+  emptyState() { return { text: "기기를 고르세요", sub: "왼쪽 목록에서 고르면 정보와 스페이스가 보입니다" }; }
 
   row(e, t) {
     const [label, color] = this.status(e, t);
     const n = e.spaces.length;
     return v_flex().id(`sv-row-${e.key || "local"}`).flex_none().px(8).py(5).gap(1).rounded(4).cursor_pointer()
-      .hover((s) => s.bg(t.hover)).when(!this.adding && this.sel === e.key, (el) => el.bg(t.selected))
+      .hover((s) => s.bg(t.hover)).when(!this.adding && !this.cursorAdd && this.sel === e.key, (el) => el.bg(t.selected))
       .on_click((_e, cx) => { this.pick(e.key, cx); cx.notify(); })
       .child(h_flex().gap(7).items_center()
         .child(div().size(7).flex_none().rounded_full().bg(color))
         .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(e.name ?? "이 컴퓨터")))
       .child(div().pl(14).truncate().text_size(11).text_color(t.dim)
-        .child(`${label} · 스페이스 ${n}`));
+        .child(e.name ? `${label} · 스페이스 ${n}` : `스페이스 ${n}`));  // 이 컴퓨터는 이름이 이미 말해 주므로 상태 글자 없이
   }
 
   list(cx, t) {
@@ -182,24 +213,25 @@ export class ServerApp {
         .children(all.map((e) => this.row(e, t)))
         // 목록 맨 아래: 기기 추가(다른 줄과 같은 톤)
         .child(h_flex().id("sv-row-add").flex_none().px(8).py(7).gap(7).items_center().rounded(4).cursor_pointer()
-          .hover((s) => s.bg(t.hover)).when(this.adding, (el) => el.bg(t.selected))
+          .hover((s) => s.bg(t.hover)).when(this.adding || this.cursorAdd, (el) => el.bg(t.selected))
           .on_click((_e, cx) => { this.openAdd(); cx.notify(); })
           .child(svg(`${ME}/server/plus.svg`).size(14).flex_none().text_color(t.muted))
           .child(div().text_color(t.muted).child("기기 추가")))
-        .when(Boolean(this.error), (el) => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error)))
-        .when(!this.error && this.loaded && all.length === 1, (el) => el.child(div().p(8).text_size(12).text_color(t.dim)
-          .child("등록한 기기가 없습니다"))));
+        .when(Boolean(this.error), (el) => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error))));
   }
 
   subtitle(t) {
     const n = this.entries().length - 1;
-    return div().truncate().text_size(12).text_color(t.dim).child(n ? `머신 ${n}대` : "");
+    return div().truncate().text_size(12).text_color(t.dim).child(n ? `기기 ${n}대` : "");
   }
 
   detail(cx, t) {
     if (this.adding) return v_flex().id("sv-addroot").size_full().min_h(0)
       .on_size_change((size, cx) => { if (Math.abs((this.dw ?? 0) - size.width) > 4) { this.dw = size.width; cx.notify(); } })
       .child(this.form.view(t, Math.max(200, (this.dw ?? 600) - 36)));
+    // 키보드로 "기기 추가" 줄에 와 있을 때: 추가 화면은 Enter 전까지 열지 않고 짧은 안내만
+    if (this.cursorAdd) return v_flex().id("sv-addhint").size_full().items_center().justify_center()
+      .child(div().text_size(13).text_color(t.dim).child("Enter로 기기 추가"));
     if (this.sel === null || this.sel === undefined) return null;
     const e = this.entries().find((x) => x.key === this.sel);
     if (!e) return null;
@@ -213,22 +245,28 @@ export class ServerApp {
       .when(!fn, (el) => el.text_color(t.dim))
       .child(text);
 
-    // 정보: 이름표(흐리게) + 값
+    // 정보: 이름표(흐리게) + 값. 평소엔 어디로(주소, 없으면 호스트)·어떻게(연결 방식)만 보이고,
+    // 연결이 끊겼거나 화면 배치가 준비되지 않았을 때만 hc 버전·세션·화면 배치를 더 보인다(원인을 짚는 데 필요한 것).
     const info = [];
     const line = (k, v) => v && info.push(h_flex().gap(12).items_start()
       .child(div().w(76).flex_none().text_color(t.muted).child(k))
       .child(div().flex_1().min_w(0).text_color(t.foreground).child(v)));
+    const layoutBad = Boolean(e.layout) && e.layout !== "ready";
+    const trouble = e.name ? layoutBad || !m || m.state !== "connected" : layoutBad;
     if (e.name) {
-      line("주소", m?.target);
+      line("주소", m?.target ?? m?.host);
       line("연결 방식", m ? (m.via ? "명령 (via)" : "ssh") : null);
-      line("호스트", m?.host);
-      line("hc 버전", m?.version);
-      line("세션", m?.session);
-      line("화면 배치", e.layout ? LAYOUT[e.layout] : null);
+      if (trouble) {
+        line("hc 버전", m?.version);
+        line("세션", m?.session);
+        line("화면 배치", e.layout ? LAYOUT[e.layout] : null);
+      }
     } else {
       line("호스트", this.local.host);
-      line("hc 버전", this.local.version);
-      line("화면 배치", e.layout ? LAYOUT[e.layout] : null);
+      if (trouble) {
+        line("hc 버전", this.local.version);
+        line("화면 배치", LAYOUT[e.layout]);
+      }
     }
     const login = m?.state === "needs_login" ? `hc machine login ${e.name}` : null;
 
@@ -237,7 +275,7 @@ export class ServerApp {
     const spaceRows = e.spaces.map((s) => h_flex().id(`sv-sp-${s.id}`).h(26).flex_none().px(6).gap(8).items_center().rounded(4)
       .cursor_pointer().hover((x) => x.bg(t.hover)).on_click(() => run("space.select", { id: s.id }))
       .child(div().flex_none().text_color(t.foreground).when(s.active, (x) => x.font_semibold()).child(s.name))
-      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child([s.branch, short(whereOf(s, allPanes))].filter(Boolean).join(" · ")))
+      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child([s.branch, placeOf(s.name, short(whereOf(s, allPanes)))].filter(Boolean).join(" · ")))
       .child(div().flex_none().text_size(12).text_color(t.dim).child(`탭 ${s.tabs.length}`)));
     const ids = new Set(e.spaces.map((s) => s.id));
     const agentRows = agents().filter((a) => ids.has(a.space)).map((a) => {
@@ -255,9 +293,10 @@ export class ServerApp {
         .child(div().flex_none().text_size(14).font_semibold().text_color(t.foreground).child(e.name ?? "이 컴퓨터"))
         .child(h_flex().flex_1().min_w(0).gap(6).items_center()
           .child(div().size(7).flex_none().rounded_full().bg(color))
-          .child(div().truncate().text_size(12).text_color(t.dim)
-            .child(e.name && m?.state !== "connected" && m?.since_ms ? `${label} · ${since(m.since_ms)}` : label)))
-        // 구조 명령은 그 머신의 화면 배치가 준비됐을 때만 된다. 이 컴퓨터는 machine: ""로 꼭 지정한다.
+          // 이 컴퓨터는 점만(상태 글자는 이름과 겹친다)
+          .when(Boolean(e.name), (el) => el.child(div().truncate().text_size(12).text_color(t.dim)
+            .child(m?.state !== "connected" && m?.since_ms ? `${label} · ${since(m.since_ms)}` : label))))
+        // 구조 명령은 그 기기의 화면 배치가 준비됐을 때만 된다. 이 컴퓨터는 machine: ""로 꼭 지정한다.
         .child(btn("sv-new-space", "새 스페이스", ready && (() => { run("space.new", { machine: e.name ?? "" }); run("layout.show", { id: "office-term" }); })))
         // tab.new가 화면을 그 스페이스로 옮긴다는 보장이 없어 먼저 고른다.
         .child(btn("sv-new-term", "새 터미널", ready && first && (() => { run("space.select", { id: first.id }); run("tab.new", { space: first.id }); run("layout.show", { id: "office-term" }); })))
@@ -279,7 +318,7 @@ export class ServerApp {
             .hover((s) => s.bg(t.hover).text_color(t.foreground))
             .on_click(() => runHere(`로그인 ${e.name}`, ["hc", "machine", "login", e.name]))
             .child("터미널에서 로그인"))))
-        .when(Boolean(e.name) && !m, (el) => el.child(div().text_size(12).text_color(t.dim).child("hc 목록에 없는 머신입니다. 이 머신의 스페이스만 남아 있습니다")))
+        .when(Boolean(e.name) && !m, (el) => el.child(div().text_size(12).text_color(t.dim).child("hc 목록에 없는 기기입니다. 이 기기의 스페이스만 남아 있습니다")))
         .when(!ready && Boolean(e.name), (el) => el.child(div().text_size(12).text_color(t.dim).child("연결되면 스페이스를 열 수 있습니다")))
         // 좁으면 리소스를 정보 줄 아래에
         .when(!wide, (el) => el.child(v_flex().pt(4).children(this.resources(e, t, Math.min(320, (this.dw ?? 400) - 80)))))
@@ -292,13 +331,13 @@ export class ServerApp {
         .children(this.resources(e, t, RES_W - 32 - 32)))));
   }
 
-  // 고른 머신의 리소스 표본 하나. 보이지 않으면(상세를 4.5초 넘게 안 그렸으면) 건너뛴다.
+  // 고른 기기의 리소스 표본 하나. 보이지 않으면(상세를 4.5초 넘게 안 그렸으면) 건너뛴다.
   readRes(cx) {
     if (this.resBusy || Date.now() - this.seen > 4500 || this.sel === null || this.sel === undefined) return;
     const key = this.sel, e = this.entries().find((x) => x.key === key);
     if (!e) return;
     const prev = this.res[key];
-    // 원격 머신은 연결돼 있을 때만
+    // 원격 기기는 연결돼 있을 때만
     if (e.name && e.hc?.state !== "connected" && e.layout !== "ready") { this.res[key] = { ...prev, error: "offline" }; return; }
     this.resBusy = true;
     const slow = !prev?.slowAt || Date.now() - prev.slowAt > RES_SLOW;
@@ -313,7 +352,7 @@ export class ServerApp {
   resources(e, t, W) {
     const r = this.res[e.key];
     const note = (text) => div().py(8).text_size(12).text_color(t.dim).child(text);
-    if (r?.error) return [note("이 머신의 리소스는 읽을 수 없습니다")];
+    if (r?.error) return [note("이 기기의 리소스는 읽을 수 없습니다")];
     if (!r?.cpu && !r?.mem) return [note("리소스를 읽는 중")];
     const mac = r.os === "darwin";
     const kv = (k, v) => v ? h_flex().gap(4).text_size(12).child(div().flex_none().text_color(t.muted).child(`${k}:`)).child(div().min_w(0).truncate().text_color(t.foreground).child(v)) : null;
@@ -358,8 +397,8 @@ export class ServerApp {
 
   confirmRemove(e) {
     openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 210, props: {
-      role: "confirm", action: "serverRemove", ctx: { name: e.name }, title: "머신 제거",
-      detail: `'${e.name}'을(를) Herdr에서 지웁니다. 그 머신의 터미널은 계속 돌고, 다시 추가할 수 있습니다.`,
+      role: "confirm", action: "serverRemove", ctx: { name: e.name }, title: "기기 제거",
+      detail: `'${e.name}'을(를) Herdr에서 지웁니다. 그 기기의 터미널은 계속 돌고, 다시 추가할 수 있습니다.`,
     } });
   }
 
