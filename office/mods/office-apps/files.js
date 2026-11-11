@@ -14,6 +14,7 @@ const PREVIEW = "office-apps.preview";
 
 const ME = "mods/office-apps";
 const PER_FOLDER = 500, TOTAL = 5000;
+const CODE_FONT = "D2Coding";   // 코드·스크립트·마크다운 뷰어 글꼴(패널은 Pretendard GOV)
 // 툴바 아이콘 색: 기능마다 하나.
 const TOOL = { search: "#a7c080", hidden: "#7fbbb3", ignored: "#a07850", file: "#83c092", folder: "#dbbc7f",
   reveal: "#7aa2f7", terminal: "#83c092", copy: "#d699b6", collapse: "#9da9a0", refresh: "#7fbbb3" };
@@ -190,7 +191,7 @@ export class FilesApp {
       if (v.kind === "code") {
         const t = theme();
         this.code = EditorState.new({ language: v.lang, readonly: true, value: v.text,
-          font_family: settings().font_family, font_size: 12,
+          font_family: CODE_FONT, font_size: 12,
           syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
       }
       this.view = v;
@@ -401,7 +402,7 @@ export class FilesApp {
     let body;
     if (!v) body = v_flex().flex_1().items_center().justify_center().text_color(t.muted).child("미리보기를 만드는 중");
     else if (v.kind === "code") body = this.code ? Editor.new(this.code).flex_1().min_h(0) : div();
-    else if (v.kind === "md") body = div().id("files-md").flex_1().min_h(0).overflow_y_scrollbar().px(24).py(16).text_size(14).child(TextView.markdown("files-md-view", v.text));
+    else if (v.kind === "md") body = div().id("files-md").flex_1().min_h(0).overflow_y_scrollbar().px(24).py(16).text_size(14).font_family(CODE_FONT).child(TextView.markdown("files-md-view", v.text));
     else if (v.kind === "pages") body = v_flex().id("files-pages").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(16).items_center()
       .children(v.pages.map((p, i) => {
         const w = Math.min(W, p.w), h = Math.round((w * p.h) / Math.max(1, p.w));
