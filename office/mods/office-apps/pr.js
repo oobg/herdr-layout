@@ -118,7 +118,13 @@ export class PrApp {
     this.tick = shared(PR_TICK);
     this.context = null;
     this.refresh(cx);
-    cx.timer.every(POLL, (cx) => this.refresh(cx));
+    this.poll = cx.timer.every(POLL, (cx) => { if (this.disposed) return; this.refresh(cx); });
+  }
+
+  // 앱을 끌 때(main.js toggle): gh 목록 폴링 타이머를 끊는다.
+  dispose() {
+    this.disposed = true;
+    this.poll?.cancel(); this.poll = null;
   }
 
   save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 이번 실행 동안만 */ } }

@@ -367,7 +367,15 @@ export class BranchApp {
       this.gh = r?.code === 0;
     });
     this.reload(cx);
-    cx.timer.every(15000, (cx) => this.reload(cx));
+    this.poll = cx.timer.every(15000, (cx) => { if (this.disposed) return; this.reload(cx); });
+  }
+
+  // 앱을 끌 때(main.js toggle): 15초 타이머를 끊고 .git 감시 사슬이 다음 차례에 멈추게 한다.
+  // watchFolder는 해제 API가 없어 지금 기다리는 한 번은 끝까지 기다리고, 그 뒤 disposed를 보고 빠진다.
+  dispose() {
+    this.disposed = true;
+    this.poll?.cancel(); this.poll = null;
+    this.watchTask?.cancel(); this.watchTask = null;
   }
 
   current(ctx) { return this.ctx === ctx && key() === ctx.key; }
@@ -405,12 +413,12 @@ export class BranchApp {
 
   // HEAD나 ref가 바뀌면(커밋, 체크아웃, fetch) 다시 읽는다. 다른 머신은 타이머로만.
   watch(ctx, cx) {
-    if (ctx.on || this.watching === ctx) return;
+    if (this.disposed || ctx.on || this.watching === ctx) return;
     this.watching = ctx;
-    cx.spawn(async (cx) => {
+    this.watchTask = cx.spawn(async (cx) => {
       const gd = await exec("git", ["rev-parse", "--absolute-git-dir"], { cwd: ctx.top }).catch(() => null);
       if (gd?.code !== 0) return;
-      try { while (this.ctx === ctx) { await watchFolder(gd.stdout.trim()); if (this.ctx === ctx) this.reload(cx); } }
+      try { while (!this.disposed && this.ctx === ctx) { await watchFolder(gd.stdout.trim()); if (!this.disposed && this.ctx === ctx) this.reload(cx); } }
       catch { if (this.watching === ctx) this.watching = null; }
     });
   }

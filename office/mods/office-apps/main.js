@@ -1,6 +1,8 @@
 // office 아래 칸: 앱 런처. 기본 화면은 Spotlight처럼 검색창 + 앱 아이콘 격자, 앱을 누르면 들어간다.
 //   앱 화면: 위 막대(‹ 앱 · 아이콘 · 이름 · 부제) / 왼쪽 좁은 칸(툴바 + 관리 목록) / 오른쪽 넓은 칸(고른 항목, 없으면 "선택 내용이 없습니다")
-//   앱 관리(⚙): 앱마다 켜고 끄기. 끈 앱은 격자에서 숨기고 코드를 만들지 않아 타이머·git·네트워크가 돌지 않는다.
+//   앱 관리(⚙): 앱마다 켜고 끄기. 끈 앱은 격자에서 숨기고 화면용 인스턴스를 만들지 않는다.
+//   켜져 있던 앱을 끄면 dispose()로 그 앱의 타이머·폴더 감시를 멈추고 인스턴스를 버린다.
+// 앱 계약: init(props, cx) · list(cx, t) · detail?(cx, t) · subtitle?(t) · dispose?() — dispose는 선택, 끌 때 한 번 부른다.
 // 오버레이 역할(props.role): menu·prompt·confirm·tip — 파일 앱의 우클릭 메뉴와 입력·확인 창, 툴팁.
 //   launcherMenu — 런처 격자의 앱 아이콘 우클릭 메뉴(열기 · 앱 끄기 · 앱 관리…).
 // 키·명령: office-apps.home(런처로), office-apps.open-<앱 id>(앱 열기), office-apps.show:<경로>(파일 열기),
@@ -67,14 +69,20 @@ class Launcher {
     try { localStorage.setItem("app", JSON.stringify(this.app)); } catch { /* 이번 실행 동안만 */ }
   }
 
-  // 켜진 앱만 열 때 만든다(go). 끈 앱은 만들지 않고, 끄면 있던 인스턴스도 버린다.
+  // 켜진 앱만 열 때 만든다(go). 끈 앱은 만들지 않고, 끄면 있던 인스턴스도 정리(dispose)한 뒤 버린다.
   instance(id) {
     return this.disabled()[id] ? null : this.inst[id] ?? null;
   }
 
   toggle(id) {
     const d = { ...this.disabled() };
-    if (d[id]) delete d[id]; else { d[id] = true; delete this.inst[id]; if (this.app === id) this.app = null; }
+    if (d[id]) delete d[id]; else {
+      d[id] = true;
+      // 앱이 건 타이머·감시는 런처 쪽에 걸려 있어 인스턴스만 버리면 계속 돈다. 먼저 멈추게 한다.
+      try { this.inst[id]?.dispose?.(); } catch { /* 정리 실패해도 끄기는 마친다 */ }
+      delete this.inst[id];
+      if (this.app === id) this.app = null;
+    }
     setShared(DISABLED, d);
   }
 
@@ -125,7 +133,7 @@ class Launcher {
         .child(this.back(t))
         .child(div().text_size(15).font_semibold().child("앱 관리")))
       .child(v_flex().id("apps-manage-list").flex_1().min_h(0).overflow_y_scrollbar().px(16).py(10).gap(2)
-        .child(div().pb(8).text_size(12).text_color(t.muted).child("끈 앱은 런처에서 숨기고, Herdr가 그 앱을 불러오지 않습니다(타이머·git·네트워크 요청 없음)."))
+        .child(div().pb(8).text_size(12).text_color(t.muted).child("끈 앱은 런처에서 숨기고, 열려 있던 화면과 타이머(git·네트워크 요청)도 멈춥니다."))
         .children(APPS.map((a) => {
           const on = !off[a.id];
           return h_flex().id(`apps-tg-${a.id}`).py(8).px(6).gap(12).items_center().rounded(8).cursor_pointer()

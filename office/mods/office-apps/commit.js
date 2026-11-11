@@ -39,11 +39,18 @@ export class CommitApp {
       this.query = q;
       // 글자마다 git을 돌리지 않게 잠깐 기다렸다가 찾는다.
       this.qTask?.cancel();
-      this.qTask = cx.timer.after(250, (cx) => this.reload(cx));
+      this.qTask = cx.timer.after(250, (cx) => { if (!this.disposed) this.reload(cx); });
     });
     this.search.on("submit", (_e, cx) => { this.qTask?.cancel(); this.reload(cx); });
     this.refresh(cx);
-    cx.timer.every(10000, (cx) => this.refresh(cx));
+    this.poll = cx.timer.every(10000, (cx) => { if (this.disposed) return; this.refresh(cx); });
+  }
+
+  // 앱을 끌 때(main.js toggle): 10초 갱신 타이머와 검색 지연 타이머를 끊는다.
+  dispose() {
+    this.disposed = true;
+    this.poll?.cancel(); this.poll = null;
+    this.qTask?.cancel(); this.qTask = null;
   }
 
   // 위치가 바뀌면 처음부터, 같으면 HEAD·작업 트리 변화만 확인한다.

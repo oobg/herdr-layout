@@ -121,9 +121,17 @@ export class AgentApp {
     this.loop(cx, 0);
   }
 
+  // 앱을 끌 때(main.js toggle): 걸려 있는 after를 끊는다. 이미 읽는 중(busy)이면 끝난 뒤 loop가 disposed를 보고 다시 걸지 않는다.
+  dispose() {
+    this.disposed = true;
+    this.timer?.cancel(); this.timer = null;
+  }
+
   loop(cx, delay) {
+    if (this.disposed) return;
     this.timer = cx.timer.after(delay, (cx) => {
       this.timer = null;
+      if (this.disposed) return;
       // 지난번 알렸는데 그려지지 않았다: 안 보이는 중이니 멈춘다(다시 그려지면 ensure가 깨운다)
       if (this.notified > this.rendered) return;
       this.busy = true;

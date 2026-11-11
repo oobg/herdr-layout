@@ -78,10 +78,10 @@ export class ServerApp {
     });
     try { this.sel = JSON.parse(localStorage.getItem("server.sel") ?? "null") ?? LOCAL; } catch { this.sel = LOCAL; }
     this.refresh(cx);
-    cx.timer.every(10000, (cx) => this.refresh(cx));
+    this.poll = cx.timer.every(10000, (cx) => { if (this.disposed) return; this.refresh(cx); });
     // 리소스: 타이머는 숨겨져도 돌므로, 최근에 상세를 그린 적이 있을 때(보이는 중)만 읽는다.
     this.res = {}; this.seen = 0; this.resBusy = false;
-    cx.timer.every(RES_EVERY, (cx) => this.readRes(cx));
+    this.resPoll = cx.timer.every(RES_EVERY, (cx) => { if (this.disposed) return; this.readRes(cx); });
     cx.spawn(async (cx) => {
       const [h, v] = await Promise.all([
         exec("hostname", []).catch(() => null),
@@ -90,6 +90,13 @@ export class ServerApp {
       this.local = { host: (h?.stdout ?? "").trim(), version: (v?.stdout ?? "").trim().replace(/^hc\s+/, "") };
       cx.notify();
     });
+  }
+
+  // 앱을 끌 때(main.js toggle): 머신 목록 10초 타이머와 리소스 2초 타이머(30초 무거운 명령은 이 안에서 고름)를 끊는다.
+  dispose() {
+    this.disposed = true;
+    this.poll?.cancel(); this.poll = null;
+    this.resPoll?.cancel(); this.resPoll = null;
   }
 
   refresh(cx) {

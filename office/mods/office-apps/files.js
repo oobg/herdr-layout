@@ -95,15 +95,23 @@ export class FilesApp {
     this.entries = new Map(); this.folders = new Set(); this.pending = new Set();
     this.marks = {}; this.ignored = new Set();
     this.refresh(cx);
-    cx.timer.every(10000, (cx) => this.refresh(cx));
+    this.poll = cx.timer.every(10000, (cx) => { if (this.disposed) return; this.refresh(cx); });
+  }
+
+  // 앱을 끌 때(main.js toggle): 10초 타이머를 끊고 폴더 감시 사슬이 다음 차례에 멈추게 한다.
+  // watchFolder는 해제 API가 없어 지금 기다리는 한 번은 끝까지 기다리고, 그 뒤 disposed를 보고 빠진다.
+  dispose() {
+    this.disposed = true;
+    this.poll?.cancel(); this.poll = null;
+    this.watchTask?.cancel(); this.watchTask = null;
   }
 
   watch(root, cx) {
-    if (this.on || this.watched === root) return;
+    if (this.disposed || this.on || this.watched === root) return;
     this.watched = root;
     const context = this.context;
-    cx.spawn(async (cx) => {
-      try { while (this.context === context) { await watchFolder(root); if (this.current(context)) this.refresh(cx); } }
+    this.watchTask = cx.spawn(async (cx) => {
+      try { while (!this.disposed && this.context === context) { await watchFolder(root); if (!this.disposed && this.current(context)) this.refresh(cx); } }
       catch { if (this.context === context) this.watched = null; }
     });
   }
