@@ -2,12 +2,13 @@
 //   왼쪽: 툴바(머신 추가·다시 읽기) + 머신 목록(연결 상태 점·글자, 스페이스 수)
 //   오른쪽: 고른 머신의 정보(주소·연결 방식·호스트·hc 버전), 그 머신의 스페이스·에이전트, 동작(새 스페이스·새 터미널·제거)
 //   리소스(CPU·메모리·저장 용량·배터리·네트워크): 오른쪽 칸이 넓으면 오른쪽 열(260px), 좁으면 정보 줄 아래. server/resources.js가 읽는다.
-// 머신 추가는 Herdr 기본 machine-add 창(`mod.open machine-add`)을 연다. 제거는 확인 창(menu.js Confirm)을 거쳐 `hc machine rm`.
+// 기기 추가는 오른쪽 칸의 추가 화면(server/add.js, `hc machine add`). Herdr 기본 machine-add 창은 그 안의 링크로 남긴다. 제거는 확인 창(menu.js Confirm)을 거쳐 `hc machine rm`.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { hc, exec, spaces, panes, machines, agents, home, run, notify, shared, setShared, openOverlay, closeOverlay } from "herdr";
 import { ACTIONS } from "./menu.js";
 import { sample, gb, pct, rate } from "./server/resources.js";
+import { AddForm, runHere } from "./server/add.js";
 
 const ME = "mods/office-apps";
 const LOCAL = "";                          // 이 컴퓨터의 키(머신 이름은 비어 있지 않다)
@@ -69,6 +70,12 @@ export class ServerApp {
     this.local = {};          // 이 컴퓨터: host, version
     this.tick = shared(TICK);
     this.copied = null;
+    this.adding = false;      // 오른쪽 칸에 추가 화면
+    this.form = new AddForm();
+    this.form.init((name, cx) => {
+      notify({ title: "기기를 추가했습니다", body: name, level: "success" });
+      this.refresh(cx); this.pick(name, cx);
+    });
     try { this.sel = JSON.parse(localStorage.getItem("server.sel") ?? "null") ?? LOCAL; } catch { this.sel = LOCAL; }
     this.refresh(cx);
     cx.timer.every(10000, (cx) => this.refresh(cx));
@@ -100,7 +107,7 @@ export class ServerApp {
   }
 
   pick(key, cx) {
-    this.sel = key;
+    this.sel = key; this.adding = false;
     if (cx) { this.seen = Date.now(); this.readRes(cx); }
     try { localStorage.setItem("server.sel", JSON.stringify(key)); } catch { /* 이번 실행 동안만 */ }
   }
@@ -139,16 +146,18 @@ export class ServerApp {
       .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.hideTip(); fn(cx); cx.notify(); })
       .child(svg(icon).size(16).text_color(TOOL[id]));
     return h_flex().min_h(32).flex_none().py(2).px(6).gap(2).items_center().border_b_1().border_color(t.border)
-      .child(btn("add", `${ME}/server/machine-add.svg`, "머신 추가 (ssh)", () => run("mod.open", { name: "machine-add" })))
+      .child(btn("add", `${ME}/server/machine-add.svg`, "기기 추가", () => this.openAdd()))
       .child(div().flex_1())
       .child(btn("refresh", `${ME}/refresh.svg`, "다시 읽기", (cx) => this.refresh(cx)));
   }
+
+  openAdd() { this.adding = true; this.form.focus(); }
 
   row(e, t) {
     const [label, color] = this.status(e, t);
     const n = e.spaces.length;
     return v_flex().id(`sv-row-${e.key || "local"}`).flex_none().px(8).py(5).gap(1).rounded(4).cursor_pointer()
-      .hover((s) => s.bg(t.hover)).when(this.sel === e.key, (el) => el.bg(t.selected))
+      .hover((s) => s.bg(t.hover)).when(!this.adding && this.sel === e.key, (el) => el.bg(t.selected))
       .on_click((_e, cx) => { this.pick(e.key, cx); cx.notify(); })
       .child(h_flex().gap(7).items_center()
         .child(div().size(7).flex_none().rounded_full().bg(color))
@@ -164,9 +173,15 @@ export class ServerApp {
       .child(this.toolbar(t))
       .child(v_flex().id("sv-list").flex_1().min_h(0).overflow_y_scrollbar().p(4).gap(1)
         .children(all.map((e) => this.row(e, t)))
+        // 목록 맨 아래: 기기 추가(다른 줄과 같은 톤)
+        .child(h_flex().id("sv-row-add").flex_none().px(8).py(7).gap(7).items_center().rounded(4).cursor_pointer()
+          .hover((s) => s.bg(t.hover)).when(this.adding, (el) => el.bg(t.selected))
+          .on_click((_e, cx) => { this.openAdd(); cx.notify(); })
+          .child(svg(`${ME}/server/plus.svg`).size(14).flex_none().text_color(t.muted))
+          .child(div().text_color(t.muted).child("기기 추가")))
         .when(Boolean(this.error), (el) => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error)))
         .when(!this.error && this.loaded && all.length === 1, (el) => el.child(div().p(8).text_size(12).text_color(t.dim)
-          .child("등록한 머신이 없습니다. 위의 + 로 ssh 머신을 추가합니다"))));
+          .child("등록한 기기가 없습니다"))));
   }
 
   subtitle(t) {
@@ -175,6 +190,9 @@ export class ServerApp {
   }
 
   detail(cx, t) {
+    if (this.adding) return v_flex().id("sv-addroot").size_full().min_h(0)
+      .on_size_change((size, cx) => { if (Math.abs((this.dw ?? 0) - size.width) > 4) { this.dw = size.width; cx.notify(); } })
+      .child(this.form.view(t, Math.max(200, (this.dw ?? 600) - 36)));
     if (this.sel === null || this.sel === undefined) return null;
     const e = this.entries().find((x) => x.key === this.sel);
     if (!e) return null;
@@ -249,7 +267,11 @@ export class ServerApp {
           .child(div().id("sv-login-copy").flex_none().px(6).py(2).rounded(4).text_size(12).text_color(t.muted).cursor_pointer()
             .hover((s) => s.bg(t.hover).text_color(t.foreground))
             .on_click((_e, cx) => { cx.write_to_clipboard(login); this.copied = login; cx.notify(); })
-            .child(this.copied === login ? "복사함" : "복사"))))
+            .child(this.copied === login ? "복사함" : "복사"))
+          .child(div().id("sv-login-term").flex_none().px(6).py(2).rounded(4).text_size(12).text_color(t.muted).cursor_pointer()
+            .hover((s) => s.bg(t.hover).text_color(t.foreground))
+            .on_click(() => runHere(`로그인 ${e.name}`, ["hc", "machine", "login", e.name]))
+            .child("터미널에서 로그인"))))
         .when(Boolean(e.name) && !m, (el) => el.child(div().text_size(12).text_color(t.dim).child("hc 목록에 없는 머신입니다. 이 머신의 스페이스만 남아 있습니다")))
         .when(!ready && Boolean(e.name), (el) => el.child(div().text_size(12).text_color(t.dim).child("연결되면 스페이스를 열 수 있습니다")))
         // 좁으면 리소스를 정보 줄 아래에
