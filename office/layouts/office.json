@@ -109,21 +109,43 @@
           }
         },
         {
-          "id": "office-usage",
-          "type": "block",
+          "id": "office-side",
+          "type": "column",
           "size": {
             "px": 300
           },
           "min": 240,
-          "radius": 10,
-          "border": {
-            "width": 1,
-            "color": "border"
-          },
-          "background": "chrome",
-          "content": {
-            "mod": "office-usage"
-          }
+          "gap": 6,
+          "children": [
+            {
+              "id": "office-usage",
+              "type": "block",
+              "size": {
+                "weight": 1
+              },
+              "min": 160,
+              "radius": 10,
+              "border": {
+                "width": 1,
+                "color": "border"
+              },
+              "background": "chrome",
+              "content": {
+                "mod": "office-usage"
+              }
+            },
+            {
+              "id": "office-resources",
+              "type": "block",
+              "size": {
+                "px": 28
+              },
+              "min": 28,
+              "content": {
+                "mod": "office-resources"
+              }
+            }
+          ]
         }
       ]
     }

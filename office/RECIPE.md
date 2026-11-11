@@ -17,10 +17,12 @@ root  column · padding 8 · gap 8 · background canvas
 │     └─ office-tab       block · {tab: active} · 패인 카드 radius 10, focus 테두리 accent
 └─ office-bottom  row · weight 2 · gap 8
    ├─ office-apps     block · weight 1 · min 420 · radius 10 · border · chrome   → mod office-apps
-   └─ office-usage    block · 300px · min 240 · radius 10 · border · chrome      → mod office-usage
+   └─ office-side     column · 300px · min 240 · gap 6
+      ├─ office-usage      block · weight 1 · min 160 · radius 10 · border · chrome   → mod office-usage
+      └─ office-resources  block · 28px · min 28 (칠하지 않음: 카드는 모드가 전체 모드일 때만 그림) → mod office-resources
 ```
 
-레이아웃이 쓰는 모드는 `office`, `office-apps`, `office-usage` 셋이다. 셋 다 `place: none`(레이아웃이 자리를 정한다)이고 `office`만 `focusable`이다.
+레이아웃이 쓰는 모드는 `office`, `office-apps`, `office-usage`, `office-resources` 넷이다. 모두 `place: none`(레이아웃이 자리를 정한다)이고 `office`만 `focusable`이다.
 
 ### 툴바 규칙 (패널 공통)
 
@@ -84,7 +86,9 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 ### 런처 (`main.js`)
 
 - **런처 화면:** 검색창(앱 이름·설명·id로 거름) + 앱 아이콘 격자(타일 56px, 앱 색 바탕 + 흰 아이콘 `apps/<id>.svg`). 앱 관리는 격자의 `manage` 앱으로 연다.
-- **앱 화면:** 위 막대 44px(`‹ 앱` · 타일 · 이름 · 앱의 `subtitle`) / 왼쪽 250px(`list`) / 오른쪽 나머지(`detail`, 바탕 `background`로 강조). `detail`이 `null`이면 "선택 내용이 없습니다 · 왼쪽에서 항목을 고르세요".
+  격자는 `APPS`의 `group`(`"apps"` | `"system"`, `GROUPS` 순서)으로 줄을 나누고 줄마다 작은 흐린 제목("앱" · "설정")을 단다. 걸러서 빈 줄은 제목째 숨긴다. 앱 관리 대화 상자 목록도 같은 순서·제목.
+- **앱 화면:** 위 막대 44px(`‹ 앱` · 타일 · 이름 · 앱의 `subtitle`) / 왼쪽 250px(`list`) / 오른쪽 나머지(`detail`, 바탕 `background`로 강조). `detail`이 `null`이면 앱의 `emptyState()` 문구, 없으면 "선택 내용이 없습니다 · 왼쪽에서 항목을 고르세요".
+- **키보드:** 왼쪽 칸에 런처의 포커스 핸들(`track_focus`)을 달고, 그 칸 자체가 포커스를 가졌을 때만 ↑↓ → `move(-1|+1, cx)`, Enter → `activate(cx)`. 칸을 누르면 GPUI가 포커스를 준다(안쪽 입력 상자는 자기가 먼저 가져가고, 그때는 키를 가로채지 않는다). 격자에서 눌러 들어갈 때도 이 칸에 포커스(시작 복원·명령으로 열 때는 키보드를 옮기지 않음).
 - **앱 관리:** 대화 상자(오버레이 역할 `manage`, 420×520)에서 앱마다 스위치. 끈 앱 목록은 공유 상태 `office-apps.disabled`(`{ id: true }`)에 두고, 대화 상자가 `setShared`로 바로 바꾼다. 런처는 렌더 때 이전 값과 비교해(`syncDisabled`) 새로 꺼진 앱의 인스턴스를 `dispose()`한 뒤 버리고, 보던 앱이 꺼졌으면 런처 화면으로 돌아간다. 끈 앱은 격자에서 숨기고 인스턴스를 만들지 않는다.
 - **앱 인스턴스:** 켜진 앱을 처음 열 때(`go`) 만든다. 렌더 중에는 입력 상자 등을 만들 수 없어서 이벤트·명령 처리 시점에 만든다. 마지막으로 연 앱 id는 `localStorage`의 `app`.
 - **우클릭 메뉴:** 앱 아이콘 우클릭 → 오버레이 `launcherMenu`(열기 · 앱 끄기 · 앱 관리…). 오버레이는 모드의 새 복사본이라 상태를 나누지 않으므로, 고른 동작은 `run("office-apps.<명령>")`으로 런처에 돌려보낸다.
@@ -97,6 +101,9 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
   | `office-apps.show:<경로>` | 파일 앱을 열고 그 파일을 보여 줌(프로젝트 기준 상대 경로) |
   | `office-apps.manage` | 앱 관리 대화 상자 |
   | `office-apps.disable-<id>` | 앱 끄기 (`manage`는 무시) |
+  | `office-apps.commit:<해시\|WORKTREE>` | 커밋 앱을 열고 `openCommit(값, cx)`. 커밋 앱이 꺼져 있으면 알림만 |
+  | `office-apps.range:<a>...<b>` | 커밋 앱을 열고 `openRange(a, b, cx)`(첫 `...`로 나눔). 꺼져 있으면 알림만 |
+  | `office-apps.files-toggle-hidden` · `files-toggle-ignored` | 파일 앱 숨김 파일 · gitignore 항목 보이기 전환(툴바 `⋯` 메뉴가 보냄) |
 
   `herdr-app do office-apps.open-files`처럼 클릭 없이 시험할 때 쓴다.
 
@@ -135,7 +142,8 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 - **부제:** `~/경로`(누르면 `open`).
 - **아이콘:** Material Icon Theme(`icons/`, `icons.json`, `tools/build-icons.py`로 생성). `fileNames → fileExtensions(긴 확장자부터) → languageIds(확장자→언어 표) → file` 순으로 찾고, 라이트 테마면 `light` 표를 먼저 본다.
 - **git 색:** `git status --porcelain -z --ignored=matching`. 수정 파랑, 추가 초록, 새 파일·충돌 빨강, 삭제 회색, 무시됨 갈색.
-- **툴바:** 검색(`git ls-files -co --exclude-standard`, 없으면 `find`) · 숨김 파일 · gitignore 항목 · 새 파일 · 새 폴더 · 터미널 · 경로 복사 · 펼치기/접기 · 다시 읽기. 필터 상태는 `localStorage`.
+- **툴바(한 줄):** 검색(`git ls-files -co --exclude-standard`, 없으면 `find`) · 새 파일 · 새 폴더 · 터미널 · 펼치기/접기 · 다시 읽기 · `⋯`(숨김 파일 보이기 ✓ · gitignore 항목 감추기 ✓ · 경로 복사, `menu.js`의 `kind: "tools"` 메뉴). 걸러 내는 중이면 `⋯`에 배경. 필터 상태는 `localStorage`.
+- **키보드:** `move`는 보이는 줄(`visible()`, `rows()`와 같은 거르기)로 커서를 옮기고 파일이면 미리보기를 연다. 검색 중이면 검색 결과를 오간다. `activate`는 폴더 펼치기/접기, 파일 열기.
 - **우클릭(`menu.js`):** 빈 영역 / 폴더 / 파일, 파일 종류(`package.json` 스크립트, 테스트, 실행 파일, `Makefile`, Docker, 이미지, 압축, `.env*`), git 상태(새 파일·수정·stage됨·커밋됨·무시됨·충돌)마다 항목이 바뀐다. 공통: 다음으로 열기 ▸, 새 파일·폴더, 복사 ▸, 이름 바꾸기, 복제, 압축, 휴지통(`trash`, 없으면 Finder). 파일을 바꾼 뒤엔 공유 상태 `office-apps.tick`을 바꿔 트리가 다시 읽게 한다.
 - **뷰어(`viewers.js`):** 확장자로 미리보기 종류를 고른다. 추가 설치 없이 macOS 기본 도구와 Python 표준 라이브러리만 쓴다. 만든 미리보기는 `data/office-apps/preview/<경로·수정 시각 해시>/`에 두고 같은 파일은 다시 만들지 않는다.
 
@@ -161,9 +169,14 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
    | `list(cx, t)` | 예 | 왼쪽 250px 칸의 내용(툴바 + 목록). `t`는 `theme()` |
    | `detail(cx, t)` | 아니오 | 오른쪽 칸의 내용. `null`이면 "선택 내용이 없습니다" |
    | `subtitle(t)` | 아니오 | 위 막대의 앱 이름 옆 부제 |
+   | `move(d, cx)` | 아니오 | 왼쪽 칸에 포커스가 있을 때 ↑(`-1`)/↓(`+1`). 고른 항목을 옮긴다(셸이 이어서 `cx.notify()`) |
+   | `activate(cx)` | 아니오 | 왼쪽 칸에서 Enter. 고른 항목을 연다·펼친다 |
+   | `emptyState()` | 아니오 | `detail`이 `null`일 때 오른쪽 문구 `{ text, sub }` |
+   | `dispose()` | 아니오 | 앱을 끌 때 한 번. 타이머·감시를 멈춘다 |
+   | `openCommit(값, cx)` · `openRange(a, b, cx)` | 커밋 앱만 | `office-apps.commit:` · `range:` 명령이 앱을 연 뒤 부른다 |
 
    지금 스페이스를 보는 앱은 파일·브랜치 앱과 같은 규칙(포커스된 패인의 폴더, 없으면 스페이스 폴더, 다른 머신이면 `on`)을 따른다.
-2. **`main.js`의 `APPS`에 등록**한다: `{ id, name, desc, color, make: () => new XxxApp() }`. 들어가지 않고 동작만 하는 앱은 `make` 대신 `action: () => ...`. `make`도 `action`도 없으면 격자에는 보이되 들어가면 "준비 중인 앱입니다"가 나온다. 파일 맨 위에 import를 더한다.
+2. **`main.js`의 `APPS`에 등록**한다: `{ id, group: "apps", name, desc, color, make: () => new XxxApp() }`(창만 띄우는 항목은 `group: "system"`). 들어가지 않고 동작만 하는 앱은 `make` 대신 `action: () => ...`. `make`도 `action`도 없으면 격자에는 보이되 들어가면 "준비 중인 앱입니다"가 나온다. 파일 맨 위에 import를 더한다.
 3. **아이콘** `apps/<id>.svg`를 둔다. 런처가 앱 색 타일 위에 `text_color("#ffffff")`로 칠하므로 단색 SVG로 그린다(지금 아이콘들과 같은 형식).
 4. **확인 창**이 필요하면 지금은 `menu.js`의 `ACTIONS`에 동작을 등록하는 방식이다. 모듈 최상위(함수 밖)에 `ACTIONS["<id>.<동작>"] = (ctx) => ...`를 두고, `openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", action, title, detail, ctx } })`로 띄운다. `ctx`에는 값만 담는다. 새 오버레이 역할이 필요하면 같은 방식으로 `files.js`의 `ROLES`에 더한다(`branch.js` 끝 참고).
 5. `herdr-app check office/mods/office-apps` → `./install.sh` → `herdr-app do office-apps.open-<id>` → `herdr-app shot`, `herdr-app status`의 errors 확인.
@@ -187,6 +200,13 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 - **프로바이더 머리줄:** `⠿` 손잡이(끌어서 순서), 펼침 화살표, 로고(Claude는 Anthropic 별 `#d97757`, Codex는 OpenAI, Grok은 글자색), 🌐 사용량 웹페이지, 접혀도 보이는 최대 사용률.
 - **툴바:** 펼치기/접기 · 정렬(사용률순 ↔ 내 순서) · 순서 초기화(내 순서를 바꿨을 때만) · ⏱ 주기(1·5·15·30분, 버튼에 글자) · 흘리기 켜기/끄기 · (오른쪽) 새로 고침(읽는 동안 회전). 설정은 `localStorage`.
 
+## 리소스 관리자 (`mods/office-resources`)
+
+- 레이아웃 크기는 `px`·`weight`뿐이라 사용량이 내용 높이만 쓰고 남는 칸을 넘겨줄 수 없다. 그래서 기본은 28px 한 줄(메모리 칩 아이콘 + 이 컴퓨터 터미널 메모리 합, 흐린 글자)이고, 칸 높이가 220px 이상이면(`on_size_change`) 전체 표를 그린다. 칩을 누르면 `layout.resize {id: office-resources, px: 340}`, 그래도 220px이 안 되면(남는 높이 없음) 28px로 되돌리고 같은 표를 팝업(300×420)으로 띄운다. 경계를 끌어도 같은 기준으로 바뀐다.
+- 전체 표: 머리줄(새로 고침 · 한 줄로 줄이기) / 요약 CPU·메모리 / ▶ 지표 세부 정보(이 컴퓨터 CPU·코어 수, 사용 중/전체 메모리) / 이름 | CPU | 메모리. 스페이스(대문자, 접기) → 탭(최근 30표본 CPU 막대) → 터미널(상태 점, 누르면 그 터미널로 이동). 숫자는 D2Coding으로 오른쪽 정렬.
+- 계산(`calc.js`, herdr 없이 node로 돌려 볼 수 있음): 터미널마다 `hc get`의 뿌리(셸) pid를 한 번 얻어 두고, 3초마다 기기당 `ps -A -o pid=,ppid=,pcpu=,rss=` 한 번으로 자손 트리 합을 낸다. CPU는 코어 수로 나눠 기기 전체 대비 %. 터미널의 탭은 패인 → `herdr.tab` 라벨 → 서브에이전트면 부모의 탭. 다른 기기는 같은 스크립트를 `exec on`으로 돌리고, 실패하거나 연결이 없으면 "<기기>에 연결할 수 없어 리소스를 알 수 없습니다." 한 줄.
+- 갱신은 앱 창이 앞에 있고 칸이 숨겨지지 않았을 때만(Herdr는 숨은 복사본의 타이머도 돌리므로 틱에서 거른다).
+
 ## `mods/office-git` (레이아웃에서 쓰지 않음)
 
 예전 아래 칸의 독립 브랜치·커밋 그래프 모드다. 레포에 남아 있지만 지금 레이아웃은 쓰지 않고, 브랜치 앱(`office-apps/branch.js`)의 이식 원본이다. `install.sh`는 `mods/` 아래 폴더를 모두 복사하므로 설치본에는 들어간다. 예전 버전을 설치했던 곳에는 `mods/office-files`(지금의 `office-apps` 이전 이름)도 남아 있을 수 있다.
@@ -197,6 +217,7 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 - `mods/office/`: 사무실과 터미널 막대(`main.js`), 오버뷰 활동 읽기(`activity.js`), 스프라이트(`sprites/`), 로고·활동 아이콘(`icons/`), 패널 글꼴(`fonts/`, OFL)
 - `mods/office-apps/`: 런처(`main.js`), 앱(`files.js`, `branch.js`, `commit.js`, `pr.js`, `agent.js`, `server.js`와 같은 이름 폴더), 파일 우클릭 메뉴·확인 창·`ACTIONS`(`menu.js`), 뷰어(`viewers.js`, `markdown.js`, `viewers/`), 앱 아이콘(`apps/`), 파일 아이콘(`icons/`, `icons.json`, MIT 라이선스)
 - `mods/office-usage/`: 사용량(`main.js`), Grok 토큰 갱신(`grok_refresh.py`), 로고(`icons/`)
+- `mods/office-resources/`: 리소스 관리자(`main.js`), ps 합계 계산(`calc.js`)
 - `mods/office-git/`: 쓰지 않는 예전 모드(브랜치 앱의 이식 원본)
 - `../tools/render-office.py`: 사무실 스프라이트 렌더(Blender)
 - `../tools/build-icons.py`: Material Icon Theme 패키지에서 파일 아이콘과 `icons.json` 생성
