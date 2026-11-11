@@ -2,12 +2,15 @@
 //   앱 화면: 위 막대(‹ 앱 · 아이콘 · 이름 · 부제) / 왼쪽 좁은 칸(툴바 + 관리 목록) / 오른쪽 넓은 칸(고른 항목, 없으면 "선택 내용이 없습니다")
 //   앱 관리(⚙): 앱마다 켜고 끄기. 끈 앱은 격자에서 숨기고 코드를 만들지 않아 타이머·git·네트워크가 돌지 않는다.
 // 오버레이 역할(props.role): menu·prompt·confirm·tip — 파일 앱의 우클릭 메뉴와 입력·확인 창, 툴팁.
-// 키·명령: office-apps.home(런처로), office-apps.open-<앱 id>(앱 열기), office-apps.show:<경로>(파일 열기)
+//   launcherMenu — 런처 격자의 앱 아이콘 우클릭 메뉴(열기 · 앱 끄기 · 앱 관리…).
+// 키·명령: office-apps.home(런처로), office-apps.open-<앱 id>(앱 열기), office-apps.show:<경로>(파일 열기),
+//   office-apps.manage(앱 관리 화면), office-apps.disable-<앱 id>(앱 끄기)
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { props, theme, shared, setShared, nextCommand, run } from "herdr";
+import { props, theme, shared, setShared, nextCommand, run, openOverlay, closeOverlay } from "herdr";
 import { FilesApp, ROLES } from "./files.js";
+import { popupAt } from "./menu.js";
 import { BranchApp } from "./branch.js";
 import { CommitApp } from "./commit.js";
 import { PrApp } from "./pr.js";
@@ -41,6 +44,9 @@ class Launcher {
         const c = await nextCommand();
         if (c === "home") this.go(null, cx);
         else if (c.startsWith("open-")) this.go(c.slice(5), cx);
+        // 런처 우클릭 메뉴(오버레이 복사본)가 보내는 명령
+        else if (c === "manage") { this.go(null, cx); this.managing = true; }
+        else if (c.startsWith("disable-")) { const id = c.slice(8); if (APPS.some((a) => a.id === id) && !this.disabled()[id]) this.toggle(id); }
         // show:<경로>  파일 앱에서 그 파일을 연다(프로젝트 기준 상대 경로)
         else if (c.startsWith("show:")) { this.go("files", cx); this.inst.files?.show(c.slice(5), cx); }
         cx.notify();
@@ -80,9 +86,13 @@ class Launcher {
   }
 
   tile(a, size, t) {
-    return div().size(size).flex_none().rounded(Math.round(size * 0.24)).bg(a.color).flex().items_center().justify_center()
-      .border_1().border_color("#ffffff22").shadow_md()
-      .child(svg(`${ME}/apps/${a.id}.svg`).size(Math.round(size * 0.52)).text_color("#ffffff"));
+    return tile(a, size).border_1().border_color("#ffffff22").shadow_md();
+  }
+
+  // 앱 아이콘 우클릭 메뉴. 오버레이는 이 모드의 새 복사본이라 상태를 나누지 않으므로, 고른 동작은 명령으로 돌려받는다.
+  openMenu(a) {
+    openOverlay({ mod: "office-apps", kind: "popup", at: popupAt(MENU_W, MENU_H), width: MENU_W, height: MENU_H,
+      props: { role: "launcherMenu", app: a.id } });
   }
 
   // 런처: 검색창 + 격자. 앱 이름·설명으로 거른다.
@@ -101,6 +111,7 @@ class Launcher {
           v_flex().id(`app-${a.id}`).w(92).py(8).gap(8).items_center().rounded(10).cursor_pointer()
             .hover((s) => s.bg(t.hover))
             .on_click((_e, cx) => { this.go(a.id, cx); cx.notify(); })
+            .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(a); })
             .child(this.tile(a, 56, t))
             .child(div().text_size(13).text_color(t.foreground).child(a.name)))))
         .when(list.length === 0, (el) => el.child(div().pt(8).text_color(t.muted).child(q ? "맞는 앱이 없습니다" : "켜진 앱이 없습니다. ⚙에서 켜세요"))));
@@ -163,9 +174,75 @@ class Launcher {
 
 const LEFT = 250;   // 왼쪽 관리 칸 폭(가운데 내용 칸을 강조하려고 좁게)
 
+// 앱 색 바탕 + 흰 아이콘. 크기에 맞춰 모서리와 아이콘을 줄인다.
+function tile(a, size) {
+  return div().size(size).flex_none().rounded(Math.round(size * 0.24)).bg(a.color).flex().items_center().justify_center()
+    .child(svg(`${ME}/apps/${a.id}.svg`).size(Math.round(size * 0.52)).text_color("#ffffff"));
+}
+
+// 런처 우클릭 메뉴의 치수: 파일 우클릭 메뉴(menu.js)와 같은 줄 높이·구분선·머리줄.
+const ROW = 30, SEP = 9, HEAD = 34, MENU_W = 240;
+const MENU_H = 12 + HEAD + ROW * 3 + SEP;
+
+// 런처 우클릭 메뉴(props { app }). 파일 메뉴와 같은 모양으로 그린다.
+//   ↑↓ 고르기 · Enter 실행 · Esc 닫기
+class LauncherMenu {
+  init(_p, cx) {
+    this.at = -1;
+    this.h = cx.focus_handle();
+    this.h.focus();
+  }
+
+  items() {
+    const a = APPS.find((x) => x.id === props().app);
+    if (!a) return [];
+    return [
+      { label: "열기", icon: `${ME}/open.svg`, color: "#7aa2f7", hint: a.action ? a.desc.replace(/ 열기$/, "") : "", cmd: `open-${a.id}` },
+      { label: "앱 끄기", icon: `${ME}/eye-off.svg`, color: "#dbbc7f", hint: "⚙에서 다시 켬", cmd: `disable-${a.id}` },
+      "-",
+      { label: "앱 관리…", icon: `${ME}/apps/gear.svg`, color: "#7fbbb3", cmd: "manage" },
+    ];
+  }
+
+  enter(it) {
+    closeOverlay(props().overlay);
+    run(`office-apps.${it.cmd}`);
+  }
+
+  render() {
+    const t = theme(), p = props(), a = APPS.find((x) => x.id === p.app), list = this.items();
+    const usable = list.map((it, i) => (it === "-" ? -1 : i)).filter((i) => i >= 0);
+    return v_flex().id("launcher-menu").track_focus(this.h).size_full().p(6).bg(t.popover).text_size(13)
+      .on_key_down((e, cx) => {
+        const k = usable.indexOf(this.at);
+        if (e.key === "escape") closeOverlay(p.overlay);
+        else if (e.key === "down") this.at = usable[(k + 1) % usable.length];
+        else if (e.key === "up") this.at = usable[(k - 1 + usable.length) % usable.length];
+        else if (e.key === "enter" && this.at >= 0) return this.enter(list[this.at]);
+        else return;
+        cx.stop_propagation(); cx.notify();
+      })
+      // 머리줄: 우클릭한 앱(아이콘, 이름)
+      .when(Boolean(a), (el) => el.child(h_flex().h(HEAD - 6).mb(4).px(6).gap(8).items_center().border_b_1().border_color(t.border)
+        .child(tile(a, 16))
+        .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).child(a.name))))
+      .children(list.map((it, i) => it === "-"
+        ? div().h(1).my(4).mx(6).bg(t.border)
+        : h_flex().id(`lm-${i}`).h(ROW).px(8).gap(8).items_center().rounded(5).cursor_pointer()
+          .when(this.at === i, (el) => el.bg(t.hover))
+          .hover((s) => s.bg(t.hover))
+          .on_click(() => this.enter(it))
+          .child(svg(it.icon).size(15).flex_none().text_color(it.color))
+          .child(div().flex_none().text_color(t.foreground).child(it.label))
+          .child(div().flex_1().min_w(0).truncate().text_right().text_size(11).text_color(t.dim).child(it.hint ?? ""))));
+  }
+}
+
+const ALL_ROLES = { ...ROLES, launcherMenu: LauncherMenu };
+
 export default class OfficeApps extends View {
   init(p, cx) {
-    const R = ROLES[(props() ?? p ?? {}).role] ?? Launcher;
+    const R = ALL_ROLES[(props() ?? p ?? {}).role] ?? Launcher;
     this.role = new R();
     this.role.init(p, cx);
   }
