@@ -6,6 +6,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import * as fs from "fs/promises";
+import { readActivity } from "./activity.js";
 import { v_flex, h_flex } from "gpui-base";
 import {
   props, spaces, agents, panes, terminals, theme, run, exec,
@@ -261,7 +262,7 @@ class Floor {
         .when(blocked.length > 1, (x) => x.child(div().text_size(12).text_color(t.muted).child(`외 ${blocked.length - 1}명`)))))
       .when(mine.length > 0, (el) => el
         .child(H(`에이전트 ${mine.length}`))
-        .children(mine.flatMap((a) => [agentRow(a, false),
+        .children(mine.flatMap((a) => [agentRow(a, false), this.activityView(a, cx, t),
           ...terms.filter((x) => x.parent === a.address && x.status)
             .map((k) => agentRow({ address: k.address, status: k.status, program: k.program, app: k.report?.app, title: k.name ?? "", tab: a.tab }, true))])))
       .when(g.files.length > 0, (el) => el
@@ -448,6 +449,56 @@ class Floor {
       .transition("left", { duration: 380, easing: "ease-out" })
       .transition("top", { duration: 380, easing: "ease-out" })
       .children(els);
+  }
+
+  // ── 에이전트가 지금 하는 일(Claude Code 기록) ───────────────
+  // 작업 중이면 5초, 아니면 30초마다 다시 읽는다.
+  activityFor(a, cx) {
+    if (!/claude/i.test(`${a.program?.key ?? ""} ${a.app ?? ""}`)) return null;
+    const cwd = panes().find((p) => p.pane === a.pane)?.cwd;
+    if (!cwd) return null;
+    const cache = (this.act ??= {}), c = cache[a.address];
+    const age = a.status === "working" ? 5000 : 30000;
+    if (!(this.actBusy ??= new Set()).has(a.address) && (!c || Date.now() - c.at > age)) {
+      this.actBusy.add(a.address);
+      cx.spawn(async (cx) => {
+        try { cache[a.address] = (await readActivity(cwd, null)) ?? { at: Date.now(), empty: true }; }
+        catch { cache[a.address] = { at: Date.now(), empty: true }; }
+        this.actBusy.delete(a.address);
+        cx.notify();
+      });
+    }
+    return c && !c.empty ? c : null;
+  }
+
+  activityView(a, cx, t) {
+    const v = this.activityFor(a, cx);
+    if (!v) return div();
+    const KIND = { 읽음: "#7aa2f7", 수정: "#e69875", 작성: "#a7c080", 검색: "#7fbbb3", 찾기: "#7fbbb3", 실행: C.working, 서브에이전트: "#d699b6", 웹: "#83c092", 스킬: "#dbbc7f" };
+    const label = (text) => div().w(56).flex_none().text_size(11).text_color(t.muted).child(text);
+    const line = (left, child) => h_flex().gap(8).items_start().min_h(20).child(left).child(div().flex_1().min_w(0).child(child));
+    return v_flex().ml(24).mb(6).pl(10).py(4).gap(4).border_l_2().border_color(t.border).text_size(12)
+      // 흐름: 종류별로 묶은 최근 단계. 지금 하는 단계는 굵게.
+      .when(v.flow.length > 0, (el) => el.child(line(label("흐름"), h_flex().flex_wrap().gap(4).items_center().children(
+        v.flow.flatMap((f, i) => [
+          ...(i ? [div().text_color(t.dim).child("→")] : []),
+          div().text_color(KIND[f.kind] ?? t.muted).when(f.running, (x) => x.font_semibold().underline())
+            .child(`${f.kind}${f.n > 1 ? ` ×${f.n}` : ""}`),
+        ])))))
+      // 실행 중인 스크립트
+      .children(v.running.map((r) => line(label("실행 중"), h_flex().gap(6).items_center()
+        .child(svg(SPINNER).size(11).flex_none().text_color(C.working).spin(900))
+        .child(div().truncate().text_color(t.foreground).child(r.target)))))
+      // 서브에이전트에 맡긴 일
+      .children(v.agents.map((g) => line(label("서브에이전트"), h_flex().gap(6).items_center()
+        .child(div().flex_none().px(5).rounded(4).bg("#d699b622").text_size(11).text_color("#d699b6").child(g.type))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(g.what))
+        .child(div().flex_none().text_size(11).text_color(g.running ? C.working : t.muted).child(g.running ? "작업 중" : "완료")))))
+      // 보고 있는 파일
+      .when(v.files.length > 0, (el) => el.child(line(label("파일"), v_flex().gap(2).children(v.files.map((f) =>
+        h_flex().gap(6).items_center()
+          .child(div().w(28).flex_none().text_size(11).text_color(KIND[f.kind]).child(f.kind))
+          .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(f.path)))))));
   }
 
   // 벽에 붙일 명패 SVG를 만든다. 글자 크기는 화면 픽셀로 고정(읽히게), 모양만 왼쪽 벽(월드 y축) 기울기로 비튼다.
