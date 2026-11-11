@@ -7,7 +7,7 @@ const TAIL = 300000;
 
 // 도구 → [종류, 대상]. 종류는 흐름 줄에서 같은 것끼리 묶는 데 쓴다.
 function describe(name, input, cwd) {
-  const short = (p) => (p ? String(p).replace(cwd + "/", "").replace(home(), "~") : "");
+  const short = (p) => (p ? String(p) : "");   // 파일은 절대 경로 그대로(화면에서 위치 칩으로 줄인다)
   switch (name) {
     case "Read": return ["읽음", short(input.file_path)];
     case "Edit": case "MultiEdit": case "NotebookEdit": return ["수정", short(input.file_path ?? input.notebook_path)];
@@ -31,13 +31,17 @@ export async function readActivity(cwd, on) {
   const r = await exec("tail", ["-c", String(TAIL), file], { on });
   const lines = r.stdout.split("\n");
   lines.shift(); // 잘린 첫 줄
-  const calls = [], done = new Set();
+  let calls = [];
+  const done = new Set();
   for (const line of lines) {
     if (!line) continue;
     let d;
     try { d = JSON.parse(line); } catch { continue; }
     if (d.isSidechain) continue; // 서브에이전트 내부 기록은 묶어서 하나로 본다
     const content = d.message?.content;
+    // 사람이 보낸 메시지(도구 결과가 아닌 user 메시지)가 오면 새 턴: 그 앞 단계는 버린다
+    if (d.type === "user" && !d.isMeta && (typeof content === "string" || (Array.isArray(content) && content.some((it) => it.type === "text"))
+        && !(Array.isArray(content) && content.some((it) => it.type === "tool_result")))) { calls = []; continue; }
     if (!Array.isArray(content)) continue;
     for (const it of content) {
       if (it.type === "tool_use") calls.push({ id: it.id, name: it.name, input: it.input ?? {}, at: Date.parse(d.timestamp) || 0 });
@@ -59,12 +63,13 @@ export async function readActivity(cwd, on) {
     files.push({ kind: x.kind, path: x.target });
     if (files.length >= 6) break;
   }
-  // 흐름: 최근 12단계를 연속된 같은 종류끼리 묶는다
+  // 흐름: 이번 턴의 단계를 연속된 같은 종류끼리 묶는다(길면 마지막 10묶음)
   const flow = [];
-  for (const x of steps.slice(-12)) {
+  for (const x of steps) {
     const last = flow[flow.length - 1];
-    if (last && last.kind === x.kind) { last.n++; last.running ||= x.running; }
-    else flow.push({ kind: x.kind, n: 1, running: x.running });
+    if (last && last.kind === x.kind) { last.n++; last.running ||= x.running; last.target = x.target; }
+    else flow.push({ kind: x.kind, n: 1, running: x.running, target: x.target });
   }
-  return { file, running, agents, files, flow, at: Date.now() };
+  flow.splice(0, Math.max(0, flow.length - 10));
+  return { file, cwd, running, agents, files, flow, at: Date.now() };
 }

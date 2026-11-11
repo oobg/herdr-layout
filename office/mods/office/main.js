@@ -473,32 +473,49 @@ class Floor {
 
   activityView(a, cx, t) {
     const v = this.activityFor(a, cx);
-    if (!v) return div();
-    const KIND = { 읽음: "#7aa2f7", 수정: "#e69875", 작성: "#a7c080", 검색: "#7fbbb3", 찾기: "#7fbbb3", 실행: C.working, 서브에이전트: "#d699b6", 웹: "#83c092", 스킬: "#dbbc7f" };
-    const label = (text) => div().w(56).flex_none().text_size(11).text_color(t.muted).child(text);
-    const line = (left, child) => h_flex().gap(8).items_start().min_h(20).child(left).child(div().flex_1().min_w(0).child(child));
-    return v_flex().ml(24).mb(6).pl(10).py(4).gap(4).border_l_2().border_color(t.border).text_size(12)
-      // 흐름: 종류별로 묶은 최근 단계. 지금 하는 단계는 굵게.
-      .when(v.flow.length > 0, (el) => el.child(line(label("흐름"), h_flex().flex_wrap().gap(4).items_center().children(
-        v.flow.flatMap((f, i) => [
-          ...(i ? [div().text_color(t.dim).child("→")] : []),
-          div().text_color(KIND[f.kind] ?? t.muted).when(f.running, (x) => x.font_semibold().underline())
-            .child(`${f.kind}${f.n > 1 ? ` ×${f.n}` : ""}`),
-        ])))))
-      // 실행 중인 스크립트
-      .children(v.running.map((r) => line(label("실행 중"), h_flex().gap(6).items_center()
-        .child(svg(SPINNER).size(11).flex_none().text_color(C.working).spin(900))
-        .child(div().truncate().text_color(t.foreground).child(r.target)))))
+    if (!v || (!v.flow.length && !v.agents.length)) return div();
+    const KIND = {
+      읽음: ["read", "#7aa2f7"], 수정: ["edit", "#e69875"], 작성: ["write", "#a7c080"], 검색: ["search", "#7fbbb3"], 찾기: ["search", "#7fbbb3"],
+      실행: ["run", C.working], 서브에이전트: ["agent", "#d699b6"], 웹: ["web", "#83c092"], 스킬: ["skill", "#dbbc7f"],
+    };
+    const kindOf = (k) => KIND[k] ?? ["other", t.muted];
+    const icon = (k) => svg(`mods/office/icons/act_${kindOf(k)[0]}.svg`).size(13).flex_none().text_color(kindOf(k)[1]);
+    // 파일 경로를 위치 칩 + 짧은 경로로
+    const place = (p) => {
+      const h = home();
+      if (v.cwd && p.startsWith(v.cwd + "/")) return ["프로젝트", p.slice(v.cwd.length + 1)];
+      const tmp = /^\/(private\/)?tmp\/claude-[^/]+\/[^/]+\/[^/]+\/(scratchpad\/)?(.*)$/.exec(p);
+      if (tmp) return ["클로드 임시", tmp[3]];
+      if (p.startsWith(`${h}/.claude/`)) return ["클로드", p.slice(h.length + 9)];
+      if (p.startsWith(`${h}/.config/herdr-app/`)) return ["Herdr", p.slice(h.length + 20)];
+      if (p.startsWith(h + "/")) return ["홈", `~/${p.slice(h.length + 1)}`];
+      return [null, p];
+    };
+    const chip = (text) => div().flex_none().px(5).rounded(4).bg(t.raised).text_size(11).text_color(t.muted).child(text);
+    const short = (k, target) => (["읽음", "수정", "작성"].includes(k) && target ? place(target)[1].split("/").pop() : target);
+    const head = (text) => div().pt(4).text_size(11).font_semibold().text_color(t.muted).child(text);
+    return v_flex().ml(24).mb(6).pl(10).py(2).gap(3).border_l_2().border_color(t.border).text_size(12)
+      // 이번 턴의 흐름: 한 줄에 한 묶음, 종류 아이콘. 지금 하는 묶음은 굵게.
+      .when(v.flow.length > 0, (el) => el.child(head("이번 턴")).children(v.flow.map((f) =>
+        h_flex().gap(6).items_center().min_h(18)
+          .child(f.running && f.kind === "실행" ? svg(SPINNER).size(13).flex_none().text_color(C.working).spin(900) : icon(f.kind))
+          .child(div().flex_none().text_color(f.running ? t.foreground : kindOf(f.kind)[1]).when(f.running, (x) => x.font_semibold())
+            .child(`${f.kind}${f.n > 1 ? ` ×${f.n}` : ""}`))
+          .when(Boolean(f.target), (x) => x.child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(short(f.kind, f.target)))))))
       // 서브에이전트에 맡긴 일
-      .children(v.agents.map((g) => line(label("서브에이전트"), h_flex().gap(6).items_center()
+      .when(v.agents.length > 0, (el) => el.child(head("서브에이전트")).children(v.agents.map((g) => h_flex().gap(6).items_center().min_h(18)
+        .child(g.running ? svg(SPINNER).size(13).flex_none().text_color(C.working).spin(900) : icon("서브에이전트"))
         .child(div().flex_none().px(5).rounded(4).bg("#d699b622").text_size(11).text_color("#d699b6").child(g.type))
         .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(g.what))
         .child(div().flex_none().text_size(11).text_color(g.running ? C.working : t.muted).child(g.running ? "작업 중" : "완료")))))
-      // 보고 있는 파일
-      .when(v.files.length > 0, (el) => el.child(line(label("파일"), v_flex().gap(2).children(v.files.map((f) =>
-        h_flex().gap(6).items_center()
-          .child(div().w(28).flex_none().text_size(11).text_color(KIND[f.kind]).child(f.kind))
-          .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(f.path)))))));
+      // 이번 턴에 본 파일: 위치 칩 + 짧은 경로
+      .when(v.files.length > 0, (el) => el.child(head("파일")).children(v.files.map((f) => {
+        const [where, path] = place(f.path);
+        return h_flex().gap(6).items_center().min_h(18)
+          .child(icon(f.kind))
+          .when(Boolean(where), (x) => x.child(chip(where)))
+          .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(path));
+      })));
   }
 
   // 벽에 붙일 명패 SVG를 만든다. 글자 크기는 화면 픽셀로 고정(읽히게), 모양만 왼쪽 벽(월드 y축) 기울기로 비튼다.
