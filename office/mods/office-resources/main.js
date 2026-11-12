@@ -27,6 +27,7 @@ const BRAND = [
   [/codex|openai/i, `mods/${ID}/icons/openai.svg`, null],   // null = 글자색
 ];
 
+const firstLine = (x) => String(x ?? "").trim().split("\n")[0].slice(0, 120);
 const machineOf = (address) => (String(address).includes("/") ? String(address).split("/")[0] : null);
 const spaceLabel = (name) => (name === "~" ? "홈" : name);
 // 이름으로 쓸 만한 탭 이름인가: 숫자뿐("1"), 커밋 해시("show 93e8…"), 셸 이름은 아니다.
@@ -52,6 +53,8 @@ class Panel {
     this.usage = new Map();     // 주소 → { cpu(기기 대비 %), mem(바이트) }
     this.sys = {};              // 기기 이름("" = 이 컴퓨터) → { ncpu, total, used, cpu }
     this.down = new Set();      // 리소스를 못 읽은 기기 이름
+    this.why = {};              // 기기 이름 → 못 읽은 이유(첫 줄)
+    this.getErr = null;         // hc get(터미널의 셸 pid)이 실패한 이유. 성공하면 비운다
     this.busy = false;
     try { this.more = JSON.parse(localStorage.getItem("more") ?? "null") ?? {}; } catch { this.more = {}; }  // 스페이스 → 나머지 펼침
     try { this.shut = JSON.parse(localStorage.getItem("shut") ?? "null") ?? {}; } catch { this.shut = {}; }  // 스페이스 → 접힘
@@ -95,12 +98,13 @@ class Panel {
       this.asking.add(t.address);
       try {
         const r = await hc(["get", t.address, "--json"]);
-        if (r.code !== 0) return;
+        if (r.code !== 0) { this.getErr = firstLine(r.stderr || r.stdout) || `종료 코드 ${r.code}`; return; }
+        this.getErr = null;
         const d = JSON.parse(r.stdout);
         const m = machineOf(t.address);
         const tab = d.labels?.["herdr.tab"];
         this.roots.set(t.address, { pid: d.pid ?? d.foreground?.pid ?? null, tab: tab ? (m ? `${m}/${tab}` : tab) : null });
-      } catch { /* 다음 주기에 다시 */ } finally { this.asking.delete(t.address); }
+      } catch (e) { this.getErr = firstLine(e?.message ?? e) || "알 수 없는 오류"; /* 다음 주기에 다시 */ } finally { this.asking.delete(t.address); }
     }));
     // 기기마다 스크립트 한 번: 이 컴퓨터 + 연결된 다른 기기
     const names = [null, ...new Set(spaces().map((s) => s.machine).filter(Boolean))];
@@ -108,21 +112,25 @@ class Panel {
     const usage = new Map();
     await Promise.all(names.map(async (m) => {
       const key = m ?? "";
-      if (m && state.get(m) === "unavailable") { this.down.add(key); return; }
+      if (m && state.get(m) === "unavailable") { this.down.add(key); this.why[key] = "연결 안 됨"; return; }
       try {
         const r = await exec("sh", ["-c", SCRIPT], m ? { on: m, timeout: 8000 } : { timeout: 8000 });
+        if (r.code !== 0 && !r.stdout.trim()) throw new Error(firstLine(r.stderr) || `종료 코드 ${r.code}`);
         const { tree, sys } = parseAll(r.stdout);
-        if (!tree.procs.size) throw new Error("ps 출력 없음");
+        if (!tree.procs.size) throw new Error("ps 출력이 비어 있음");
         this.sys[key] = sys;
         this.down.delete(key);
+        delete this.why[key];
+        if (!key) this.readOnce = true;   // 이 컴퓨터를 한 번 다 읽었다: 그 뒤로 값이 없으면 "읽는 중"이 아니라 실패
         for (const [a, root] of this.roots) {
           if ((machineOf(a) ?? "") !== key || root.pid == null) continue;
           const s = treeSum(tree, root.pid);
           if (s) usage.set(a, { cpu: s.cpu / sys.ncpu, mem: s.mem });
           else this.roots.delete(a);   // pid가 사라짐: 다음 주기에 다시 묻는다
         }
-      } catch {
+      } catch (e) {
         this.down.add(key);
+        this.why[key] = firstLine(e?.message ?? e) || "알 수 없는 오류";
       }
     }));
     this.usage = usage;
@@ -203,14 +211,28 @@ class Panel {
     return { cpu, mem, n };
   }
 
+  // 이 컴퓨터 메모리 표시 상태: ok(값 있음) · empty(터미널 없음) · failed(이유) · reading(아직 첫 결과 전).
+  //   실패는 ps를 못 읽은 때(down), ps는 읽었지만 터미널의 셸 pid(hc get)를 못 얻은 때,
+  //   한 번 다 읽은 뒤에도 값이 하나도 없는 때(pid가 없거나 ps에서 못 찾음).
+  state(rows, mem) {
+    if (mem != null) return { kind: "ok" };
+    const mine = rows.filter((r) => !r.machine);
+    if (!mine.length) return { kind: "empty" };
+    if (this.down.has("")) return { kind: "failed", why: this.why[""] ?? "알 수 없는 오류" };
+    if (this.sys[""] && this.getErr) return { kind: "failed", why: `터미널 정보(hc get): ${this.getErr}` };
+    if (this.readOnce) return { kind: "failed", why: "터미널 프로세스를 찾지 못함" };
+    return { kind: "reading" };
+  }
+
   // 한 줄: 메모리 칩 아이콘 + 메모리 합, 흐린 글자. 사용량 카드 밑에 붙어 보이게 테두리 없이.
   chip(t) {
-    const { mem } = this.total();
+    const rows = this.model(), { mem } = this.total(rows), st = this.state(rows, mem);
     return h_flex().id("res-chip").w_full().h(CHIP).flex_none().px(14).gap(6).items_center().cursor_pointer()
       .text_color(t.dim).hover((s) => s.text_color(t.foreground))
       .on_click((e) => this.openPopup(e))
       .child(svg(`mods/${ID}/chip.svg`).size(13).flex_none().text_color(t.dim))
-      .child(div().text_size(12).font_family(NUM_FONT).child(mem == null ? "—" : fmtMem(mem)));
+      .child(div().text_size(12).when(st.kind === "ok", (el) => el.font_family(NUM_FONT))
+        .child(st.kind === "ok" ? fmtMem(mem) : st.kind === "failed" ? "메모리를 읽지 못함" : st.kind === "empty" ? "터미널 없음" : "읽는 중"));
   }
 
   // 툴바 버튼: 사용량 패널과 같은 모양(아이콘 16, 기능색, hover 배경), 툴팁은 창 오버레이.
@@ -246,6 +268,7 @@ class Panel {
     const framed = this.popup || inTabs ? card : card.rounded(10).border_1().border_color(t.border).overflow_hidden();
     const here = window()?.platform === "macos" ? "이 Mac" : "이 컴퓨터";
     const share = sys?.total && mem != null ? mem / sys.total * 100 : null;
+    const st = this.state(rows, mem);
     return framed
       // 머리줄: 사용량 패널과 같은 40px, 제목 14 semibold (탭 안에서는 탭 이름이 제목이라 뺀다)
       .when(!inTabs, (el) => el.child(h_flex().h(40).pl(14).pr(8).flex_none().items_center().gap(2).border_b_1().border_color(t.border)
@@ -255,8 +278,16 @@ class Panel {
       // 요약: 이 컴퓨터 터미널이 쓰는 메모리 합, 무엇의 합인지와 기기 대비 비율
       .child(v_flex().px(14).pt(12).pb(10).flex_none().gap(2).border_b_1().border_color(t.border)
         .child(div().text_size(20).font_semibold().font_family(NUM_FONT).text_color(t.foreground).child(fmtMem(mem)))
-        .child(div().text_size(12).text_color(t.dim).truncate()
-          .child(mem == null ? "읽는 중" : `터미널 ${n}개가 쓰는 메모리 · CPU ${fmtCpu(cpu)}`))
+        .when(st.kind === "ok", (el) => el.child(div().text_size(12).text_color(t.dim).truncate()
+          .child(`터미널 ${n}개가 쓰는 메모리 · CPU ${fmtCpu(cpu)}`)))
+        .when(st.kind === "reading" || st.kind === "empty", (el) => el.child(div().text_size(12).text_color(t.muted).truncate()
+          .child(st.kind === "empty" ? "터미널이 없습니다" : "읽는 중")))
+        // 실패: 이유와 "다시 읽기"(지금 바로 다시 읽는다)
+        .when(st.kind === "failed", (el) => el.child(h_flex().gap(6).items_center().text_size(12)
+          .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`메모리를 읽지 못했습니다 · ${st.why}`))
+          .child(div().id("res-retry").flex_none().text_color(t.foreground).cursor_pointer().hover((s) => s.underline())
+            .on_click((_e, cx) => { cx.stop_propagation(); this.tick(cx, true); cx.notify(); })
+            .child(this.busy ? "읽는 중" : "다시 읽기"))))
         .when(share != null, (el) => el.child(div().text_size(12).text_color(t.dim).truncate()
           .child(`${here} 메모리 ${Math.round(sys.total / 1024 ** 3)} GB 중 ${share < 1 ? "1% 미만" : `${Math.round(share)}%`}`))))
       .child(v_flex().id("res-list").flex_1().min_h(0).overflow_y_scrollbar().py(4).children(this.rows(t, rows)));
