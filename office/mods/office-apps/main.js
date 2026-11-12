@@ -1,4 +1,5 @@
 // office 아래 칸: 앱 런처. 기본 화면은 Spotlight처럼 검색창 + 앱 아이콘 격자, 앱을 누르면 들어간다.
+//   런처 키: 검색창에서 ↑↓ = 칸 고르기(selected 바탕), Enter = 고른 칸 열기 후 왼쪽 칸에 포커스. 앱 화면에서 Esc = 격자로.
 //   앱 화면: 위 막대(‹ 앱 · 아이콘 · 이름 · 부제) / 왼쪽 좁은 칸(툴바 + 관리 목록) / 오른쪽 넓은 칸(고른 항목, 없으면 "선택 내용이 없습니다")
 //   앱 관리: 격자의 "앱 관리" 앱(manage)을 누르면 대화 상자(오버레이 역할 manage)로 뜬다. 앱마다 켜고 끄기.
 //   끈 앱은 격자에서 숨기고 화면용 인스턴스를 만들지 않는다. 켜고 끄기는 공유 상태 office-apps.disabled로만 오가고,
@@ -81,8 +82,17 @@ class Launcher {
     this.seen = disabled();   // 마지막으로 본 끈 앱 목록(새로 꺼진 앱을 찾는 기준)
     this.inst = {};           // 앱 id → 인스턴스(켜진 앱을 처음 열 때 만든다)
     this.query = "";
+    this.sel = 0;             // 런처 격자에서 고른 칸(걸러진 목록의 순번). 검색어가 바뀌면 첫 칸으로
     this.search = InputState.new({ placeholder: "앱 검색" });
-    this.search.on("change", (_e, cx) => { this.query = this.search.value().trim().toLowerCase(); cx.notify(); });
+    this.search.on("change", (_e, cx) => { this.query = this.search.value().trim().toLowerCase(); this.sel = 0; cx.notify(); });
+    // Enter: 고른 칸(기본은 걸러진 첫 앱)을 열고, 들어갔으면 왼쪽 칸이 키보드를 받는다
+    this.search.on("submit", (_e, cx) => {
+      const list = this.homeList(), a = list[Math.min(this.sel, list.length - 1)];
+      if (!a) return;
+      this.go(a.id, cx);
+      if (this.app) this.lh?.focus();
+      cx.notify();
+    });
     try { this.go(JSON.parse(localStorage.getItem("app") ?? "null"), cx); } catch { /* 런처부터 */ }
     cx.spawn(async (cx) => {
       for (;;) {
@@ -175,13 +185,25 @@ class Launcher {
       props: { role: "launcherMenu", app: a.id } });
   }
 
-  // 런처: 검색창 + 격자. 앱 이름·설명으로 거른다.
-  home(t) {
+  // 런처 격자에 보이는 앱: 끈 앱을 빼고 검색어(이름·설명·id)로 거른 뒤 줄(GROUPS) 순서로 편다.
+  //   격자 그리기와 검색창 Enter·↑↓가 같은 목록·같은 순번을 쓴다.
+  homeList() {
     const q = this.query, off = this.disabled();
     const list = APPS.filter((a) => !off[a.id] && (!q || a.name.toLowerCase().includes(q) || a.desc.toLowerCase().includes(q) || a.id.includes(q)));
+    return GROUPS.flatMap((g) => list.filter((a) => a.group === g.id));
+  }
+
+  // 런처: 검색창 + 격자. 앱 이름·설명으로 거른다.
+  //   검색창에서 ↑↓로 칸을 고르고(고른 칸은 selected 바탕) Enter로 연다(submit).
+  home(t) {
+    const q = this.query, list = this.homeList();
+    // 끈 앱이 생기면 목록이 줄어드니 고른 칸을 목록 안으로 당긴다
+    this.sel = Math.max(0, Math.min(this.sel ?? 0, list.length - 1));
+    const sel = list[this.sel]?.id;
     // 그룹별 줄. 걸러서 빈 줄은 제목째 숨긴다
     const rows = GROUPS.map((g) => ({ ...g, apps: list.filter((a) => a.group === g.id) })).filter((g) => g.apps.length);
     const icon = (a) => v_flex().id(`app-${a.id}`).w(92).py(8).gap(8).items_center().rounded(10).cursor_pointer()
+      .when(a.id === sel, (el) => el.bg(t.selected))
       .hover((s) => s.bg(t.hover))
       // 격자에서 눌러 들어가면 왼쪽 칸이 키보드를 받는다(검색창에 있던 포커스를 옮김).
       //   go()에서는 하지 않는다: 시작할 때 복원·명령(show:·commit: 등)으로 열릴 때 터미널의 키보드를 뺏지 않게.
@@ -190,6 +212,15 @@ class Launcher {
       .child(this.tile(a, 56, t))
       .child(div().text_size(13).text_color(t.foreground).child(a.name));
     return v_flex().size_full().min_h(0)
+      // 검색창의 ↑↓(입력 상자에서 올라온 키): 격자의 고른 칸을 앞뒤로 옮긴다. ←→는 입력 상자 커서에 둔다.
+      .on_key_down((e, cx) => {
+        const m = e.modifiers;
+        if (m.shift || m.alt || m.control || m.platform || !list.length) return;
+        if (e.key === "up") this.sel = (this.sel - 1 + list.length) % list.length;
+        else if (e.key === "down") this.sel = (this.sel + 1) % list.length;
+        else return;
+        cx.stop_propagation(); cx.notify();
+      })
       .child(h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b_1().border_color(t.border)
         .child(svg(`${ME}/search.svg`).size(16).flex_none().text_color(t.muted))
         .child(div().flex_1().min_w(0).child(Input.new(this.search).h(30).text_size(15).text_color(t.foreground))))
@@ -214,6 +245,14 @@ class Launcher {
     // 빈 화면 문구: 앱이 emptyState()로 정하면 그것, 아니면 기본. 준비 중인 앱(인스턴스 없음)은 앱 설명
     const empty = (!detail && app?.emptyState?.()) || null;
     return v_flex().size_full().min_h(0)
+      // Esc: 격자(홈)로 돌아가 검색창에 포커스. 안쪽에서 Esc를 쓰는 곳(입력 상자 지우기 등)이 먼저 멈추면 오지 않는다.
+      .on_key_down((e, cx) => {
+        const m = e.modifiers;
+        if (e.key !== "escape" || m.shift || m.alt || m.control || m.platform) return;
+        this.go(null, cx);
+        this.search.focus();
+        cx.stop_propagation(); cx.notify();
+      })
       .child(h_flex().h(44).flex_none().px(10).gap(8).items_center().border_b_1().border_color(t.border)
         .child(this.back(t))
         .child(div().w(1).h(18).bg(t.border))
