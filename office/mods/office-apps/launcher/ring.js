@@ -46,3 +46,9 @@ export function listKey(e) {
   if (e.key !== "tab" || m.alt || m.control || m.platform) return null;
   return m.shift ? "prev" : "next";
 }
+
+// 앱 화면 왼쪽 목록 폭: 앱 칸 폭(width)의 28%를 200~320 안으로. 폭을 아직 모르면 fallback(LEFT).
+export function leftWidth(width, fallback = 250) {
+  if (!(typeof width === "number" && width > 0)) return fallback;
+  return Math.round(Math.min(320, Math.max(200, width * 0.28)));
+}

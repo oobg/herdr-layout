@@ -6,9 +6,9 @@
 //   main.js를 import하지 않는다(main.js가 이 파일을 import한다): 앱 정의(a)·타일 그리기(tile)는 인자로 받는다.
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { step, detailKey, inputKey, listKey } from "./ring.js";
+import { step, detailKey, inputKey, listKey, leftWidth } from "./ring.js";
 
-export const LEFT = 250;   // 왼쪽 관리 칸 기본 폭(가운데 내용 칸을 강조하려고 좁게)
+export const LEFT = 250;   // 왼쪽 관리 칸 폭을 아직 모를 때(첫 크기 전). 그다음은 칸 폭의 28%를 200~320 안으로(ring.js leftWidth)
 
 export class AppScreen {
   // cx가 없으면(코드를 다시 불러와 init 없이 남은 인스턴스) 포커스 핸들 없이 그리기만 한다.
@@ -86,12 +86,15 @@ export class AppScreen {
 
   // 앱 화면. a = 앱 정의({ name, desc }), app = 인스턴스(없으면 준비 중), tile(a, size) = 타일 그림,
   //   lead·trail = 위 막대 앞(런처: ‹ 앱)·뒤(대화 창: ✕) 요소 배열, onEscape(cx) = 안쪽에서 멈추지 않은 Esc.
-  view({ a, app, cx, t, tile, lead = [], trail = [], onEscape, left = LEFT }) {
+  //   left = 왼쪽 목록 폭을 정해 둘 때(명령 대화 창 320). 없으면 칸 폭에 비례(on_size_change로 잰 폭).
+  view({ a, app, cx, t, tile, lead = [], trail = [], onEscape, left }) {
+    const lw = left ?? leftWidth(this.width, LEFT);
     if (app) app.kb = this.kb;   // 앱이 멈출 곳 테두리를 그릴 때 본다(kb.on(id))
     const detail = app?.detail?.(cx, t) ?? null;
     // 빈 화면 문구: 앱이 emptyState()로 정하면 그것, 아니면 기본. 준비 중인 앱(인스턴스 없음)은 앱 설명
     const empty = (!detail && app?.emptyState?.()) || null;
     return v_flex().size_full().min_h(0)
+      .on_size_change((size, cx) => { if (size.width !== this.width) { this.width = size.width; cx.notify(); } })
       // Esc: 안쪽에서 Esc를 쓰는 곳(입력 상자 지우기, 상세 커서 → 목록)이 먼저 멈추면 오지 않는다.
       .on_key_down((e, cx) => {
         const m = e.modifiers;
@@ -107,7 +110,7 @@ export class AppScreen {
         .children(trail))
       .child(h_flex().flex_1().min_h(0).items_stretch()
         // 왼쪽: 관리 목록(좁게). 이 칸 자체가 포커스를 가졌을 때만 키를 받는다(입력 상자에 포커스가 있으면 그냥 둔다).
-        .child(v_flex().id("apps-left").when(Boolean(this.lh), (el) => el.track_focus(this.lh)).w(left).h_full().flex_none().min_h(0).border_r_1().border_color(t.border)
+        .child(v_flex().id("apps-left").when(Boolean(this.lh), (el) => el.track_focus(this.lh)).w(lw).h_full().flex_none().min_h(0).border_r_1().border_color(t.border)
           .on_key_down((e, cx) => {
             if (!app || !this.lh?.is_focused()) return;
             // Tab·Shift+Tab: 오른쪽 상세의 첫(마지막) 멈출 곳으로
