@@ -1,5 +1,6 @@
 // office-apps의 PR 앱: 지금 고른 스페이스(포커스된 패인)의 저장소 PR을 gh CLI로 본다.
-//   왼쪽: 상태 필터(열림·내 PR·리뷰 요청·닫힘) + 검색(제목·번호·작성자, 받아 둔 목록에서 거름) + PR 목록
+//   왼쪽: 상태 필터(열림·내 PR·리뷰 요청·닫힘) + 검색(제목·번호·작성자, 받아 둔 최근 50개에서 거름. 못 찾으면
+//         "GitHub 전체에서 찾기"로 gh pr list --search를 한 번) + PR 목록
 //   오른쪽: 고른 PR 하나. 머리줄(상태 · #번호 · 제목 · ✕), 병합 가능 여부 한 줄과 주 동작(병합 또는 브라우저) · ⋯,
 //          실패·대기 체크, 접힌 본문, 접힌 리뷰·코멘트, 바뀐 파일. 파일을 고르면 그 아래에 diff.
 // diff는 gh pr diff 통 출력을 임시 파일로 받아(commit.js와 같은 방식) 파일별로 나눈다(pr/diff.js). 줄 파싱·번호는 commit/git.js,
@@ -220,9 +221,9 @@ export class PrApp {
     this.method = shared(METHOD) ?? load("pr.method", null);
     this.tick = shared(PR_TICK);
     this.context = null;
-    this.query = "";
+    this.query = ""; this.qRaw = ""; this.remote = null;
     this.search = InputState.new({ placeholder: "제목·번호·작성자" });
-    this.search.on("change", (_e, cx) => { this.query = this.search.value().trim().toLowerCase(); cx.notify(); });
+    this.search.on("change", (_e, cx) => { this.setQuery(this.search.value(), cx); });
     this.refresh(cx);
     this.poll = cx.timer.every(POLL, (cx) => { if (this.disposed) return; this.refresh(cx); });
   }
@@ -243,7 +244,7 @@ export class PrApp {
     if (next !== this.context?.key) {
       this.context = { key: next, cwd, on };
       this.root = null; this.on = on; this.repo = null; this.me = null; this.prs = null; this.error = null;
-      this.closed = false; this.loading = false; this.diffCache = null;
+      this.closed = false; this.loading = false; this.diffCache = null; this.remote = null;
       this.pick(null);
     }
     if (!cwd) { this.error = fail("폴더가 없습니다", "스페이스나 패인에 폴더를 정하면 그 저장소의 PR을 봅니다"); return; }
@@ -285,13 +286,55 @@ export class PrApp {
 
   setFilter(id, cx) {
     if (this.filter === id) return;
-    this.filter = id; this.prs = null; this.error = null; this.save("pr.filter", id);
+    this.filter = id; this.prs = null; this.error = null; this.remote = null; this.save("pr.filter", id);
     this.closed = false; this.pick(null);
     this.refresh(cx);
   }
 
-  // 검색어로 거른 목록(받아 둔 목록 안에서만)
+  // 검색어: query는 거르기용 소문자, qRaw는 GitHub 검색에 넘길 원래 글자. 바뀌면 GitHub 검색 결과는 버린다.
+  setQuery(value, cx) {
+    this.qRaw = String(value ?? "").trim(); this.query = this.qRaw.toLowerCase();
+    if (this.remote && this.remote.q !== this.qRaw) this.remote = null;
+    cx?.notify();
+  }
+
+  // 지금 검색어·필터로 받은 GitHub 검색 결과(없으면 null)
+  remoteHit() {
+    const r = this.remote;
+    return r && r.q === this.qRaw && r.filter === this.filter && this.qRaw ? r : null;
+  }
+
+  // "GitHub 전체에서 찾기": 지금 필터에 검색어를 더해 gh pr list --search를 한 번 돌린다.
+  // 리뷰 요청 필터는 이미 --search를 쓰므로 그 조건 뒤에 검색어를 붙인다.
+  searchRemote(cx) {
+    const q = this.qRaw, filter = this.filter, context = this.context;
+    if (!q || !this.root || this.remote?.loading) return;
+    const args = [], cond = [];
+    const fargs = FILTERS.find((f) => f.id === filter).args;
+    for (let i = 0; i < fargs.length; i++) {
+      if (fargs[i] === "--search") cond.push(fargs[++i]);
+      else args.push(fargs[i]);
+    }
+    cond.push(/^#\d+$/.test(q) ? q.slice(1) : q);
+    this.remote = { q, filter, loading: true, prs: null, error: null };
+    const entry = this.remote;
+    cx.spawn(async (cx) => {
+      const r = await sh("gh", ["pr", "list", ...args, "--search", cond.join(" "), "--limit", String(LIMIT), "--json", LIST_FIELDS], { cwd: this.root, on: this.on });
+      if (!this.current(context) || this.remote !== entry) return;
+      entry.loading = false;
+      if (r.code !== 0) entry.error = ghError(r).message;
+      else { try { entry.prs = JSON.parse(r.stdout); } catch { entry.error = "검색 결과를 읽지 못했습니다"; } }
+      const first = entry.prs?.[0];
+      if (first && !this.sel && !this.closed) this.select(first.number, cx);
+      cx.notify();
+    });
+    cx.notify();
+  }
+
+  // 검색어로 거른 목록. GitHub 검색 결과가 있으면 그것을, 없으면 받아 둔 최근 LIMIT개 안에서 거른다.
   shown() {
+    const hit = this.remoteHit();
+    if (hit?.prs) return hit.prs;
     const q = this.query, list = this.prs ?? [];
     if (!q) return list;
     const n = q.replace(/^#/, "");
@@ -330,6 +373,9 @@ export class PrApp {
       cx.notify();
     });
   }
+
+  // 목록 줄 값: 받아 둔 목록, 없으면 GitHub 검색 결과에서
+  rowFor(n) { return (this.prs ?? []).find((x) => x.number === n) ?? this.remoteHit()?.prs?.find((x) => x.number === n) ?? null; }
 
   // 저장소가 허용하는 병합 방식들과 기본 방식(마지막으로 쓴 방식, 없으면 첫 방식)
   methods() { return METHODS.filter((m) => this.repo?.[m.allow] !== false); }
@@ -370,7 +416,7 @@ export class PrApp {
 
   // Enter: 고른 PR을 브라우저로
   activate(_cx) {
-    const p = this.pr?.number === this.sel ? this.pr : (this.prs ?? []).find((x) => x.number === this.sel);
+    const p = this.pr?.number === this.sel ? this.pr : this.rowFor(this.sel);
     if (p?.url) exec("open", [p.url]);
   }
 
@@ -421,7 +467,7 @@ export class PrApp {
         .child(svg(`${ME}/search.svg`).size(14).flex_none().text_color(this.query ? t.foreground : t.muted))
         .child(div().flex_1().min_w(0).child(Input.new(this.search).h(26).text_size(12).text_color(t.foreground)))
         .when(Boolean(this.query), (el) => el.child(div().id("pr-clear").p(4).rounded(4).flex_none().cursor_pointer().hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => { this.search.set_value(""); this.query = ""; cx.notify(); })
+          .on_click((_e, cx) => { this.search.set_value(""); this.setQuery("", cx); })
           .child(svg(`${ME}/close.svg`).size(14).text_color(t.muted)))));
   }
 
@@ -444,19 +490,34 @@ export class PrApp {
   list(cx, t) {
     this.sync(cx);
     const note = (text) => div().p(8).text_size(12).text_color(t.dim).child(text);
-    const all = this.prs ?? [], shown = this.shown();
+    const all = this.prs ?? [], shown = this.shown(), hit = this.remoteHit();
     // 작성자 숨김은 거르기 전 목록으로 정한다(입력하는 동안 깜빡이지 않게).
     const hideAuthor = this.filter === "mine" || (Boolean(this.me) && all.length > 0 && all.every((p) => p.author?.login === this.me));
     let body;
     if (this.error) body = [note(this.error.message)];
     else if (!this.prs) body = [note("PR을 읽는 중")];
     else if (!all.length) body = [note(FILTERS.find((f) => f.id === this.filter).empty)];
-    else if (!shown.length) body = [note("맞는 PR이 없습니다")];
+    else if (hit?.loading) body = [note("GitHub에서 찾는 중")];
+    else if (hit?.error) body = [note(hit.error)];
+    else if (!shown.length) body = [note(hit ? "GitHub에서도 맞는 PR이 없습니다" : "맞는 PR이 없습니다")];
     else body = shown.map((p) => this.row(p, t, hideAuthor));
+    // 받아 둔 목록이 LIMIT개로 꽉 찼으면 더 오래된 PR은 거르기에 안 걸린다: 검색 중이면 그 사실을 알리고,
+    // 못 찾았으면 GitHub 전체에서 한 번 찾을 수 있게 한다.
+    const full = Boolean(this.prs) && !this.error && all.length === LIMIT;
+    const hint = (text) => div().p(8).text_size(11).text_color(t.dim).child(text);
+    const tail = [];
+    if (full && !this.query) tail.push(hint(`최근 ${LIMIT}개까지만 보여 줍니다`));
+    else if (hit?.prs?.length) tail.push(hint(hit.prs.length === LIMIT ? `GitHub에서 찾은 앞 ${LIMIT}개입니다` : "GitHub에서 찾았습니다"));
+    else if (full && (!hit || hit.error)) {
+      // GitHub 검색이 실패했으면 다시 누를 수 있게 버튼을 다시 둔다.
+      if (!hit) tail.push(hint(`최근 ${LIMIT}개 안에서 찾았습니다`));
+      if (!shown.length) tail.push(div().px(8).child(div().id("pr-search-remote").px(10).py(4).rounded(6).border_1().border_color(t.border)
+        .text_size(12).text_color(t.foreground).cursor_pointer().hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => this.searchRemote(cx)).child("GitHub 전체에서 찾기")));
+    }
     return v_flex().flex_1().min_h(0)
       .child(this.toolbar(t))
-      .child(v_flex().id("pr-list").flex_1().min_h(0).overflow_y_scrollbar().p(4).gap(1).children(body)
-        .when(all.length === LIMIT && !this.query, (el) => el.child(div().p(8).text_size(11).text_color(t.dim).child(`최근 ${LIMIT}개까지만 보여 줍니다`))));
+      .child(v_flex().id("pr-list").flex_1().min_h(0).overflow_y_scrollbar().p(4).gap(1).children(body).children(tail));
   }
 
   subtitle(t) {
@@ -469,7 +530,7 @@ export class PrApp {
   // ── 오른쪽: 고른 PR 하나. 오류·읽는 중·빈 목록이면 null을 돌려 셸이 emptyState()를 보이게 한다.
   detail(cx, t) {
     if (!this.sel || this.error || !this.prs) return null;
-    const p = this.pr?.number === this.sel ? this.pr : null, row = this.prs.find((x) => x.number === this.sel);
+    const p = this.pr?.number === this.sel ? this.pr : null, row = this.rowFor(this.sel);
     const base = p ?? row;
     const st = base ? prState(base) : null;
     const head = h_flex().h(40).flex_none().px(14).gap(8).items_center().border_b_1().border_color(t.border)
