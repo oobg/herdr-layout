@@ -2,7 +2,7 @@
 //   왼쪽: 묶음 머리줄 "답 필요 n" · "완료 n"(안 본 사이 끝남) · "작업 중 n"(기본 접힘) · "상태 모름 n"(기본 접힘).
 //         줄 = 프로그램 아이콘 · 스페이스 › 탭 · 경과("4분째 기다림", "12분 전 끝남"). 답 필요는 오래 기다린 순, 완료는 최근 순.
 //         빈 묶음은 머리줄째 숨긴다. 대기 중(idle)은 기다리는 게 아니라서 넣지 않는다. 묶음 펼침은 localStorage.
-//   오른쪽: 상태 한 줄 → 마지막 말 한 줄 → 요청 한 줄. Claude Code면 고른 줄 하나만 대화 기록(jsonl)에서 읽는다
+//   오른쪽: 상태 한 줄 → 마지막 말(마크다운 앞 6줄, 넘치면 "더 보기": agent/say.js) → 요청 한 줄. Claude Code면 고른 줄 하나만 대화 기록(jsonl)에서 읽는다
 //         (agent/activity.js·agent/parse.js. 크기가 그대로면 다시 읽지 않는다).
 //         동작: 터미널로 가기(Enter·더블클릭과 같음) · 에이전트 앱에서 자세히(office-apps.agent:<주소>).
 // 목록 만들기는 inbox/model.js(herdr를 import하지 않아 node로 시험한다).
@@ -12,6 +12,7 @@ import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, spaces, panes, layout, run, setShared, theme } from "herdr";
 import { termInfo, sessionOf, readLog, machineOf } from "./agent/activity.js";
+import { sayView } from "./agent/say.js";
 import { GROUPS, withSilent, buildGroups, visibleRows, openState, pick, elapsed, firstLine, isClaude, ago } from "./inbox/model.js";
 
 const APPS = "mods/office-apps";
@@ -259,9 +260,14 @@ export class InboxApp {
     const out = [];
     // 세션을 못 찾아 폴더의 최근 기록을 짐작해 읽었다: 다른 에이전트의 말일 수 있다
     if (v.guessed) out.push(div().pt(10).text_size(12).text_color(t.muted).child("세션을 특정하지 못해 이 폴더의 최근 기록을 보여 줍니다"));
-    const say = firstLine(v.say), ask = firstLine(v.ask);
+    const ask = firstLine(v.ask), say = v.say?.trim() ? v.say : "";
     const sayAt = v.sayAt || v.lastAt;
-    if (say) out.push(line("마지막 말", say, sayAt ? ago(Date.now() - sayAt) : ""));
+    // 마지막 말: 줄바꿈을 살린 마크다운 앞 6줄(넘치면 "더 보기", 에이전트 앱과 같은 agent/say.js). 라벨은 위에 붙인다.
+    if (say) out.push(h_flex().pt(12).gap(10).items_start()
+      .child(div().flex_none().w(56).pt(1).text_size(12).font_semibold().text_color(t.muted).child("마지막 말"))
+      .child(div().flex_1().min_w(0).child(sayView(`inbox-say-${r.address}`, say, { open: this.sayOpen === r.address, t,
+        onToggle: (_e, cx) => { this.sayOpen = this.sayOpen === r.address ? null : r.address; cx.notify(); } })))
+      .when(Boolean(sayAt), (el) => el.child(div().flex_none().pt(1).text_size(11).text_color(t.dim).child(ago(Date.now() - sayAt)))));
     if (ask) out.push(line("요청", ask, v.askAt ? ago(Date.now() - v.askAt) : ""));
     if (!say && !ask) out.push(note("이번 턴에 한 말이 아직 없습니다"));
     return out;

@@ -134,15 +134,19 @@ export function rowsOf(sessions, now = Date.now()) {
 // ── 아티팩트 ────────────────────────────────────────────
 
 const URL_RE = /https:\/\/claude\.ai\/artifact\/[A-Za-z0-9_-]+/;
+const str = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
+const clip = (s, n) => { const x = String(s).replace(/\s+/g, " ").trim(); return x.length > n ? `${x.slice(0, n).trimEnd()}…` : x; };
 // 게시한 파일 이름. index.html이면 그 폴더 이름이 더 잘 말해 준다.
 function base(p) {
   const parts = String(p ?? "").split("/").filter(Boolean), last = parts.pop() ?? "";
   return /^index\.html?$/i.test(last) && parts.length ? parts.pop() : last;
 }
 
-// 기록 줄들(Artifact 호출 줄과 claude.ai/artifact가 든 결과 줄) → [{ url, title, at, last }] (처음 게시한 순서)
+// 기록 줄들(Artifact 호출 줄과 claude.ai/artifact가 든 결과 줄) → [{ url, title, page, file, desc, at, last }] (처음 게시한 순서)
 //   게시(publish: action이 없거나 "publish", 자산 올리기 제외)만. 결과의 첫 주소가 그 아티팩트다
 //   (빠른 시작·타입 목록 결과에 든 타입 주소, 타입에서 만들 때 뒤에 붙는 타입 주소는 들어가지 않는다).
+//   제목 재료(title·.html 파일·description·파일)는 그 URL의 모든 호출에서 모은다(만들 때만 title이 있고, 고칠 때는 데이터 파일만 보내기도 한다).
+//   보일 제목은 artifactTitle(사무실 왼쪽 패널 office/parse.js와 같은 규칙).
 //   acc: 지난번 결과. 기록에 새로 붙은 부분만 읽어 이어 셀 때 넘긴다(호출과 결과가 두 번에 나뉘어 와도 짝을 맞춘다).
 export function collectArtifacts(text, acc = { uses: {}, urls: {} }) {
   for (const line of String(text).split("\n")) {
@@ -157,18 +161,42 @@ export function collectArtifacts(text, acc = { uses: {}, urls: {} }) {
       if (d.type === "assistant" && it?.type === "tool_use" && it.name === "Artifact") {
         const inp = it.input ?? {};
         if ((inp.action ?? "publish") !== "publish" || inp.asset) continue;
-        if (!acc.uses[it.id]) acc.uses[it.id] = { title: inp.title || base(inp.file_path) || "" };
+        if (!acc.uses[it.id]) acc.uses[it.id] = { title: str(inp.title), file: str(inp.file_path), desc: str(inp.description) };
       } else if (d.type === "user" && it?.type === "tool_result" && acc.uses[it.tool_use_id] && !it.is_error) {
         const url = URL_RE.exec(textOf(it.content))?.[0];
         if (!url) continue;
-        const u = acc.uses[it.tool_use_id], prev = acc.urls[url];
-        // 이름: 처음 붙인 이름(타입에서 만들 때의 title)을 지키고, 없으면 게시한 파일 이름
-        if (prev) { prev.last = Math.max(prev.last, at); if (!prev.title && u.title) prev.title = u.title; }
-        else acc.urls[url] = { url, title: u.title, at, last: at };
+        const u = acc.uses[it.tool_use_id], e = acc.urls[url] ?? (acc.urls[url] = { url, title: null, desc: null, file: null, page: null, at, last: at });
+        e.last = Math.max(e.last, at);
+        // 처음 붙인 이름(타입에서 만들 때의 title)을 지키고, 나머지 재료는 최근 것으로
+        e.title = e.title ?? u.title ?? null;
+        e.desc = u.desc ?? e.desc;
+        if (u.file) {
+          e.file = u.file;
+          // 다른 .html을 게시하면 그 <title>을 다시 읽는다
+          if (/\.html?$/i.test(u.file) && e.page !== u.file) { e.page = u.file; delete e.htmlTitle; }
+        }
       }
     }
   }
   return acc;
+}
+
+// <title> 글: 앞 8KB에서 찾는다. 흔한 엔티티만 푼다(office/parse.js titleOfHtml과 같다).
+export function titleOfHtml(html) {
+  const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(String(html ?? ""));
+  if (!m) return null;
+  const t = m[1].replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ").trim();
+  return t || null;
+}
+
+// 아직 <title>을 읽지 않은 아티팩트(title이 없고 .html을 게시한 것)
+export const needsPageTitle = (acc) => Object.values(acc?.urls ?? {}).filter((e) => !e.title && e.page && !("htmlTitle" in e));
+
+// 보일 제목: title → .html 파일의 <title>(htmlTitle) → description 첫 부분 → 파일 이름 → 주소 끝
+export function artifactTitle(e) {
+  const first = e.desc ? clip(e.desc.split(/(?<=[.!?。])\s|\n/)[0], 80) : null;
+  return e.title || e.htmlTitle || first || base(e.page ?? e.file) || e.url.split("/").pop();
 }
 
 export const artifactList = (acc) => Object.values(acc?.urls ?? {}).sort((a, b) => a.at - b.at);

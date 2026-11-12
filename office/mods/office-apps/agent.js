@@ -3,7 +3,7 @@
 //         - hc run으로 띄운 서브에이전트 터미널: terminals()의 parent
 //         - Claude Code 안에서 도는 서브에이전트: 그 터미널의 records(hc get)
 //         두 번째 줄 "스페이스 · 탭"은 스페이스가 여럿일 때만. 더블클릭은 터미널로 이동, 우클릭은 메뉴(터미널로 이동·미리 보기·부모로 이동).
-//   오른쪽: 요약 세 줄(지금 · 마지막 말 · 요청, 누르면 펼침) → 이번 턴 시간 띠(흐름 묶음마다 걸린 시간 비례, 3분 넘게 빈 곳은 쉼 칸)
+//   오른쪽: 요약 세 줄(지금 · 마지막 말 · 요청. 마지막 말은 마크다운 앞 6줄 + "더 보기"(agent/say.js), 요청은 누르면 펼침) → 이번 턴 시간 띠(흐름 묶음마다 걸린 시간 비례, 3분 넘게 빈 곳은 쉼 칸, 도구 없이 기다린 곳도 같은 테두리 칸: agent/timeline.js)
 //         → 단계 목록(살펴보기·고치기·실행·맡기기·기타·쉼, agent/timeline.js. 끝난 단계는 접힘, 지금 단계는 펼침) → 고친 파일.
 //         고친 파일은 파일 앱 폴더 안이면 파일 앱에서, 밖이면 떠 있는 뷰어 창으로 연다(우클릭은 늘 뷰어 창).
 //         단계 안 항목의 파일 대상(읽음·수정·작성)도 누르면 뷰어 창.
@@ -21,6 +21,7 @@ import { Menu, popupAt } from "./menu.js";
 import { ROLES, openViewer } from "./files.js";
 import { termInfo, sessionOf, readLog, machineOf } from "./agent/activity.js";
 import { spans, phases, band, span, clock, phaseOf } from "./agent/timeline.js";
+import { sayView } from "./agent/say.js";
 
 const ME = "mods/office-apps/agent";
 const APPS = "mods/office-apps";
@@ -502,10 +503,10 @@ export class AgentApp {
     // ── 1. 요약 세 줄 ──
     const sum = [this.nowRow(r, v, ph, now, t)];
     if (v.say) {
-      const open = this.open.say;
+      // 줄바꿈을 살린 마크다운, 앞 6줄까지(넘치면 "더 보기"). 여러 줄이라 라벨은 위에 붙는다(line은 items_start).
       sum.push(this.line("agent-say", "마지막 말",
-        div().text_size(13).text_color(t.foreground).when(!open, (x) => x.truncate()).child(open ? v.say : v.say.replace(/\s*\n\s*/g, " ")),
-        ago(v.sayAt || v.lastAt), t.muted, t, flip("say")));
+        sayView("agent-say-md", v.say, { open: this.open.say, onToggle: flip("say"), t }),
+        ago(v.sayAt || v.lastAt), t.muted, t));
     }
     if (v.ask) {
       const open = this.open.ask;
@@ -531,8 +532,8 @@ export class AgentApp {
       out.push(h_flex().h(10).gap(2).overflow_hidden().children(b.cells.map((c) => {
         const el = div().h_full().min_w(3).flex_grow(grow(c)).flex_basis(0).rounded(2);
         if (c.rest) return el.border_1().border_color(t.border);
-        if (c.running) return el.bg(t.working).loop("opacity", { from: 0.35, to: 1, period: 900 });
-        return el.bg(kindColor(c.kind, t)).opacity(0.8);
+        // 지금 도는 칸은 깜빡이지 않고 진하게만(다른 칸 0.8, 지금 칸 1.0)
+        return el.bg(kindColor(c.kind, t)).opacity(c.running ? 1 : 0.8);
       })));
       out.push(h_flex().pt(3).justify_between().font_family(CODE_FONT).text_size(10.5).text_color(t.muted)
         .child(div().child(clock(b.from))).child(div().child(clock(b.to))));
@@ -570,10 +571,10 @@ export class AgentApp {
   }
 
   // 단계 한 덩어리: 왼쪽 22px 열(세로선 + 점, 쉼 앞뒤 선은 흐리게) · 머리 줄(이름 · 요약 · 걸린 시간 · 접힘 표시) · 펼치면 항목 줄.
-  //   끝난 단계는 접힘, 지금 단계는 펼침. 누른 것은 this.open["ph:<순번>:<시작 시각>"]에 둔다(다른 에이전트를 고르면 비운다).
+  //   끝난 단계는 접힘, 지금 단계(끝에 기다림이 붙었으면 그 앞 일 단계)는 펼침. 누른 것은 this.open["ph:<순번>:<시작 시각>"]에 둔다(다른 에이전트를 고르면 비운다).
   phaseView(p, idx, prev, next, r, v, now, icon, t) {
     const key = `ph:${idx}:${p.from}`;   // 같은 시각에 시작한 단계가 둘일 수 있어 순번을 붙인다
-    const open = !p.rest && (this.open[key] ?? p.current);
+    const open = !p.rest && (this.open[key] ?? (p.current || p.live));
     const seg = (show, dim) => div().w(1).bg(t.border).opacity(!show ? 0 : dim ? 0.35 : 1);
     const dot = div().size(7).flex_none().rounded_full()
       .when(p.rest, (x) => x.border_1().border_color(t.border))

@@ -27,6 +27,9 @@ const FLOW_MAX = 300;   // 흐름 묶음을 몇 개까지 들고 있을지(시�
 const textOf = (content) => (typeof content === "string" ? content
   : Array.isArray(content) ? content.filter((it) => it.type === "text").map((it) => it.text).join("\n") : "");
 const clip = (s, n) => { const x = s.replace(/\s+\n/g, "\n").trim(); return x.length > n ? `${x.slice(0, n).trimEnd()}…` : x; };
+// 마지막 말: 마크다운으로 그리므로(agent/say.js) 빈 줄(문단·구분선)을 살리고 줄 끝 공백만 걷는다. 넉넉히 SAY_MAX자까지.
+const SAY_MAX = 4000;
+const clipSay = (s) => { const x = s.replace(/[ \t]+\n/g, "\n").trim(); return x.length > SAY_MAX ? `${x.slice(0, SAY_MAX).trimEnd()}…` : x; };
 
 // text: 기록 끝부분. cut: 앞이 잘렸는지(잘렸으면 첫 줄은 깨진 줄). sidechain: 서브에이전트 기록인지.
 export function parse(text, { cut = true, sidechain = false } = {}) {
@@ -35,6 +38,7 @@ export function parse(text, { cut = true, sidechain = false } = {}) {
   let calls = [], ask = "", lastPrompt = "", askAt = 0, say = "", sayAt = 0, lastAt = 0, model = "";
   const agentCalls = [];   // 서브에이전트 호출은 턴이 바뀌어도 남긴다(백그라운드는 다음 턴까지 돈다)
   const done = new Set(), doneAt = {}, launched = new Set(), finished = {}, ended = {}, names = {}, agentIds = {};
+  const bg = new Set();   // 백그라운드로 띄운 호출(run_in_background 셸·서브에이전트, 결과가 "Async agent launched")
   for (const line of lines) {
     if (!line) continue;
     let d;
@@ -77,13 +81,14 @@ export function parse(text, { cut = true, sidechain = false } = {}) {
     if (d.type === "assistant" && d.message?.model && d.message.model !== "<synthetic>") model = d.message.model;
     if (!Array.isArray(content)) continue;
     for (const it of content) {
-      if (it.type === "text" && d.type === "assistant" && it.text?.trim()) { say = clip(it.text, 400); sayAt = at; }
+      if (it.type === "text" && d.type === "assistant" && it.text?.trim()) { say = clipSay(it.text); sayAt = at; }
       else if (it.type === "tool_use") {
         if (names[it.id]) continue; // 같은 호출이 두 번 적힌 줄
         const c = { id: it.id, name: it.name, input: it.input ?? {}, at };
         calls.push(c);
         names[it.id] = it.name;
         if (/^(Agent|Task)$/.test(it.name)) agentCalls.push(c);
+        if (it.input?.run_in_background === true) bg.add(it.id);
       } else if (it.type === "tool_result") {
         const name = names[it.tool_use_id] ?? "";
         if (/^(Agent|Task)$/.test(name)) {
@@ -91,7 +96,8 @@ export function parse(text, { cut = true, sidechain = false } = {}) {
           const aid = /agentId: ([A-Za-z0-9]+)/.exec(body)?.[1];
           if (aid) agentIds[it.tool_use_id] = aid;
           // 백그라운드로 띄운 서브에이전트는 "시작했다"는 결과가 바로 온다: 끝난 게 아니다
-          if (/Async agent launched/.test(body)) { launched.add(it.tool_use_id); continue; }
+          //   시간 띠의 칸은 이 결과까지만(bg)
+          if (/Async agent launched/.test(body)) { launched.add(it.tool_use_id); bg.add(it.tool_use_id); if (at) doneAt[it.tool_use_id] = at; continue; }
         }
         done.add(it.tool_use_id);
         if (at) doneAt[it.tool_use_id] = at;
@@ -118,13 +124,16 @@ export function parse(text, { cut = true, sidechain = false } = {}) {
   }
   // 흐름: 이번 턴의 단계를 연속된 같은 종류끼리 묶는다(길면 마지막 FLOW_MAX묶음).
   //   from: 묶음의 첫 호출 시각, at: 마지막 호출 시각, end: 결과가 온 가장 늦은 시각(없으면 at), targets: 대상들(겹침 없이)
+  //   fg: 결과를 기다리며 지금 도는 호출이 있는지(백그라운드로 띄운 것은 아니다). bg: 묶음의 마지막 호출을 백그라운드로 띄웠는지.
+  //   (사무실 왼쪽 패널 office/parse.js의 flow와 같은 규칙)
   const flow = [];
   for (const x of steps) {
+    const b = bg.has(x.id), fg = x.running && !b;
     const end = doneAt[x.id] ?? x.at, last = flow[flow.length - 1];
     if (last && last.kind === x.kind) {
-      last.n++; last.running ||= x.running; last.target = x.target; last.at = x.at; last.end = Math.max(last.end, end);
+      last.n++; last.running ||= x.running; last.fg ||= fg; last.bg = b; last.target = x.target; last.at = x.at; last.end = Math.max(last.end, end);
       if (x.target && !last.targets.includes(x.target)) last.targets.push(x.target);
-    } else flow.push({ kind: x.kind, n: 1, running: x.running, target: x.target, targets: x.target ? [x.target] : [], from: x.at, at: x.at, end });
+    } else flow.push({ kind: x.kind, n: 1, running: x.running, fg, bg: b, target: x.target, targets: x.target ? [x.target] : [], from: x.at, at: x.at, end });
   }
   const hidden = Math.max(0, flow.length - FLOW_MAX);
   flow.splice(0, hidden);

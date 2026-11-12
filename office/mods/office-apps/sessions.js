@@ -3,7 +3,8 @@
 //         기록 = ~/.claude/projects/<폴더 경로의 영문·숫자 밖 글자를 '-'로>/*.jsonl (agent/activity.js sessionOf와 같은 규칙).
 //   왼쪽: 날짜 묶음(오늘/어제/이번 주/그 전) 아래 줄 = 첫 요청 한 줄 · 흐린 시각. 지금 터미널에서 도는 세션은 "지금 열림".
 //         최근 50개, 더 있으면 맨 아래 "더 보기"(50개씩).
-//   오른쪽: 요청(첫 요청) · 마지막 말 · 마지막 턴에서 고친 파일 · 게시한 아티팩트(누르면 브라우저) · 길이(크기·기간).
+//   오른쪽: 요청(첫 요청) · 마지막 말(마크다운 앞 6줄, agent/say.js) · 마지막 턴에서 고친 파일 · 게시한 아티팩트(누르면 브라우저.
+//         제목은 title → .html의 <title> → description 첫 부분 → 파일 이름, 사무실 왼쪽 패널과 같다) · 길이(크기·기간).
 //         동작 하나: "이어하기"(새 탭에서 claude --resume <id>, 폴더는 그 세션의 cwd). 지금 열려 있으면 대신 "그 터미널로 가기".
 // 읽는 양: 목록은 stat + 처음 보는 파일만 앞부분의 user 줄 몇 개(sessions/list.js LIST_SH).
 //   마지막 말·고친 파일은 고른 세션만 끝 2MB(agent/activity.js readLog, 크기가 그대로면 다시 읽지 않는다),
@@ -15,13 +16,15 @@ import { v_flex, h_flex } from "gpui-base";
 import { spaces, panes, focused, exec, layout, run, setShared } from "herdr";
 import { openViewer } from "./files.js";
 import { termInfo, readLog, machineOf } from "./agent/activity.js";
+import { sayView } from "./agent/say.js";
 import { slug, parseListing, rowsOf, oneLine, whenLabel, stamp, span, bytes, collectArtifacts, artifactList,
-  LIST_SH, ARTS_SH, OPEN_SH, parseOpen } from "./sessions/list.js";
+  needsPageTitle, titleOfHtml, artifactTitle, LIST_SH, ARTS_SH, OPEN_SH, parseOpen } from "./sessions/list.js";
 
 const PAGE = 50;            // 목록을 몇 개씩
 const EVERY = 30000;        // 다시 읽는 간격
 const TERM_TTL = 15000;     // 터미널 pid(hc get)를 다시 묻는 간격
-const SAY_N = 600;          // 마지막 말을 몇 글자까지
+// 아티팩트 .html의 <title>: 머신|URL|파일 → 제목(없으면 null). URL당 한 번만 앞 8KB를 읽는다.
+const TITLES = new Map();
 
 // files.js·branch.js와 같은 규칙: 포커스된 패인의 폴더, 없으면 스페이스 폴더. 다른 머신이면 on.
 function location() {
@@ -190,6 +193,17 @@ export class SessionsApp {
       // 파일이 줄었으면(다시 쓴 기록) 처음부터 센다
       acc = collectArtifacts(i < 0 ? "" : a.stdout.slice(i + 1), z < artsAt ? undefined : structuredCloneSafe(acc));
       artsAt = z;
+      // 제목이 없는 .html 아티팩트는 그 파일의 <title>(사무실 왼쪽 패널과 같은 규칙, URL당 한 번)
+      for (const e of needsPageTitle(acc)) {
+        const tk = `${loc.on ?? ""}|${e.url}|${e.page}`;
+        if (!TITLES.has(tk)) {
+          let title = null;
+          try { const r = await exec("head", ["-c", "8192", e.page], { on: loc.on }); if (r.code === 0) title = titleOfHtml(r.stdout); } catch { /* 못 읽으면 다른 재료로 */ }
+          TITLES.set(tk, title);
+        }
+        e.htmlTitle = TITLES.get(tk);
+      }
+      if (k !== this.where) return false;
     }
     this.det[s.id] = { size: s.size, log: log?.same ? prev?.log ?? null : log, acc, artsAt };
     return true;
@@ -201,7 +215,7 @@ export class SessionsApp {
   }
 
   select(id, cx) {
-    if (id !== this.sel) this.more = false;
+    if (id !== this.sel) { this.more = false; this.sayMore = false; }
     this.sel = id;
     this.kick(cx);   // 상세를 읽는다(크기가 그대로면 readLog·grep이 거의 아무것도 하지 않는다)
     cx.notify();
@@ -301,7 +315,9 @@ export class SessionsApp {
       if (log?.say) {
         const at = ago(log.sayAt || log.lastAt);
         items.push(div().pt(14).text_size(11).text_color(t.dim).child(at ? `마지막 말 · ${at}` : "마지막 말"));
-        items.push(div().pt(2).text_size(12).text_color(t.muted).child(log.say.length > SAY_N ? `${log.say.slice(0, SAY_N).trimEnd()}…` : log.say));
+        // 줄바꿈을 살린 마크다운 앞 6줄(넘치면 "더 보기", 에이전트 앱과 같은 agent/say.js)
+        items.push(div().pt(2).child(sayView(`sessions-say-${s.id}`, log.say, { open: this.sayMore, size: 12, color: t.muted, t,
+          onToggle: (_e, cx) => { this.sayMore = !this.sayMore; cx.notify(); } })));
       }
       // 고친 파일: 마지막 턴(기록 끝 2MB 안)만. 누르면 뷰어 창.
       if (log?.edited?.length) {
@@ -318,7 +334,7 @@ export class SessionsApp {
         items.push(head(`게시한 아티팩트 ${arts.length}`));
         items.push(...arts.map((a, i) => h_flex().id(`sessions-art-${i}`).h(24).px(6).gap(8).items_center().rounded(4).cursor_pointer()
           .hover((x) => x.bg(t.hover)).on_click(() => { exec("open", [a.url]).catch(() => null); })
-          .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.foreground).child(a.title || a.url.split("/").pop()))
+          .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.foreground).child(artifactTitle(a)))
           .child(div().flex_none().text_size(11).text_color(t.dim).child(whenLabel(a.last)))));
       }
     }
