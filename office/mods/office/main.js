@@ -675,11 +675,9 @@ class Floor {
     };
     const kindOf = (k) => KIND[k] ?? ["other", t.muted];
     const icon = (k) => svg(`mods/office/icons/act_${kindOf(k)[0]}.svg`).size(13).flex_none().text_color(kindOf(k)[1]);
-    // 파일 경로를 위치 칩 + 짧은 경로로
+    // 파일 경로를 위치 + 짧은 경로로. 위치(프로젝트·클로드 임시·Herdr·홈)는 배경·색 없이 흐린 글자 접두.
     const place = (p) => placeOf(p, home(), main.cwd);
-    // 위치 칩 색: 프로젝트는 초록, 클로드 쪽은 Claude 주황, Herdr는 파랑, 홈은 회색
-    const PLACE = { 프로젝트: "#a7c080", "클로드 임시": "#d97757", 클로드: "#d97757", Herdr: "#7aa2f7", 홈: "#9da9a0" };
-    const chip = (text) => { const c = PLACE[text] ?? t.muted; return div().flex_none().px(5).rounded(4).bg(`${c}26`).border_1().border_color(`${c}66`).text_size(11).text_color(c).child(text); };
+    const chip = (text) => div().flex_none().text_color(t.dim).child(text);
     const id = `${a.address}-${sub ?? "top"}`;
     // 머리줄: 작은 chevron + 이름. 누르면 접고 펼친다.
     const head = (key, text, open, def) => h_flex().id(`ov-h-${id}-${key}`).pt(4).gap(4).items_center().cursor_pointer()
