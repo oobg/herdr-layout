@@ -17,9 +17,10 @@ root  column · padding 8 · gap 8 · background canvas
 │     └─ office-tab       block · {tab: active} · 패인 카드 radius 10, focus 테두리 accent
 └─ office-bottom  row · weight 2 · gap 8
    ├─ office-apps     block · weight 1 · min 420 · radius 10 · border · chrome   → mod office-apps
-   └─ office-side     column · 300px · min 240 · gap 6
-      ├─ office-usage      block · weight 6 · min 160 · radius 10 · border · chrome   → mod office-usage
-      └─ office-resources  block · weight 4 · min 28 (칠하지 않음: 카드는 모드가 전체 모드일 때만 그림) → mod office-resources
+   └─ office-side     stack · 300px · min 240 · radius 10 · border · chrome · active office-usage
+      │                 header: mod office-resources {role: tabs} · 36px (탭 줄 "사용량 | 리소스")
+      ├─ office-usage      block → mod office-usage
+      └─ office-resources  block → mod office-resources
 ```
 
 레이아웃이 쓰는 모드는 `office`, `office-apps`, `office-usage`, `office-resources` 넷이다. 모두 `place: none`(레이아웃이 자리를 정한다)이고 `office`만 `focusable`이다.
@@ -202,7 +203,7 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 
 ## 리소스 관리자 (`mods/office-resources`)
 
-- 칸은 사용량과 6:4 비율로 나눈다(레이아웃 크기는 `px`·`weight`뿐이라 사용량이 내용 높이만 쓰게 할 수 없다). 칸 높이가 220px 이상이면(`on_size_change`) 전체 표, 미만이면 28px 한 줄(메모리 칩 아이콘 + 이 컴퓨터 터미널 메모리 합, 흐린 글자)을 칸 맨 위(사용량 카드 바로 아래)에 붙인다. 한 줄을 누르면 같은 표를 팝업(300×420)으로 띄운다.
+- 사용량과 같은 탭 묶음(stack `office-side`)에 들어 있다. Herdr에는 stack용 내장 탭 줄이 없어서(`header`는 mod를 받는 구조체) 이 모드의 `role: tabs`가 탭 줄을 그리고, 누르면 `layout.select {stack, child}`로 바꾼다. 보이는 탭은 `layout()`의 stack `active`로 읽는다. 탭 안에서는 탭 이름이 제목이라 자체 테두리·머리줄을 그리지 않고, 리소스 탭이 보일 때만 읽는다. 칸 높이가 220px 이상이면(`on_size_change`) 전체 표, 미만이면 28px 한 줄(메모리 합)이고 누르면 같은 표를 팝업(300×420)으로 띄운다.
 - 전체 표: 머리줄(새로 고침, 팝업이면 닫기) / 요약 CPU·메모리 / ▶ 지표 세부 정보(이 컴퓨터 CPU·코어 수, 사용 중/전체 메모리) / 이름 | CPU | 메모리. 스페이스(대문자, 접기) → 탭(최근 30표본 CPU 막대) → 터미널(상태 점, 누르면 그 터미널로 이동). 숫자는 D2Coding으로 오른쪽 정렬.
 - 계산(`calc.js`, herdr 없이 node로 돌려 볼 수 있음): 터미널마다 `hc get`의 뿌리(셸) pid를 한 번 얻어 두고, 3초마다 기기당 `ps -A -o pid=,ppid=,pcpu=,rss=` 한 번으로 자손 트리 합을 낸다. CPU는 코어 수로 나눠 기기 전체 대비 %. 터미널의 탭은 패인 → `herdr.tab` 라벨 → 서브에이전트면 부모의 탭. 다른 기기는 같은 스크립트를 `exec on`으로 돌리고, 실패하거나 연결이 없으면 "<기기>에 연결할 수 없어 리소스를 알 수 없습니다." 한 줄.
 - 갱신은 앱 창이 앞에 있고 칸이 숨겨지지 않았을 때만(Herdr는 숨은 복사본의 타이머도 돌리므로 틱에서 거른다).

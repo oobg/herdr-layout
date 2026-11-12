@@ -110,26 +110,15 @@
         },
         {
           "id": "office-side",
-          "type": "column",
+          "type": "stack",
           "size": {
             "px": 300
           },
           "min": 240,
-          "gap": 6,
           "children": [
             {
               "id": "office-usage",
               "type": "block",
-              "size": {
-                "weight": 6
-              },
-              "min": 160,
-              "radius": 10,
-              "border": {
-                "width": 1,
-                "color": "border"
-              },
-              "background": "chrome",
               "content": {
                 "mod": "office-usage"
               }
@@ -137,15 +126,27 @@
             {
               "id": "office-resources",
               "type": "block",
-              "size": {
-                "weight": 4
-              },
-              "min": 28,
               "content": {
                 "mod": "office-resources"
               }
             }
-          ]
+          ],
+          "active": "office-usage",
+          "header": {
+            "content": {
+              "mod": "office-resources",
+              "props": {
+                "role": "tabs"
+              }
+            },
+            "height": 36
+          },
+          "radius": 10,
+          "border": {
+            "width": 1,
+            "color": "border"
+          },
+          "background": "chrome"
         }
       ]
     }

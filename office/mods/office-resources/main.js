@@ -1,6 +1,6 @@
-// 리소스 관리자: 사용량 패널 바로 밑에서 Herdr 터미널들이 쓰는 CPU·메모리를 보여 준다.
-//   칸 높이가 FULL 이상이면 전체 표(스페이스 → 탭 → 터미널), 모자라면 메모리 한 줄(칩).
-//   칸은 레이아웃이 사용량과 비율(6:4)로 나눠 준다. 한 줄일 때 누르면 팝업으로 전체 표를 띄운다.
+// 리소스 관리자: Herdr 터미널들이 쓰는 CPU·메모리를 보여 준다.
+//   레이아웃에서 사용량과 같은 탭 묶음(stack "office-side")에 들어가 있고, 탭 머리줄은 role "tabs"가 그린다.
+//   칸 높이가 FULL 이상이면 전체 표(스페이스 → 탭 → 터미널), 모자라면 메모리 한 줄(칩). 칩을 누르면 팝업으로 전체 표.
 // 데이터: 터미널마다 hc get으로 셸(뿌리) pid를 한 번 얻어 두고, 3초마다 ps 한 번으로 그 자손 트리 합을 낸다.
 //   탭 = 소속 터미널 합, 스페이스 = 탭 합, 요약 = 이 컴퓨터 터미널 전체 합. 다른 기기는 exec on으로 같은 계산을 시도한다.
 
@@ -11,6 +11,8 @@ import { theme, exec, hc, run, props, spaces, panes, terminals, machines, window
 import { SCRIPT, parseAll, treeSum, fmtMem, fmtCpu } from "./calc.js";
 
 const ID = "office-resources";   // 레이아웃 블록 id이자 모드 이름
+const STACK = "office-side";     // 사용량·리소스 탭 묶음 id
+const TABS = [{ id: "office-usage", label: "사용량" }, { id: ID, label: "리소스" }];
 const FULL = 220;                // 이 높이부터 전체 표
 const CHIP = 28;                 // 한 줄 칩 높이 (칸이 더 커도 맨 위에 붙인다)
 const EVERY = 3000;              // 갱신 주기(ms)
@@ -50,7 +52,9 @@ class Panel {
     if (this.popup) return true;
     if (this.size && this.size.height < 4) return false;
     const node = findNode(layout(), ID);
-    return !node?.hidden;
+    if (node?.hidden) return false;
+    const stack = findNode(layout(), STACK);
+    return stack?.type !== "stack" || (stack.active ?? stack.children?.[0]?.id) === ID;
   }
 
   tick(cx, force) {
@@ -237,13 +241,14 @@ class Panel {
     const { cpu, mem } = this.total(model);
     const sys = this.sys[""];
     const card = v_flex().size_full().bg(t.chrome).text_size(13);
-    const framed = this.popup ? card : card.rounded(10).border_1().border_color(t.border).overflow_hidden();
+    const inTabs = findNode(layout(), STACK)?.type === "stack";   // 탭 묶음이 테두리·제목을 대신한다
+    const framed = this.popup || inTabs ? card : card.rounded(10).border_1().border_color(t.border).overflow_hidden();
     return framed
-      // 머리줄: 사용량 패널과 같은 40px, 제목 14 semibold
-      .child(h_flex().h(40).pl(14).pr(8).flex_none().items_center().gap(2).border_b_1().border_color(t.border)
+      // 머리줄: 사용량 패널과 같은 40px, 제목 14 semibold (탭 안에서는 탭 이름이 제목이라 뺀다)
+      .when(!inTabs, (el) => el.child(h_flex().h(40).pl(14).pr(8).flex_none().items_center().gap(2).border_b_1().border_color(t.border)
         .child(div().flex_1().text_size(14).font_semibold().text_color(t.foreground).child("리소스 관리자"))
         .child(this.btn(t, "refresh", "refresh", TOOL.refresh, this.busy ? "읽는 중" : "지금 새로 고침", (cx) => this.tick(cx, true), this.busy))
-        .when(this.popup, (el) => el.child(this.btn(t, "close", "close", TOOL.fold, "닫기", () => closeOverlay(props().overlay)))))
+        .when(this.popup, (el) => el.child(this.btn(t, "close", "close", TOOL.fold, "닫기", () => closeOverlay(props().overlay))))))
       // 요약: 이 컴퓨터 터미널 합
       .child(h_flex().px(14).pt(10).pb(4).flex_none().items_baseline().gap(6)
         .child(div().text_size(16).font_semibold().font_family(NUM_FONT).text_color(t.foreground).child(fmtCpu(cpu)))
@@ -349,6 +354,30 @@ function findNode(n, id) {
   return null;
 }
 
+// 탭 머리줄: 사용량 / 리소스. 누르면 layout.select로 탭 묶음의 보이는 칸을 바꾼다.
+class Tabs {
+  init() { this.picked = null; }
+  render(cx) {
+    const t = theme();
+    const stack = findNode(layout(), STACK);
+    const active = this.picked ?? stack?.active ?? TABS[0].id;
+    return h_flex().id("res-tabs").size_full().px(8).gap(2).items_end().border_b_1().border_color(t.border).bg(t.chrome)
+      .children(TABS.map((tab) => {
+        const on = tab.id === active;
+        return div().id(`tab-${tab.id}`).px(10).pt(8).pb(6).cursor_pointer().text_size(13)
+          .border_b_2().border_color(on ? t.foreground : "#00000000")
+          .text_color(on ? t.foreground : t.dim).when(on, (el) => el.font_semibold())
+          .when(!on, (el) => el.hover((s) => s.text_color(t.muted)))
+          .on_click((_e, cx) => {
+            this.picked = tab.id;
+            run("layout.select", { stack: STACK, child: tab.id });
+            cx.notify();
+          })
+          .child(tab.label);
+      }));
+  }
+}
+
 class Tip {
   init() {}
   render() {
@@ -360,7 +389,8 @@ class Tip {
 
 export default class Resources extends View {
   init(p, cx) {
-    this.role = (props() ?? p ?? {}).role === "tip" ? new Tip() : new Panel();
+    const role = (props() ?? p ?? {}).role;
+    this.role = role === "tip" ? new Tip() : role === "tabs" ? new Tabs() : new Panel();
     this.role.init(p, cx);
   }
 
