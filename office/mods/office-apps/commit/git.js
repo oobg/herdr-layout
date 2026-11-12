@@ -221,3 +221,12 @@ export function splitRows(rows) {
   }
   return out;
 }
+
+// 목록 줄용 제목 나누기: Conventional Commits 접두 "type(scope)!: 제목"이면 { tag, text }.
+//   tag는 scope(없으면 type), 깨는 변경(!)이면 끝에 "!". 접두가 아니면(Merge …, Revert …, 그 밖) { tag: null, text: 원문 }.
+export function splitSubject(s) {
+  const src = String(s ?? "");
+  const m = /^([a-z][a-z0-9-]*)(?:\(([^()\s][^()]*)\))?(!)?:\s+(\S.*)$/i.exec(src);
+  if (!m) return { tag: null, text: src };
+  return { tag: `${m[2] ?? m[1]}${m[3] ?? ""}`, text: m[4] };
+}

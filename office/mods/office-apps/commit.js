@@ -19,7 +19,7 @@ import { Menu, ACTIONS, TICK, popupAt } from "./menu.js";
 import { ROLES } from "./files.js";
 import {
   PAGE, BIG, READ, LOG_FORMAT, SHOW_FORMAT, SEARCH, parseLog, parseShow, parseNameStatus, parseNumstat, mergeFiles,
-  diffLines, addedLines, diffRows, columns, ago, stamp, agoShort, bodyParagraphs,
+  diffLines, addedLines, diffRows, columns, ago, stamp, agoShort, bodyParagraphs, splitSubject,
 } from "./commit/git.js";
 import {
   DIFF_LINE, NARROW, inlineRow, splitRow, inlineWidth, splitWidth, diffPalette, wordSpans, splitRows, isDark, diffMode, modeToggle,
@@ -627,9 +627,12 @@ printf '%s\n%s' "$c" "$f"`;
   // 한 줄: 제목 · (작성자) · 짧은 상대 시각
   // 가상 목록 렌더러 안에서 그리므로 핸들러를 달지 않는다(logList가 받는다). 바깥 줄이 목록 폭·높이를 채우고 안쪽이 둥근 칸.
   commitRow(c, t, authors) {
+    const sub = splitSubject(c.subject);
     return div().w_full().h(ROW).px(4).child(h_flex().id(`commit-row-${c.hash}`).size_full().px(10).gap(8).items_center().rounded(4)
       .cursor_pointer().hover((s) => s.bg(t.hover)).when(this.sel === c.hash, (el) => el.bg(t.selected))
-      .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child(c.subject || "(제목 없음)"))
+      // 접두(type(scope):)는 앞에 흐린 작은 scope만 남겨 본문 제목이 먼저 보이게. 원문은 상세 머리에 그대로.
+      .when(Boolean(sub.tag), (el) => el.child(div().flex_none().max_w(96).truncate().text_size(11).text_color(t.dim).child(sub.tag)))
+      .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child(sub.text || "(제목 없음)"))
       .when(authors, (el) => el.child(div().flex_none().max_w(72).truncate().text_size(11).text_color(t.dim).child(c.author)))
       .child(div().flex_none().text_size(11).text_color(t.dim).child(agoShort(c.at))));
   }
