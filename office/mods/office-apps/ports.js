@@ -5,6 +5,8 @@
 //   터미널마다 hc get으로 셸(뿌리) pid를 한 번 얻어 두고(office-resources와 같게), 리스닝 pid의 조상 체인에서 가장 가까운 셸을 찾는다.
 // 갱신: 이 앱이 그려지는 동안만 5초마다(에이전트 앱과 같은 방식: 알렸는데 그려지지 않았으면 멈추고, 다시 그려지면 깨운다).
 // 기본 숨김: 시스템 서비스와 데스크톱 앱(Orca·WebStorm 같은 .app 묶음). Herdr 터미널에서 띄운 것은 무엇이든 보인다(parse.js isHidden).
+// 읽기 실패와 빈 결과를 나눈다: 실패한 기기는 머리줄 아래 이유 한 줄 + "다시 읽기", 지난 목록이 있으면 언제 것인지 붙인다.
+//   보일 포트가 없고 실패가 있으면 오른쪽도 "포트를 읽지 못했습니다"와 이유·다시 읽기(빈 화면 문구 대신 detail이 그린다).
 // 종료는 확인 창(menu.js Confirm) → ACTIONS["ports.kill"]이 pid의 명령줄이 그대로인지 다시 보고 kill -TERM.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -24,6 +26,11 @@ const machineOf = (address) => (String(address).includes("/") ? String(address).
 const spaceLabel = (name) => (name === "~" ? "홈" : name);
 const keyOf = (m, p) => `${m}|${p.port}|${p.pid ?? ""}`;
 const opts = (on, timeout = 10000) => (on ? { on, timeout } : { timeout });
+const agoText = (at) => {
+  if (!at) return "";
+  const s = Math.max(0, Math.round((Date.now() - at) / 1000));
+  return s < 60 ? `${s}초 전` : s < 3600 ? `${Math.floor(s / 60)}분 전` : `${Math.floor(s / 3600)}시간 전`;
+};
 
 // 확인 창은 따로 뜨는 복사본이라 함수를 넘길 수 없어, 모듈이 불릴 때 동작을 등록해 둔다(menu.js는 고치지 않는다).
 // ctx = { pid, port, name, command, on }. 창이 떠 있는 사이 pid가 다른 프로세스에 다시 쓰였을 수 있어 명령줄을 다시 본다.
@@ -101,7 +108,7 @@ export class PortsApp {
       this.urgent = false;
       this.busy = true;
       cx.spawn(async (cx) => {
-        try { await this.read(); } catch { /* 다음 차례에 다시 */ }
+        try { await this.read(); this.readError = null; } catch (e) { this.readError = `포트를 읽지 못했습니다: ${String(e?.message ?? e).slice(0, 120)}`; }
         this.busy = false; this.loaded = true; this.at = Date.now();
         const again = this.again; this.again = false;
         this.notified = Date.now(); cx.notify();
@@ -139,7 +146,7 @@ export class PortsApp {
     const next = new Map();
     await Promise.all(list.map(async (m) => {
       const prev = this.data.get(m.key);
-      if (m.name && m.layout === "unavailable") { next.set(m.key, { ...prev, name: m.name, ports: [], error: "연결되지 않았습니다" }); return; }
+      if (m.name && m.layout === "unavailable") { next.set(m.key, { ...prev, name: m.name, ports: [], error: "연결되지 않았습니다", okAt: null }); return; }
       const roots = new Map();
       for (const [a, r] of this.roots) if ((machineOf(a) ?? LOCAL) === m.key && r.pid != null) roots.set(r.pid, a);
       try {
@@ -148,9 +155,11 @@ export class PortsApp {
         if (!ok) throw new Error((r.stderr || "출력이 없습니다").trim().slice(0, 120));
         // 셸이 바뀌었으면(keep 터미널 등) pid가 사라진다: 다음 주기에 hc get을 다시 묻는다
         for (const [pid, a] of roots) if (!pids.has(pid)) this.roots.delete(a);
-        next.set(m.key, { name: m.name, os, ports, error: null });
+        next.set(m.key, { name: m.name, os, ports, error: null, okAt: Date.now() });
       } catch (e) {
-        next.set(m.key, { name: m.name, os: prev?.os, ports: prev?.ports ?? [], error: `포트를 읽지 못했습니다: ${String(e?.message ?? e).slice(0, 120)}` });
+        // 지난 목록은 두되(언제 것인지 함께 보인다) 실패는 따로 적는다
+        next.set(m.key, { name: m.name, os: prev?.os, ports: prev?.ports ?? [], okAt: prev?.okAt ?? null,
+          error: `포트를 읽지 못했습니다: ${String(e?.message ?? e).slice(0, 120)}` });
       }
     }));
     this.data = next;
@@ -226,8 +235,16 @@ export class PortsApp {
     if (w) goTo(w.sp, w.tab, r.term);
   }
 
+  // 읽지 못한 것: [{ name, error }] (전체 실패 + 기기별 실패)
+  failures() {
+    const out = this.readError ? [{ name: null, error: this.readError }] : [];
+    for (const g of this.groups()) if (g.d?.error) out.push({ name: g.m.name ?? "이 Mac", error: g.d.error });
+    return out;
+  }
+
   emptyState() {
     if (!this.loaded) return { text: "포트를 읽는 중", sub: "" };
+    if (this.failures().length) return { text: "포트를 읽지 못했습니다", sub: this.failures()[0].error };
     const hidden = this.groups().reduce((n, g) => n + g.hidden, 0);
     return { text: "열려 있는 포트가 없습니다", sub: hidden ? `시스템·데스크톱 앱 포트 ${hidden}개는 숨겨 두었습니다 · 툴바의 눈 단추로 봅니다` : "개발 서버를 띄우면 여기에 보입니다" };
   }
@@ -273,7 +290,11 @@ export class PortsApp {
       body.push(h_flex().flex_none().px(8).pt(many ? 8 : 4).pb(2).gap(6).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(12).font_semibold().text_color(t.muted).child(g.m.name ?? "이 Mac"))
         .when(g.hidden > 0, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(`숨김 ${g.hidden}개`))));
-      if (g.d?.error) body.push(div().px(8).py(2).text_size(11).text_color(t.dim).child(g.d.error));
+      if (g.d?.error) body.push(h_flex().px(8).py(2).gap(6).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted)
+          .child(g.shown.length && g.d.okAt ? `${g.d.error} · 아래는 ${agoText(g.d.okAt)} 목록` : g.d.error))
+        .child(div().id(`pt-retry-${g.m.key}`).flex_none().px(4).rounded(4).text_size(11).text_color(t.foreground).cursor_pointer()
+          .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.kick(cx); cx.notify(); }).child("다시 읽기")));
       else if (!g.shown.length) body.push(div().px(8).py(2).text_size(11).text_color(t.dim).child(this.loaded ? "열린 포트 없음" : "읽는 중"));
       for (const r of g.shown) body.push(this.row(r, t));
     }
@@ -283,9 +304,22 @@ export class PortsApp {
   }
 
   // ── 상세 ───────────────────────────────────────────────
+  // 보일 포트가 없는데 읽지 못한 곳이 있다: 빈 화면 문구 대신 이유와 다시 읽기를 그린다(빈 결과와 구분).
+  failView(t) {
+    const fs = this.failures();
+    const local = this.data.get(LOCAL), localOk = local && !local.error && !this.readError;
+    return v_flex().id("pt-fail").size_full().items_center().justify_center().gap(8).px(24)
+      .child(div().text_size(14).text_color(t.foreground).child(localOk ? "이 Mac에는 열려 있는 포트가 없습니다" : "포트를 읽지 못했습니다"))
+      .children(fs.map((f) => div().max_w(520).text_size(12).text_color(t.muted).child(f.name && (fs.length > 1 || localOk) ? `${f.name}: ${f.error}` : f.error)))
+      .child(div().id("pt-retry").mt(4).px(10).py(4).rounded(6).border_1().border_color(this.kb?.on?.("pt-retry") ? t.accent : t.border)
+        .text_size(12).text_color(t.foreground).cursor_pointer().hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => { this.kick(cx); cx.notify(); }).child(this.busy ? "읽는 중" : "다시 읽기"));
+  }
+
   detail(cx, t) {
     const r = this.current();
-    if (!r) return null;
+    if (!r) return this.loaded && this.failures().length ? this.failView(t) : null;
+    const d = this.data.get(r.machine ?? LOCAL);
     const w = this.whereOf(r.term);
     // 키보드 커서가 있는 버튼은 테두리 t.accent(런처 키 계약, focusables와 같은 id)
     const btn = (id, text, fn, danger = false) => div().id(id).px(10).py(4).rounded(6).border_1().border_color(this.kb?.on?.(id) ? t.accent : t.border).text_size(12).flex_none()
@@ -295,6 +329,7 @@ export class PortsApp {
       .child(div().w(76).flex_none().text_color(t.muted).child(k))
       .child(div().flex_1().min_w(0).text_color(t.foreground).when(mono, (el) => el.font_family(CODE_FONT).text_size(12.5)).child(v));
     const info = [
+      d?.error ? div().text_size(12).text_color(t.muted).child(`${d.error} · ${d.okAt ? `${agoText(d.okAt)}에 읽은 정보입니다` : "지난 정보입니다"}`) : null,
       line("포트", String(r.port), true),
       line("주소", r.addrs.join(", "), true),
       r.pid != null ? line("pid", String(r.pid), true) : null,
@@ -319,7 +354,7 @@ export class PortsApp {
   // 런처 키 계약: 상세 머리줄 버튼(화면 순서). 그릴 때와 같은 조건으로 뺀다.
   focusables() {
     const r = this.current();
-    if (!r) return [];
+    if (!r) return this.loaded && this.failures().length ? [{ id: "pt-retry", kind: "button", run: (cx) => this.kick(cx) }] : [];
     const w = this.whereOf(r.term), out = [];
     if (!r.machine) out.push({ id: "pt-open", kind: "button", run: () => this.openBrowser(r) });
     if (w) out.push({ id: "pt-go", kind: "button", run: () => goTo(w.sp, w.tab, r.term) });
