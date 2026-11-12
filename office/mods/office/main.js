@@ -278,6 +278,17 @@ class Floor {
           if (next !== this.hov) { this.hov = next; cx.notify(); }
         }))
         .child(h_flex().gap(8).items_center()
+          // 부모 에이전트 줄: 맨 왼쪽 접기 화살표(아래 활동을 접고 편다). 줄 자체를 누르면 터미널로 간다.
+          .when(!sub, (el) => {
+            const k = `${a.address}|agent`, open = this.isOpen(k, true);
+            // 접을 것(활동 기록 또는 하위 에이전트)이 없으면 자리만 둔다. 상태를 보고하지 않는 에이전트(Codex 등)는 기록이 없다.
+            const has = a.status != null || terms.some((x) => x.parent === a.address && x.status);
+            if (!has) return el.child(div().w(14).flex_none());
+            return el.child(div().id(`ov-fold-${a.address}`).w(14).h(16).flex_none().flex().items_center().justify_center().rounded(3)
+              .cursor_pointer().hover((st) => st.bg(t.hover))
+              .on_click((_e, cx) => { cx.stop_propagation(); this.toggle(k, true, cx); })
+              .child(svg(`mods/office/icons/chevron-${open ? "down" : "right"}.svg`).size(10).text_color(t.muted)));
+          })
           .child(programIcon(a.program, 16, t))
           .child(div().flex_1().min_w(0).truncate().text_size(13).font_semibold().text_color(t.foreground).child(name(a)))
           .child(div().flex_none().text_size(12).text_color(color).child(label))
@@ -287,7 +298,7 @@ class Floor {
             .when(closable, (x) => x.cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
               .on_click((_e, cx) => { cx.stop_propagation(); openCloseConfirm(a, name(a)); }))
             .child("✕"))))
-        .when(Boolean(a.title), (el) => el.child(div().pl(24).truncate().text_size(12).text_color(t.muted).child(a.title)));
+        .when(Boolean(a.title), (el) => el.child(div().pl(sub ? 24 : 46).truncate().text_size(12).text_color(t.muted).child(a.title)));
     };
     const sync = [g.ahead ? `↑${g.ahead}` : null, g.behind ? `↓${g.behind}` : null].filter(Boolean).join(" ");
 
@@ -307,7 +318,7 @@ class Floor {
       .when(mine.length > 0, (el) => el
         .child(addHead(`에이전트 ${mine.length}`))
         .children(mine.flatMap((a) => [agentRow(a, false), this.activityView(a, cx, t),
-          ...terms.filter((x) => x.parent === a.address && x.status)
+          ...terms.filter((x) => x.parent === a.address && x.status && this.isOpen(`${a.address}|agent`, true))
             .map((k) => agentRow({ address: k.address, status: k.status, program: k.program, app: k.report?.app, title: k.name ?? "", tab: a.tab }, true))])));
   }
 
@@ -545,11 +556,12 @@ class Floor {
 
   // 에이전트 줄 아래의 활동: 이번 턴 · 서브에이전트 · 파일. 서브에이전트도 같은 세 구역을 들여 그린다.
   activityView(a, cx, t) {
+    if (!this.isOpen(`${a.address}|agent`, true)) return div();   // 에이전트 줄을 접었으면 활동을 그리지 않는다
     const v = this.activityFor(a, cx);
     if (!v) return div();
     const body = this.sections(a, v, v, null, 0, cx, t);
     if (!body.length) return div();
-    return v_flex().ml(24).mb(6).pl(10).py(2).gap(3).border_l_2().border_color(t.border).text_size(12).children(body);
+    return v_flex().ml(46).mb(6).pl(10).py(2).gap(3).border_l_2().border_color(t.border).text_size(12).children(body);
   }
 
   // 세 구역을 줄 목록으로. main: 부모 에이전트의 기록(서브에이전트 목록은 세션 단위로 거기에 있다).
