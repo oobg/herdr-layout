@@ -1,5 +1,7 @@
 // office-apps의 검토 앱: 에이전트가 일하는 작업 폴더별로 바뀐 것을 보고, 그 에이전트에게 피드백을 보낸다.
 //   왼쪽: 지금 에이전트가 있는 작업 폴더(git 루트: 레포·워크트리, 같은 머신·루트는 한 줄).
+//         에이전트를 재우거나 닫아도 이번 실행에서 본 폴더와 잠든 기록(data/office-apps/sleeping.json, 읽기만)의 폴더는
+//         맨 아래 "에이전트 없음" 묶음에 흐리게 남는다(보기는 되고 보내기는 막고 이유를 쓴다).
 //         줄 = 에이전트 아이콘 · 폴더 이름 · 변경 요약("파일 4 · +120 −30") / 상태 낱말 · 스페이스 › 탭.
 //         커밋 안 된 변경이 없어도 기본 브랜치보다 앞선 커밋이 있으면 "커밋 2개 · 기본 브랜치 대비"로 위에 둔다(커밋까지 끝낸 일).
 //         둘 다 없는 곳은 흐리게 맨 아래. 레포가 아닌 폴더는 뺀다.
@@ -18,20 +20,21 @@
 
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, Scrollbar, v_virtual_list } from "gpui-base";
-import { agents, panes, spaces, exec, readTextFile, home, shared, settings } from "herdr";
+import { agents, panes, spaces, exec, readTextFile, home, shared, settings, appHome } from "herdr";
 import { candidates, recipients, sendToAgent, statusWord, nextRecipient } from "./send.js";
 import { BIG, READ, parseNameStatus, parseNumstat, mergeFiles, diffLines, addedLines, diffRows } from "./commit/git.js";
 import {
   DIFF_LINE, NARROW, inlineRow, splitRow, inlineWidth, splitWidth, diffPalette, wordSpans, splitRows, isDark, diffMode, modeToggle,
 } from "./commit/diffview.js";
 import {
-  withSilent, workdirs, groupRoots, parseShortstat, summary, changed, autoMode, sortGroups, pickLine, feedbackText, baseCandidates, pickBase,
+  withSilent, workdirs, keepDirs, groupRoots, parseShortstat, summary, changed, autoMode, sortGroups, pickLine, feedbackText, baseCandidates, pickBase,
 } from "./review/model.js";
 
 const APPS = "mods/office-apps";
 const I = (n) => `${APPS}/${n}.svg`;
 const CODE_FONT = "D2Coding";
 const EVERY = 10000;
+const RECENT = 20;           // 에이전트 없이 남길 최근 본 폴더 수(이번 실행 동안만)
 const FILE_ROW = 24, FILE_ROWS = 6;
 const FILE_MAX = 1000000;
 const SENT = "office-apps.review.sent";     // 확인 창 → 앱: { id, phase: "sending" | "done", ok }
@@ -59,6 +62,8 @@ export class ReviewApp {
     this.stats = {};          // 묶음 key([머신, 루트]) → { files, add, del, untracked, branch, ahead }
     this.bases = {};          // 묶음 key → 기본 브랜치 ref | null(없음). 다시 읽기를 누르면 새로 찾는다
     this.picked = {};         // 묶음 key → 이번 실행에서 그 폴더에서 사람이 고른 보기
+    this.recent = new Map();  // 작업 폴더 key → { key, on, cwd }: 이번 실행에서 에이전트가 있던 폴더(최근 것이 뒤, RECENT개까지)
+    this.sleeping = [];       // data/office-apps/sleeping.json(작업 공간 앱이 쓴다, 여기서는 갱신 때 읽기만)
     this.groups = [];
     this.sel = load("review.sel", null);
     this.mode = load("review.mode", "worktree") === "base" ? "base" : "worktree";
@@ -95,9 +100,21 @@ export class ReviewApp {
   }
 
   // ── 목록 만들기 ─────────────────────────────────────────
+  // 지금 에이전트가 있는 폴더 + 에이전트 없이 남길 폴더(이번 실행에서 본 것·잠든 기록). 목록·갱신 둘 다 이것을 쓴다.
   dirs() {
     const ps = panes() ?? [], sps = spaces() ?? [];
-    return workdirs(withSilent(agents() ?? [], ps, sps), ps, sps);
+    const live = workdirs(withSilent(agents() ?? [], ps, sps), ps, sps);
+    for (const d of live) {
+      this.recent.delete(d.key);
+      this.recent.set(d.key, { key: d.key, on: d.on, cwd: d.cwd });
+    }
+    while (this.recent.size > RECENT) this.recent.delete(this.recent.keys().next().value);
+    return keepDirs(live, [...this.recent.values()], this.sleeping);
+  }
+
+  async readSleeping() {
+    const text = await readTextFile(`${appHome()}/data/office-apps/sleeping.json`).catch(() => null);
+    try { const v = JSON.parse(text ?? "[]"); this.sleeping = Array.isArray(v) ? v : []; } catch { /* 깨졌으면 지난 값 */ }
   }
 
   build() {
@@ -196,6 +213,7 @@ export class ReviewApp {
 
   // 모르는 작업 폴더의 git 루트를 찾고, 묶음마다 변경 요약을 읽고, 고른 묶음의 파일 목록을 다시 읽는다.
   async refresh(cx) {
+    await this.readSleeping();
     const dirs = this.dirs();
     await Promise.all(dirs.filter((d) => !(d.key in this.roots)).map(async (d) => {
       try {
@@ -214,11 +232,16 @@ export class ReviewApp {
         git(["branch", "--show-current"]).catch(() => null),
         ref ? git(["rev-list", "--count", `${ref}..HEAD`]).catch(() => null) : null,
       ]);
+      // 에이전트 없이 남긴 폴더를 git이 못 읽는다(지운 워크트리 등): 목록에서 뺀다
+      if (!g.agents.length && ss?.code !== 0) {
+        for (const d of dirs) if (JSON.stringify([d.on, this.roots[d.key]]) === g.key) { this.roots[d.key] = null; this.recent.delete(d.key); }
+        return;
+      }
       const st = parseShortstat(ss?.code === 0 ? ss.stdout : "");
       this.stats[g.key] = { ...st, untracked: un?.code === 0 ? un.stdout.split("\0").filter(Boolean).length : 0, branch: br?.stdout?.trim() ?? "",
         ahead: ah?.code === 0 ? Number(ah.stdout.trim()) || 0 : 0 };
     }));
-    this.groups = sortGroups(this.groups, this.stats);
+    this.groups = sortGroups(groupRoots(dirs, this.roots), this.stats);
     const cur = this.current();
     // 요약이 바뀌어 보기가 달라졌으면(커밋까지 끝났다 등) 처음부터 다시 읽는다
     if (cur && this.loaded && this.loaded !== this.view(cur)) this.resetFiles();
@@ -468,7 +491,9 @@ printf '%s\n%s' "$c" "$f"`;
       .child(v_flex().id("review-list").flex_1().min_h(0).overflow_y_scrollbar().p(4)
         .when(!gs.length, (el) => el.child(div().p(8).text_size(12).text_color(t.dim)
           .child(this.groups.length ? "읽는 중" : "에이전트가 일하는 git 폴더가 없습니다")))
-        .children(gs.map((g) => this.groupRow(g, t))));
+        .children(gs.flatMap((g, i) => (!g.agents.length && (i === 0 || gs[i - 1].agents.length)
+          ? [div().px(8).pt(10).pb(2).text_size(11).text_color(t.dim).child("에이전트 없음"), this.groupRow(g, t)]
+          : [this.groupRow(g, t)]))));
   }
 
   groupRow(g, t) {
@@ -477,7 +502,7 @@ printf '%s\n%s' "$c" "$f"`;
     const word = statusWord(a?.status);
     return v_flex().id(`review-g-${g.key}`).h(42).flex_none().justify_center().gap(2).pl(8).pr(8).rounded(4).cursor_pointer()
       .when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover)))
-      .when(!has && !on, (el) => el.opacity(0.55))
+      .when((!has || !a) && !on, (el) => el.opacity(0.55))
       .on_click((_e, cx) => { this.choose(g.key, cx); cx.notify(); })
       .child(h_flex().gap(6).items_center()
         .children(g.agents.slice(0, 3).map((x) => programIcon(x.program, 14, t)))
@@ -485,8 +510,9 @@ printf '%s\n%s' "$c" "$f"`;
         .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child(baseName(g.root)))
         .child(div().flex_none().text_size(11).text_color(has ? t.muted : t.dim).child(st ? summary(st, st.untracked) : "")))
       .child(h_flex().gap(6).items_center().text_size(11)
-        .child(div().flex_none().text_color(statusColor(a?.status, t)).child(word))
-        .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(where.join(", "))));
+        .when(Boolean(a), (el) => el.child(div().flex_none().text_color(statusColor(a?.status, t)).child(word)))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.dim)
+          .child(a ? where.join(", ") : g.slept?.length ? `잠듦 · ${g.slept.join(", ")}` : "끝났거나 닫힘")));
   }
 
   // ── 오른쪽 ────────────────────────────────────────────
@@ -615,12 +641,15 @@ printf '%s\n%s' "$c" "$f"`;
 
   // 피드백: 보낼 곳(여럿이면 골라 누름) · 붙을 위치 / 입력칸 / 보내기
   feedback(g, t) {
-    const a = this.target(g), gone = !a && Boolean(this.to[g.key]);
+    const a = this.target(g), none = !g.agents.length, gone = !a && !none && Boolean(this.to[g.key]);
     const st = a?.status ?? null;
     const blocked = st === "blocked", sending = Boolean(this.sending);
     const can = Boolean(a) && !blocked && !sending && !this.empty;
     const where = this.file ? (this.pick ? `${this.file}:${this.pick.line}${this.pick.side === "old" ? " (지운 줄)" : ""}` : this.file) : null;
-    const note = gone ? (this.empty ? "받는 에이전트가 목록에서 사라졌습니다" : "받는 에이전트가 목록에서 사라졌습니다 · 초안 보관됨")
+    const kept = this.empty ? "" : " · 초안 보관됨";
+    const note = none ? (g.slept?.length ? `에이전트가 잠들어 있어 보낼 수 없습니다. 작업 공간 앱에서 깨운 뒤 보내세요${kept}`
+        : `이 폴더에 에이전트가 없어 보낼 수 없습니다. 에이전트를 띄운 뒤 보내세요${kept}`)
+      : gone ? (this.empty ? "받는 에이전트가 목록에서 사라졌습니다" : "받는 에이전트가 목록에서 사라졌습니다 · 초안 보관됨")
       : blocked ? "입력을 기다리는 중이라 보낼 수 없습니다. 터미널에서 먼저 답하세요."
       : sending ? "보내는 중" : st === "working" ? "작업 중: 보낸 글은 다음 차례에 처리됩니다" : "";
     // 런처 키 계약의 멈출 곳(화면 순서): 보낼 곳(후보가 둘 이상이면, Enter·Space = 다음 후보) → 입력칸 → 보내기(보낼 수 있을 때)
@@ -630,7 +659,7 @@ printf '%s\n%s' "$c" "$f"`;
     if (can) this.stops.push({ id: "review-send", kind: "button", run: (cx) => this.send(cx) });
     return v_flex().flex_none().px(12).py(8).gap(6).border_t_1().border_color(t.border)
       .child(h_flex().gap(6).items_center().min_w(0)
-        .child(div().flex_1().min_w(0).child(recipients("review", list, a?.address, (address) => this.pickTo(g, address), t, undefined, nx ? on("review-to") : undefined)))
+        .child(div().flex_1().min_w(0).child(recipients("review", list, a?.address, (address) => this.pickTo(g, address), t, "에이전트 없음", nx ? on("review-to") : undefined)))
         .when(Boolean(where), (el) => el.child(h_flex().flex_none().max_w(320).gap(4).items_center()
           .child(div().truncate().text_size(11).font_family(CODE_FONT).text_color(t.muted).child(where))
           .when(Boolean(this.pick), (e2) => e2.child(div().id("review-unpick").px(4).rounded(4).text_size(11).text_color(t.dim).cursor_pointer()
@@ -639,7 +668,7 @@ printf '%s\n%s' "$c" "$f"`;
       .child(div().w_full().on_key_down(() => { if (this.kb) this.kb.from = "review-input"; })
         .child(Textarea.new(this.input).w_full().text_size(13).text_color(t.foreground)))
       .child(h_flex().gap(8).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(blocked ? t.blocked : gone ? t.foreground : t.dim)
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(blocked ? t.blocked : gone || none ? t.foreground : t.dim)
           .child(note || (this.pick ? "diff 줄을 다시 누르면 줄 고르기를 풉니다" : "diff 줄을 누르면 그 줄에 대해 보냅니다")))
         .child(div().id("review-send").flex_none().px(12).py(5).rounded(6).text_size(12).border_1().border_color(on("review-send") ? t.accent : t.border)
           .text_color(can ? t.foreground : t.dim)

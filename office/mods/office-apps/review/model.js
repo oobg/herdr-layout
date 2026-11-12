@@ -5,7 +5,8 @@
 //   summary(stat, untracked)        "파일 4 · +120 −30" (커밋 안 된 변경이 없고 앞선 커밋만 있으면 "커밋 2개 · 기본 브랜치 대비", 둘 다 없으면 "변경 없음")
 //   dirty(st) · changed(st)         커밋 안 된 변경이 있는지 · 그것이나 기본 브랜치보다 앞선 커밋(st.ahead)이 있는지
 //   autoMode(st)                    기본 보기: 커밋 안 된 변경 없이 앞선 커밋만 있으면 "base", 아니면 null(사람이 고른 보기)
-//   sortGroups(groups, stats)       변경 있는 곳 먼저(그 안에서는 상태 급한 순), 변경 없는 곳은 맨 아래
+//   sortGroups(groups, stats)       변경 있는 곳 먼저(그 안에서는 상태 급한 순), 변경 없는 곳은 그 아래, 에이전트 없는 곳은 맨 아래
+//   keepDirs(live, recent, sleeping)  지금 에이전트가 있는 폴더 + 에이전트 없이 남길 폴더(최근 본 것·잠든 기록) → dirs(agents: [])
 //   pickLine(rows, pairs, key)      diff 가상 목록 키(i<n> | s<n>) → { line, side } | null
 //   feedbackText({ path, line, side, text })   에이전트에게 보낼 글
 //   baseCandidates / pickBase       기본 브랜치 후보와 고르기
@@ -62,6 +63,7 @@ export function groupRoots(dirs, roots) {
     const g = out.get(key);
     if (r !== undefined) g.pending = false;
     for (const a of d.agents) if (!g.agents.some((x) => x.address === a.address)) g.agents.push(a);
+    for (const n of d.slept ?? []) { g.slept ??= []; if (!g.slept.includes(n)) g.slept.push(n); }
   }
   // 줄 안의 에이전트는 상태 급한 순
   for (const g of out.values()) g.agents.sort((a, b) => rank(a.status) - rank(b.status));
@@ -90,9 +92,10 @@ export const dirty = (st) => Boolean(st && ((st.files ?? 0) + (st.untracked ?? 0
 export const changed = (st) => dirty(st) || Boolean(st?.ahead > 0);
 export const autoMode = (st) => (st && !dirty(st) && st.ahead > 0 ? "base" : null);
 
-// 변경 있는 곳 먼저(상태 급한 순, 같으면 원래 순서), 변경이 없거나 아직 모르는 곳은 맨 아래.
+// 변경 있는 곳 먼저(상태 급한 순, 같으면 원래 순서), 변경이 없거나 아직 모르는 곳은 그 아래.
+// 에이전트가 없는 곳(최근 본 폴더·잠든 에이전트 폴더)은 따로 맨 아래 묶음.
 export function sortGroups(groups, stats) {
-  const score = (g) => (changed(stats[g.key]) ? 0 : 1) * 10 + rank(g.agents[0]?.status);
+  const score = (g) => (g.agents.length ? 0 : 100) + (changed(stats[g.key]) ? 0 : 1) * 10 + rank(g.agents[0]?.status);
   return groups.map((g, i) => [g, i]).sort((a, b) => score(a[0]) - score(b[0]) || a[1] - b[1]).map(([g]) => g);
 }
 
@@ -130,4 +133,20 @@ export function baseCandidates(originHead) {
 // ok: 후보 → rev-parse --verify 성공 여부. 처음 성공한 후보, 없으면 null.
 export function pickBase(cands, ok) {
   return cands.find((c) => ok[c]) ?? null;
+}
+
+// 에이전트가 없어도 남길 폴더: 이번 실행에서 본 폴더(recent: [{ key, on, cwd }])와 잠든 기록(sleeping.json: [{ cwd, machine, tabName }]).
+//   지금 에이전트가 있는 폴더(live)와 같은 key는 빼고, 남긴 폴더는 agents: []. slept: 그 폴더에서 잠든 탭 이름들.
+export function keepDirs(live, recent, sleeping) {
+  const out = new Map(live.map((d) => [d.key, d]));
+  const add = (on, cwd) => {
+    const c = String(cwd ?? "").replace(/\/+$/, "");
+    if (!c) return null;
+    const key = JSON.stringify([on ?? null, c]);
+    if (!out.has(key)) out.set(key, { key, on: on ?? null, cwd: c, agents: [], slept: [] });
+    return out.get(key);
+  };
+  for (const r of sleeping ?? []) { const d = add(r.machine, r.cwd); if (d?.slept && r.tabName && !d.slept.includes(r.tabName)) d.slept.push(r.tabName); }
+  for (const r of recent ?? []) add(r.on, r.cwd);
+  return [...out.values()];
 }
