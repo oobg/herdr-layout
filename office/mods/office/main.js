@@ -7,7 +7,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import * as fs from "fs/promises";
 import { readActivity, readSub } from "./activity.js";
-import { placeOf } from "./parse.js";
+import { placeOf, summary } from "./parse.js";
 import { v_flex, h_flex } from "gpui-base";
 import {
   props, spaces, agents, panes, terminals, theme, run, exec,
@@ -576,7 +576,7 @@ class Floor {
     cx.notify();
   }
 
-  // 에이전트 줄 아래의 활동: 이번 턴 · 서브에이전트 · 파일. 서브에이전트도 같은 세 구역을 들여 그린다.
+  // 에이전트 줄 아래의 활동: 요약(지금·마지막 말·시간 띠) · 서브에이전트 · 파일. 서브에이전트도 같은 구역을 들여 그린다.
   activityView(a, cx, t) {
     if (!this.isOpen(`${a.address}|agent`, true)) return div();   // 에이전트 줄을 접었으면 활동을 그리지 않는다
     const v = this.activityFor(a, cx);
@@ -595,13 +595,11 @@ class Floor {
     };
     const kindOf = (k) => KIND[k] ?? ["other", t.muted];
     const icon = (k) => svg(`mods/office/icons/act_${kindOf(k)[0]}.svg`).size(13).flex_none().text_color(kindOf(k)[1]);
-    const FILE = ["읽음", "수정", "작성"];
     // 파일 경로를 위치 칩 + 짧은 경로로
     const place = (p) => placeOf(p, home(), main.cwd);
     // 위치 칩 색: 프로젝트는 초록, 클로드 쪽은 Claude 주황, Herdr는 파랑, 홈은 회색
     const PLACE = { 프로젝트: "#a7c080", "클로드 임시": "#d97757", 클로드: "#d97757", Herdr: "#7aa2f7", 홈: "#9da9a0" };
     const chip = (text) => { const c = PLACE[text] ?? t.muted; return div().flex_none().px(5).rounded(4).bg(`${c}26`).border_1().border_color(`${c}66`).text_size(11).text_color(c).child(text); };
-    const short = (k, target) => (FILE.includes(k) && target ? place(target)[1].split("/").pop() : target);
     const id = `${a.address}-${sub ?? "top"}`;
     // 머리줄: 작은 chevron + 이름. 누르면 접고 펼친다.
     const head = (key, text, open, def) => h_flex().id(`ov-h-${id}-${key}`).pt(4).gap(4).items_center().cursor_pointer()
@@ -628,16 +626,10 @@ class Floor {
         ...pick.map((i) => row(items[i], i))];
     };
     const out = [];
-    // 이번 턴의 흐름: 한 줄에 한 묶음, 종류 아이콘. 지금 하는 묶음은 굵게. 파일 대상도 누르면 뷰어 창.
-    const flow = v.tail?.flow ?? [];
-    out.push(...section("turn", `이번 턴 · 도구 ${v.tail?.tools ?? 0}번`, flow, false, (f, i) =>
-      h_flex().id(`ov-flow-${id}-${i}`).gap(6).items_center().min_h(18)
-        .when(FILE.includes(f.kind) && String(f.target ?? "").startsWith("/"),
-          (x) => x.cursor_pointer().hover((s) => s.underline()).on_click(() => openViewer(f.target, a.address)))
-        .child(f.running && f.kind === "실행" ? svg(SPINNER).size(13).flex_none().text_color(t.working).spin(900) : icon(f.kind))
-        .child(div().flex_none().text_color(f.running ? t.foreground : kindOf(f.kind)[1]).when(f.running, (x) => x.font_semibold())
-          .child(`${f.kind}${f.n > 1 ? ` ×${f.n}` : ""}`))
-        .when(Boolean(f.target), (x) => x.child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(short(f.kind, f.target)))), 24));
+    // 요약: 자세한 도구 흐름은 에이전트 앱(office-apps.agent)에서 보고, 여기는 한눈에 볼 것만.
+    //   작업 중 여부: 부모는 Herdr 상태, 서브에이전트는 목록의 running(흐름의 running은 백그라운드 호출에서 남기도 한다)
+    const working = sub ? Boolean(main.agents?.find((g) => g.id === sub)?.running) : a.status === "working";
+    out.push(...this.summaryView(a, v, working, `${id}`, depth === 0, t, kindOf));
     // 서브에이전트: 지금 도는 것과 중단된 것만(완료되면 목록에서 사라진다). 띄운 순서라 마지막이 최근.
     //   줄을 누르면 그 서브에이전트의 세 구역을 펼친다(도는 것은 펼침, 끝난 것은 접힘이 기본). 3단부터는 한 줄만.
     // 서브에이전트가 띄운 서브에이전트의 완료 알림은 그 서브에이전트 기록에 온다: 이 단계 기록(v.ended)으로도 끝난 것을 안다
@@ -674,6 +666,36 @@ class Floor {
         .when(Boolean(where), (x) => x.child(chip(where)))
         .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(path));
     }, 30));
+    return out;
+  }
+
+  // 요약 블록: 1) 지금(작업 중일 때) 2) 마지막 말 + n분 전 3) 시간 비례 띠 + "자세히 →"(부모만)
+  //   띠: 흐름 묶음마다 한 칸, 너비 ∝ 걸린 시간(flex_grow, 최소 3px). 3분 이상 빈 자리는 테두리만 있는 쉼 칸(고정 너비).
+  //   지금 도는 칸은 작업 중 색으로 깜빡인다.
+  summaryView(a, v, working, id, top, t, kindOf) {
+    const tail = v.tail ?? {};
+    const flow = tail.flow ?? [];
+    const sm = summary(flow, { working, lastAt: tail.lastAt ?? 0 });
+    const ago = (ms) => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 1 ? "방금" : m < 60 ? `${m}분 전` : m < 1440 ? `${Math.floor(m / 60)}시간 전` : `${Math.floor(m / 1440)}일 전`; };
+    const out = [];
+    if (sm.now) out.push(h_flex().gap(6).items_center().min_h(18)
+      .child(svg(SPINNER).size(13).flex_none().text_color(t.working).spin(900))
+      .child(div().flex_shrink(1).min_w(0).truncate().text_color(t.foreground).child(sm.now))
+      .when(Boolean(sm.phase), (x) => x.child(div().flex_none().text_color(t.muted).child(`· ${sm.phase}`))));
+    if (tail.say) out.push(h_flex().gap(8).items_center().min_h(18)
+      .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(tail.say))
+      .when(Boolean(tail.sayAt), (x) => x.child(div().flex_none().text_size(11).text_color(t.muted).child(ago(tail.sayAt)))));
+    const cells = sm.cells.map((c, i) => c.rest
+      ? div().flex_none().w(10).h(6).rounded(2).border_1().border_color(t.border)
+      : div().id(`ov-band-${id}-${i}`).flex_grow(Math.max(1, c.ms)).flex_basis(0).min_w(3).h(6).rounded(2)
+        .bg(c.current ? t.working : kindOf(c.kind)[1]).opacity(c.current ? 1 : 0.8)
+        .when(c.current, (x) => x.loop("opacity", { from: 0.35, to: 1, period: 1200 })));
+    if (cells.length || top) out.push(h_flex().gap(8).items_center().min_h(16).pt(2)
+      .child(h_flex().flex_1().min_w(0).gap(2).items_center().overflow_hidden().children(cells))
+      .when(top, (x) => x.child(div().id(`ov-more-agent-${id}`).flex_none().text_size(11.5).text_color(t.muted).cursor_pointer()
+        .hover((st) => st.text_color(t.foreground))
+        .on_click((_e, cx) => { cx.stop_propagation(); run(`office-apps.agent:${a.address}`); })
+        .child("자세히 →"))));
     return out;
   }
 
