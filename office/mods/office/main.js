@@ -473,6 +473,8 @@ class Floor {
         }
       }
       tb.n = mine.length;
+      // 자리에 못 앉은 에이전트는 알약이 없다: 그중 답을 기다리는 수를 이름표에 덧붙인다.
+      tb.ask = mine.slice(tb.boss ? 1 : SEATS).filter((a) => a.status === "blocked").length;
     }
     // 명패: 왼쪽 벽 앞쪽 윗부분. 그 자리 앞엔 가구가 없지만 혹시 겹쳐도 읽히게 가구 다음에 그린다. 벽 기울기대로 비튼 SVG(이름이 바뀌어도 되게 실행 중에 만든다).
     for (const pl of L.plates) {
@@ -511,7 +513,9 @@ class Floor {
           .bg(sel ? t.accent : `${t.chrome}e6`).border_1().border_color(sel || hov ? t.accent : t.border)
           .child(div().text_size(12).font_semibold().text_color(sel ? t.accent_foreground : t.foreground).whitespace_nowrap()
             .child(tb.s ? (tb.s.branch || tb.s.name) : "비어 있음 · 눌러서 열기"))
-          .when(tb.n > 0, (el) => el.child(div().text_size(12).text_color(sel ? t.accent_foreground : t.muted).child(`${tb.n}명`)))));
+          .when(tb.n > 0, (el) => el.child(div().text_size(12).text_color(sel ? t.accent_foreground : t.muted).child(`${tb.n}명`)))
+          .when(tb.ask > 0, (el) => el.child(div().text_size(12).font_semibold().whitespace_nowrap()
+            .text_color(sel ? t.accent_foreground : t.blocked).child(`· 답 필요 ${tb.ask}`)))));
     }
     return div().id("office-scene").absolute().left(left).top(top).w(B.W * k).h(B.H * k)
       .transition("left", { duration: 380, easing: "ease-out" })
@@ -703,7 +707,7 @@ class Floor {
   // 에이전트를 자리에 앉힌다. 얼굴이 보이는 안쪽 자리부터, 캐릭터는 주소로 고정하되 한 테이블에서 겹치지 않게.
   assign(mine) {
     const seats = {}, used = new Set(), chars = SPR.characters;
-    mine.slice(0, 4).forEach((a, n) => {
+    mine.slice(0, SEATS).forEach((a, n) => {
       let c = hash(a.address) % chars.length;
       while (used.has(c) && used.size < chars.length) c = (c + 1) % chars.length;
       used.add(c);
