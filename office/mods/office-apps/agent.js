@@ -437,6 +437,8 @@ export class AgentApp {
   // 활동: 마지막 말 → 이번 턴 도구 흐름 → 요청(접힘) → 고친 파일
   activity(r, v, cx, t) {
     const out = [];
+    // 세션을 못 찾아 폴더의 최근 기록을 짐작해 읽었다: 같은 폴더의 다른 에이전트 기록일 수 있다고 밝힌다
+    if (v.guessed) out.push(div().pt(10).text_size(12).text_color(t.muted).child("세션을 특정하지 못해 이 폴더의 최근 기록을 보여 줍니다"));
     const head = (text) => div().pt(16).pb(4).text_size(12).font_semibold().text_color(t.muted).child(text);
     const icon = (k) => svg(`${ME}/icons/act_${KIND[k] ?? "other"}.svg`).size(13).flex_none().text_color(t.dim);
     const spin = () => svg(SPINNER).size(13).flex_none().text_color(t.working).spin(900);
@@ -479,7 +481,8 @@ export class AgentApp {
 
     // 고친 파일: 짧은 경로. 파일 앱 폴더 안이면 누르면 파일 앱에서, 밖(임시 폴더·홈 등)이면 뷰어 창으로 연다.
     //   우클릭은 어디 있든 뷰어 창(파일 앱으로 옮겨 가지 않고 잠깐 볼 때).
-    if (v.edited.length) {
+    //   짐작한 기록(guessed)이면 다른 에이전트가 고친 파일일 수 있어 보이지 않는다.
+    if (v.edited.length && !v.guessed) {
       const root = filesRoot();
       out.push(head(`고친 파일 ${v.edited.length + v.moreEdited}`));
       out.push(...v.edited.map((f, i) => {
