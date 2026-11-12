@@ -1,5 +1,5 @@
 // 서버 앱의 "기기 추가" 화면(오른쪽 칸). `hc machine add`가 받는 것만 묻는다:
-//   SSH: 사용자(선택) + 호스트(필수) + 포트(선택) → TARGET `user@host:port` + 기기 이름(선택, --name, 기본은 호스트)
+//   SSH: 사용자(선택) + 호스트(필수) + 포트(선택) → TARGET `user@host:port`(IPv6+포트는 `user@[주소]:port`) + 기기 이름(선택, --name, 기본은 호스트)
 //   명령: --via <명령>(ssh처럼 마지막 인자로 셸 한 줄을 받는 명령) + 기기 이름(--name, 필수)
 // 미리보기와 실제 실행은 같은 args()를 쓴다.
 // 추가는 tty 없이 `hc machine add … --json`으로 돌린다. 비밀번호·새 호스트 키·herdr-core 설치처럼 물어보는 게 있으면
@@ -21,13 +21,40 @@ export function runHere(name, argv) {
   run("layout.show", { id: "office-term" });
 }
 
-// 사용자·호스트·포트 칸 → ssh 대상. 호스트 칸에 user@나 :포트가 있으면 쓰되, 따로 적은 칸이 우선한다(중복 없이).
+// 사용자·호스트·포트 칸 → { target, host, problems }. 호스트 칸에 user@나 :포트가 있으면 쓰되, 따로 적은 칸이 우선한다(중복 없이).
+//   IPv6: 호스트에 ':'가 둘 이상이면 주소 전체를 호스트로 보고 포트를 떼지 않는다. "[주소]"·"[주소]:포트" 표기도 받는다.
+//   대상 문자열: hc가 받는 `user@host:port`. IPv6에 포트가 붙으면 `user@[주소]:포트`로 묶는다(포트가 없으면 주소 그대로).
+//   problems: { user?, host?, port? } — 칸 아래 띄울 이유. 하나라도 있으면 target은 null(추가 못 함).
+export function parseSsh(user, hostField, port) {
+  const problems = {};
+  let rest = hostField.trim(), u = user.trim(), hostUser = "", p = port.trim(), hostPort = null;
+  const at = rest.lastIndexOf("@");
+  if (at >= 0) { hostUser = rest.slice(0, at).trim(); rest = rest.slice(at + 1).trim(); }
+  let host = rest;
+  if (rest.startsWith("[")) {
+    const m = /^\[([^\]]*)\](?::(.*))?$/.exec(rest);
+    if (!m) problems.host = "'[주소]' 또는 '[주소]:포트' 모양이어야 합니다";
+    else { host = m[1].trim(); if (m[2] !== undefined) hostPort = m[2].trim(); }
+  } else if ((rest.match(/:/g) ?? []).length === 1) {
+    host = rest.slice(0, rest.indexOf(":")).trim(); hostPort = rest.slice(rest.indexOf(":") + 1).trim();
+  }
+  // 포트: 포트 칸이 우선. 1~65535 정수가 아니면 그 값을 적은 칸에 이유를 띄운다(말없이 버리지 않음).
+  const portBad = (v) => (!/^\d+$/.test(v) || +v < 1 || +v > 65535 ? `포트는 1~65535 숫자여야 합니다('${v}')` : null);
+  if (p) { const why = portBad(p); if (why) problems.port = why; }
+  else if (hostPort !== null) { const why = portBad(hostPort); if (why) problems.host ??= why; else p = hostPort; }
+  // 사용자·호스트: 공백이 있거나 '-'로 시작하면 ssh가 옵션·여러 인자로 읽는다
+  const wordBad = (v, what) => (/\s/.test(v) ? `${what}에 공백을 쓸 수 없습니다` : v.startsWith("-") ? `${what}는 '-'로 시작할 수 없습니다` : null);
+  if (u) { const why = wordBad(u, "사용자"); if (why) problems.user = why; }
+  else if (hostUser) { const why = wordBad(hostUser, "사용자"); if (why) problems.host ??= why; else u = hostUser; }
+  if (host) { const why = wordBad(host, "호스트"); if (why) problems.host ??= why; }
+  else if (hostField.trim() && !problems.host) problems.host = "호스트가 비어 있습니다";
+  if (!host || Object.keys(problems).length) return { target: null, host: host || null, problems };
+  const h = p && host.includes(":") ? `[${host}]` : host;
+  return { target: `${u ? `${u}@` : ""}${h}${p ? `:${p}` : ""}`, host, problems };
+}
+// ssh 대상 문자열만(모자라거나 칸에 문제가 있으면 null)
 export function sshTarget(user, hostField, port) {
-  const m = /^(?:([^@]+)@)?(.*?)(?::(\d+))?$/.exec(hostField.trim());
-  const host = m?.[2]?.trim();
-  if (!host) return null;
-  const u = user.trim() || m[1] || "", p = /^\d+$/.test(port.trim()) ? port.trim() : m[3] || "";
-  return `${u ? `${u}@` : ""}${host}${p ? `:${p}` : ""}`;
+  return parseSsh(user, hostField, port).target;
 }
 
 // 기기 이름 규칙(hc 오류 문구): 1~32자, a-z 0-9 - _ ., 영문·숫자로 시작, 터미널 주소(t7, t1b) 모양 금지
@@ -47,7 +74,13 @@ export function suggestName(src) {
   if (ID_SHAPE.test(n)) n = `${n}-m`;
   return nameProblem(n) ? null : n;
 }
-const hostOf = (target) => (target ?? "").replace(/^.*@/, "").replace(/:\d+$/, "");
+// 대상 문자열의 호스트: user@를 떼고, "[주소]:포트"는 괄호 안, ':'가 하나면 :포트를 뗀다(IPv6 주소는 그대로).
+const hostOf = (target) => {
+  const r = (target ?? "").replace(/^.*@/, "");
+  const b = /^\[([^\]]*)\]/.exec(r);
+  if (b) return b[1];
+  return (r.match(/:/g) ?? []).length === 1 ? r.replace(/:\d+$/, "") : r;
+};
 
 export class AddForm {
   // 입력 상자는 렌더 중에 만들 수 없어 여기(서버 앱 init)에서 만든다.
@@ -88,8 +121,7 @@ export class AddForm {
   expectedName(args) {
     const i = args.indexOf("--name");
     if (i >= 0) return args[i + 1];
-    const target = args.at(-1);
-    return target.replace(/^.*@/, "").replace(/:\d+$/, "");
+    return hostOf(args.at(-1));
   }
 
   // 기기 이름 문제: { text, suggest } 또는 null. SSH에서 비우면 hc가 호스트를 이름으로 쓰므로 그것을 검사한다.
@@ -141,6 +173,9 @@ export class AddForm {
     const preview = args ? ["hc", ...args].map(shellArg).join(" ") : "hc machine add …";
     const bad = this.problem();
     const nameState = this.mode === "ssh" ? this.name : this.viaName;
+    // 사용자·호스트·포트 칸 아래: 이름 칸과 같은 빨간 이유 한 줄(이유가 있으면 args가 null이라 추가 버튼도 꺼진다)
+    const fp = this.mode === "ssh" ? parseSsh(this.user.value(), this.target.value(), this.port.value()).problems : {};
+    const note = (text) => (text ? div().text_size(11).text_color(t.ansi1).child(text) : null);
     // 이름 칸 아래: 빨간 이유 + 누르면 채우는 제안
     const nameNote = bad ? v_flex().gap(2)
       .child(div().text_size(11).text_color(t.ansi1).child(bad.text))
@@ -174,9 +209,9 @@ export class AddForm {
           .child(div().text_size(12).text_color(t.muted).child("연결 방식"))
           .child(h_flex().gap(4).child(tab("ssh", "SSH")).child(tab("via", "명령"))))
         .when(this.mode === "ssh", (el) => el
-          .child(field("사용자", this.user, "선택 · ssh로 접속할 계정"))
-          .child(field("호스트", this.target, "필수 · IP, 도메인, ssh config의 Host"))
-          .child(field("포트", this.port, "선택 · 비우면 22(또는 ssh config)"))
+          .child(field("사용자", this.user, "선택 · ssh로 접속할 계정", note(fp.user)))
+          .child(field("호스트", this.target, "필수 · IP(IPv6는 [주소]:포트도), 도메인, ssh config의 Host", note(fp.host)))
+          .child(field("포트", this.port, "선택 · 비우면 22(또는 ssh config)", note(fp.port)))
           .child(field("기기 이름", this.name, "영문 소문자·숫자·-_. 1~32자 · 비우면 호스트", nameNote)))
         .when(this.mode === "via", (el) => el
           .child(field("명령", this.via, "마지막 인자로 셸 한 줄을 받아 그쪽에서 돌리는 명령. 아무것도 묻지 않아야 합니다"))
