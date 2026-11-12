@@ -203,6 +203,10 @@ const confirm = (ctx, action, title, detail, opts = {}) => {
   register();
   openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", ctx, action: `branch.${action}`, title, detail, ...opts } });
 };
+// 갈라진 현재 브랜치를 리베이스로 끌어오기. 내 커밋을 다시 쌓고 충돌이 날 수 있어 메뉴·툴바 모두 확인 창을 거친다(Enter 주 동작 아님).
+const confirmPullRebase = (ctx) => confirm(ctx, "pullRebase", "리베이스로 끌어오기",
+  `${q(ctx.name)}가 원격 ${q(ctx.upstream?.short ?? "")}와 갈라졌습니다(${counts(ctx.ahead, ctx.behind)}). 원격 커밋을 받은 뒤 내 커밋 ${ctx.ahead}개를 그 위로 다시 쌓습니다. 충돌이 나면 새 탭에서 직접 풀어야 합니다.`,
+  { yes: "리베이스로 끌어오기", danger: true });
 const ask = (ctx, action, title, hint, value = "") => {
   register();
   openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 210, props: { role: "branch-prompt", ctx, action, title, hint, value } });
@@ -259,7 +263,7 @@ function itemsFor(ctx) {
       sync.push(item("다시 올리기", B("push"), C.remote, () => ACT.publish(ctx), "원격 브랜치를 새로 만듦"));
       sync.push(item("추적 정보 정리", B("prune"), C.remote, () => ACT.unsetUpstream(ctx), "--unset-upstream"));
     } else if (ahead && behind) {
-      if (me) sync.push(item("끌어와서 리베이스", B("pull"), C.remote, () => ACT.pullRebase(ctx), "git pull --rebase"));
+      if (me) sync.push({ ...item("리베이스로 끌어오기...", B("pull"), C.remote, () => confirmPullRebase(ctx), "git pull --rebase"), danger: true });
       // 원격 추적 해시를 못 읽었으면 lease를 걸 수 없으므로 강제 푸시를 내놓지 않는다.
       if (upstream.hash) sync.push({ ...item("강제 푸시...", B("push"), C.danger, () => confirm(ctx, "forcePush", "강제 푸시",
         `원격 ${q(upstream.short)}의 커밋 ${behind}개를 덮어씁니다. 원격이 목록에서 본 상태(${upstream.hash.slice(0, 7)})와 다르면 git이 거부합니다.`, { yes: "강제 푸시", danger: true }), "--force-with-lease"), danger: true });
@@ -698,8 +702,8 @@ export class BranchApp {
     // 끌어오기·푸시는 현재 브랜치 상태에 맞춰 동작을 고른다.
     const up = hc?.upstream && !hc.gone, ahead = hc?.ahead ?? 0, behind = hc?.behind ?? 0;
     const pullTip = !h ? "끌어오기 (현재 브랜치 없음)" : !up ? `끌어오기 (${h} · 추적하는 원격 없음)`
-      : ahead && behind ? `끌어와서 리베이스 (${h} · ${counts(ahead, behind)})` : behind ? `끌어오기 (${h} · ${behind}개 뒤처짐)` : `끌어오기 (${h} · 최신)`;
-    const pullFn = h && up && (() => (ahead && behind ? ACT.pullRebase(hc) : ACT.pull(hc)));
+      : ahead && behind ? `리베이스로 끌어오기... (${h} · ${counts(ahead, behind)})` : behind ? `끌어오기 (${h} · ${behind}개 뒤처짐)` : `끌어오기 (${h} · 최신)`;
+    const pullFn = h && up && (() => (ahead && behind ? confirmPullRebase(hc) : ACT.pull(hc)));
     const pushTip = !h ? "푸시 (현재 브랜치 없음)" : !up ? `원격에 올리기 (${h} · git push -u origin)`
       : ahead && behind ? `푸시 불가 (${h} · 먼저 끌어오세요)` : ahead ? `푸시 (${h} · ${ahead}개 앞섬)` : `푸시 (${h} · 올릴 것 없음)`;
     const pushFn = h && !(up && ahead && behind) && (() => (up ? ACT.push(hc) : ACT.publish(hc)));
@@ -710,6 +714,8 @@ export class BranchApp {
         .child(sep())
         .child(btn("fetch", B("fetch"), "가져오기 (git fetch --all --prune)", false, ok && (() => ACT.fetch(hc))))
         .child(btn("pull", B("pull"), pullTip, false, pullFn))
+        // 갈라졌으면 툴팁에만 숨기지 않고 아이콘 옆에 작게 적는다.
+        .when(Boolean(up && ahead && behind), (el) => el.child(div().flex_none().pr(2).text_size(11).text_color(t.muted).child(`↑${ahead} ↓${behind}`)))
         .child(btn("push", B("push"), pushTip, false, pushFn))
         .child(sep())
         .child(btn("new", B("branch-new"), base ? `새 브랜치 (${base.name}에서)` : "새 브랜치", false, ok && base && (() => {
