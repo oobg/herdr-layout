@@ -7,6 +7,8 @@
 //         제목은 title → .html의 <title> → description 첫 부분 → 파일 이름, 사무실 왼쪽 패널과 같다) · 길이(크기·기간).
 //         동작 하나: "이어하기"(새 탭에서 claude --resume <id>, 폴더는 그 세션의 cwd). 지금 열려 있으면 대신 "그 터미널로 가기".
 //         이어하기를 누르면 열린 터미널이 보일 때까지(최대 15초) "여는 중"이고, 클릭·Enter·더블클릭 모두 같은 세션을 다시 열지 않는다.
+//         작업 공간 앱이 재운 세션(data/office-apps/sleeping.json, 칸이 셸이거나 닫힘)은 목록에 흐린 "잠듦", 동작은 "깨우기"
+//         (workspace/sleeper.js wake: 원래 칸에서 이어 가고 기록 잠금으로 한 번만). 이어하기로 따로 열지 않는다.
 // 읽는 양: 목록은 stat + 처음 보는 파일만 앞부분의 user 줄 몇 개(sessions/list.js LIST_SH).
 //   마지막 말·고친 파일은 고른 세션만 끝 2MB(agent/activity.js readLog, 크기가 그대로면 다시 읽지 않는다),
 //   아티팩트는 고른 세션 전체를 grep하되 지난번 크기 뒤에 붙은 부분만 이어 읽는다.
@@ -18,6 +20,8 @@ import { spaces, panes, focused, exec, layout, run, setShared } from "herdr";
 import { openViewer } from "./files.js";
 import { termInfo, readLog, machineOf } from "./agent/activity.js";
 import { sayView } from "./agent/say.js";
+import { readSleeping, wake } from "./workspace/sleeper.js";
+import { paneState, wakingNow, SLEPT } from "./workspace/sleep.js";
 import { slug, parseListing, rowsOf, oneLine, whenLabel, stamp, span, bytes, collectArtifacts, artifactList,
   needsPageTitle, titleOfHtml, artifactTitle, LIST_SH, ARTS_SH, OPEN_SH, parseOpen } from "./sessions/list.js";
 
@@ -83,6 +87,8 @@ export class SessionsApp {
     this.pids = new Map();      // 터미널 주소 → { pid, at }
     this.launching = new Map(); // 이어하기 잠금: 세션 id → 누른 시각. 폴더가 바뀌어도 지우지 않는다(새 탭으로 포커스가 옮겨 간다)
     this.det = {};              // 세션 id → { size, log, acc, artsAt }
+    this.asleep = new Map();    // 세션 id → 잠든 기록(작업 공간 앱이 재운 것, data/office-apps/sleeping.json)
+    this.wakeWhy = {};          // 세션 id → 깨우지 못한 이유
     this.sel = null;
     this.more = false;          // 첫 요청을 펼쳤는지
     this.loaded = false; this.failed = false;
@@ -149,6 +155,7 @@ export class SessionsApp {
     this.sessions = next; this.total = total;
     if (!this.current() && next.length) { this.sel = next[0].id; this.more = false; changed = true; }
     if (await this.readOpen(loc, k)) changed = true;
+    if (await this.readAsleep(loc, k)) changed = true;
     const s = this.current();
     if (s && this.det[s.id]?.size !== s.size && await this.readDetail(s, loc, k)) changed = true;
     return changed;
@@ -182,6 +189,19 @@ export class SessionsApp {
     this.opened = next;
     // 잠금은 Herdr 터미널이 보일 때만 푼다(새 칸이 Claude로 잡히기 전에는 잠깐 "밖에서 열림"으로 읽힐 수 있다)
     for (const [id, o] of next) if (o.address) this.launching.delete(id);
+    return changed;
+  }
+
+  // 잠든 세션: 작업 공간 앱이 재운 기록 중 이 머신의 것이고, 그 칸이 아직 셸이거나 닫힌 것(깨울 수 있는 것).
+  //   이어하기 대신 깨우기로 연다(같은 대화가 두 곳에서 돌지 않게, 깨우기는 원래 칸에서 이어 간다).
+  async readAsleep(loc, k) {
+    const rs = await readSleeping().catch(() => []);
+    if (k !== this.where) return false;
+    const ps = panes() ?? [], next = new Map();
+    for (const r of rs) if ((r.machine ?? null) === (loc.on ?? null) && paneState(r, ps) !== "busy") next.set(r.session, r);
+    const sig = (m) => JSON.stringify([...m]);
+    const changed = sig(next) !== sig(this.asleep);
+    this.asleep = next;
     return changed;
   }
 
@@ -254,12 +274,32 @@ export class SessionsApp {
     const o = this.opened.get(s.id);
     if (o?.address) { this.launching.delete(s.id); return goTo(o); }
     if (this.launchingNow(s.id) || o?.elsewhere) return;
+    const z = this.asleep.get(s.id);
+    if (z) return this.wakeIt(s, z, cx);
     this.launching.set(s.id, Date.now());
     try { resume(s, this.loc.cwd); } catch { this.launching.delete(s.id); cx.notify(); return; }
     cx.notify();
     // 몇 번 다시 읽어 "지금 열림"으로 바꾼다. LAUNCH까지 안 보이면 잠금이 풀려 다시 시도할 수 있다(그때 다시 그린다).
     for (const ms of LOOKS) cx.timer.after(ms, (cx) => { this.pids.clear(); this.kick(cx); });
     cx.timer.after(LAUNCH + 50, (cx) => cx.notify());
+  }
+
+  // 잠든 세션 깨우기(작업 공간 앱과 같은 workspace/sleeper.js wake: 기록 잠금 · Claude Code가 뜬 것을 본 뒤 기록 삭제).
+  //   여는 동안은 이어하기와 같은 잠금(launching)으로 막는다. 실패면 잠든 채로 두고 이유를 상세에 보인다.
+  wakeIt(s, rec, cx) {
+    if (wakingNow(rec)) return;
+    this.launching.set(s.id, Date.now());
+    delete this.wakeWhy[s.id];
+    cx.notify();
+    cx.spawn(async (cx) => {
+      const r = await wake(rec).catch(() => ({ ok: false, why: "깨우지 못했습니다" }));
+      this.launching.delete(s.id);
+      if (r.ok || r.removed) this.asleep.delete(s.id);
+      if (r.why) this.wakeWhy[s.id] = r.why;
+      if (r.to?.terminal) goTo({ address: r.to.terminal, space: r.to.space });
+      this.pids.clear(); this.kick(cx);
+      cx.notify();
+    });
   }
 
   emptyState() {
@@ -279,9 +319,10 @@ export class SessionsApp {
   // ── 그리기 ─────────────────────────────────────────────
   // 목록 오른쪽 낱말: 열린 것은 "지금 열림"(Herdr 밖이면 "다른 곳에서 열림"), 아니면 흐린 시각
   right(s, t) {
-    const o = this.opened.get(s.id);
+    const o = this.opened.get(s.id), z = this.asleep.get(s.id);
     if (o?.address) return ["지금 열림", t.working];
-    if (this.launchingNow(s.id)) return ["여는 중", t.muted];   // 다른 곳에서 열림보다 먼저
+    if (this.launchingNow(s.id)) return [z ? "깨우는 중" : "여는 중", t.muted];   // 다른 곳에서 열림보다 먼저
+    if (z) return [wakingNow(z) ? "깨우는 중" : SLEPT, t.muted];
     if (o?.elsewhere) return ["다른 곳에서 열림", t.muted];
     return [whenLabel(s.mtime), t.dim];
   }
@@ -362,6 +403,11 @@ export class SessionsApp {
     items.push(div().text_size(12).text_color(t.muted)
       .child([bytes(s.size), start ? span(s.mtime - start) : "", start ? `${stamp(start)} ~ ${stamp(s.mtime)}` : stamp(s.mtime)].filter(Boolean).join(" · ")));
     if (s.cwd && s.cwd !== this.loc.cwd) items.push(div().pt(2).text_size(12).text_color(t.dim).child(`폴더 ${tilde(s.cwd)}`));
+    const z = !o ? this.asleep.get(s.id) : null, waking = Boolean(z) && (this.launchingNow(s.id) || wakingNow(z));
+    if (z) items.push(div().pt(14).text_size(12).text_color(t.muted).child(paneState(z, panes() ?? []) === "gone"
+      ? `${SLEPT} · 작업 공간 앱이 재웠습니다. 칸이 닫혀 깨우면 새 탭에서 이어 갑니다`
+      : `${SLEPT} · 작업 공간 앱이 재웠습니다. 깨우면 '${z.tabName || "원래"}' 탭의 그 칸에서 이어 갑니다`));
+    if (z && this.wakeWhy[s.id]) items.push(div().pt(2).text_size(12).text_color(t.muted).child(this.wakeWhy[s.id]));
     if (o?.elsewhere && !this.launchingNow(s.id)) items.push(div().pt(14).text_size(12).text_color(t.muted).child("Herdr 밖의 터미널에서 열려 있어 여기서 이어 하지 않습니다"));
 
     return v_flex().size_full().min_h(0)
@@ -369,7 +415,9 @@ export class SessionsApp {
         .child(div().flex_1().min_w(0).truncate().text_size(14).font_semibold().text_color(t.foreground).child(oneLine(s.ask) || "요청 없음"))
         .when(Boolean(o?.address), (el) => el.child(btn("sessions-go", "그 터미널로 가기", (_e, cx) => this.act(s, cx))))
         .when(!o?.address && this.launchingNow(s.id), (el) => el.child(div().flex_none().px(10).py(4).text_size(12).text_color(t.dim).child("여는 중")))
-        .when(!o && !this.launchingNow(s.id), (el) => el.child(btn("sessions-resume", "이어하기", (_e, cx) => this.act(s, cx)))))
+        .when(Boolean(z) && waking, (el) => el.child(div().flex_none().px(10).py(4).text_size(12).text_color(t.dim).child("깨우는 중")))
+        .when(Boolean(z) && !waking, (el) => el.child(btn("sessions-wake", "깨우기", (_e, cx) => this.act(s, cx))))
+        .when(!o && !z && !this.launchingNow(s.id), (el) => el.child(btn("sessions-resume", "이어하기", (_e, cx) => this.act(s, cx)))))
       .child(v_flex().id("sessions-detail").flex_1().min_h(0).overflow_y_scrollbar().px(20).py(14).gap(2).children(items));
   }
 }

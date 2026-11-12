@@ -120,7 +120,7 @@ export async function sleepAgents(ctx) {
 // ── 깨우기 ───────────────────────────────────────────────
 // 칸이 셸이면 그 칸에서 이어 가고, 칸이 없어졌으면 같은 폴더에 새 탭을 연다. 셸이 아니면 기록만 지운다.
 // 잠든 기록은 그 칸(새 탭이면 새 칸)이 Claude Code가 된 것을 본 뒤에만 지운다. 못 보면 기록을 두고 이유를 돌려준다(다시 깨울 수 있다).
-// 돌려주는 값: { ok, to?: { space, tab, pane }(옮겨 갈 곳), why?(실패 이유), removed?(기록을 지웠는지) }
+// 돌려주는 값: { ok, to?: { space, tab, pane, terminal }(옮겨 갈 곳), why?(실패 이유), removed?(기록을 지웠는지) }
 const WAIT = 15;   // 깨운 뒤 Claude Code가 뜨기를 기다리는 초
 
 // 조건을 1초마다 WAIT초까지 본다(setTimeout이 없어 sleep 프로세스로 기다린다). 맞으면 그 값, 아니면 null.
@@ -171,7 +171,7 @@ async function wakeLocked(rec) {
     if (!up) return { ok: false, why: `${WAIT}초 안에 Claude Code가 뜨지 않았습니다 · 그 칸에서 확인해 주세요` };
     await drop();
     const space = spaces().find((s) => s.tabs.some((x) => x.id === p.tab));
-    return { ok: true, to: { space: space?.id ?? rec.space, tab: p.tab, pane: p.pane } };
+    return { ok: true, to: { space: space?.id ?? rec.space, tab: p.tab, pane: p.pane, terminal: rec.address } };
   }
   // 칸이 없다: 같은 폴더에 새 탭. 원격 기록은 그 스페이스가 남아 있을 때만(다른 스페이스에 열면 이 컴퓨터에서 돈다).
   const sp = spaces().find((s) => s.id === rec.space);
@@ -188,7 +188,7 @@ async function wakeLocked(rec) {
   if (!p) return { ok: false, why: `새 탭에서 ${WAIT}초 안에 Claude Code가 뜨지 않았습니다 · 그 탭에서 확인해 주세요` };
   await drop();
   const space = spaces().find((s) => s.tabs.some((x) => x.id === p.tab));
-  return { ok: true, to: { space: space?.id ?? rec.space, tab: p.tab, pane: p.pane } };
+  return { ok: true, to: { space: space?.id ?? rec.space, tab: p.tab, pane: p.pane, terminal: p.terminal } };
 }
 
 // 기록만 지우기(칸이 닫힌 기록을 버릴 때)
