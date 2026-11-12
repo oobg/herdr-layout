@@ -364,14 +364,15 @@ export class Menu {
 
 // 확인 창(role "confirm"). props: { action, title, detail, ctx, yes?, danger? }
 // yes: 실행 버튼 이름(동사, 없으면 "확인"). danger: 되돌리기 어려운 동작 — 실행 버튼을 빨간 글씨로,
-// 처음 포커스를 "취소"에 둔다. Enter는 포커스된 버튼을 누른다(버튼에 포커스가 없으면 보통은 실행,
-// danger면 "취소"로 포커스만). Tab·Shift+Tab·←→로 두 버튼 사이를 옮긴다. Esc는 닫기.
+// 처음 포커스를 "취소"에 둔다. 보통은 처음 포커스를 실행 버튼에 둔다. 포커스된 버튼은 굵은 강조색 테두리.
+// Enter는 포커스된 버튼만 누른다(버튼에 포커스가 없으면 실행하지 않고 처음 버튼으로 포커스만).
+// Tab·Shift+Tab·←→로 두 버튼 사이를 옮긴다. Esc는 닫기.
 export class Confirm {
   init(_p, cx) {
     this.h = cx.focus_handle();
     this.no = cx.focus_handle();
     this.ok = cx.focus_handle();
-    (props().danger ? this.no : this.h).focus();
+    (props().danger ? this.no : this.ok).focus();
   }
 
   yes() {
@@ -393,15 +394,16 @@ export class Confirm {
     const button = (id, text, handle, primary, action) => {
       const focused = handle.is_focused();
       return h_flex().id(id).track_focus(handle).h(32).px(14).items_center().rounded(8).cursor_pointer().text_size(12.5)
-        .border_1().border_color(focused ? t.accent : primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
+        // 포커스 테두리: 채운 버튼 위에서도 보이게 2px 강조색(아닐 때도 2px 자리를 잡아 크기가 그대로)
+        .border_2().border_color(focused ? t.accent : primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
         .text_color(primary ? t.solid_foreground : danger && handle === this.ok ? t.ansi1 : t.foreground)
         .when(danger && handle === this.ok, (el) => el.font_semibold())
         .hover((s) => s.opacity(0.88)).on_click(action).child(text);
     };
     return v_flex().id("files-confirm").track_focus(this.h).size_full().p(18).gap(12).bg(t.popover).text_size(13)
       .on_key_down((e, cx) => {
-        // 버튼에 포커스가 없을 때(창 빈 곳을 눌렀을 때 등): 보통은 실행, 위험하면 실행하지 않고 "취소"로 포커스만.
-        if (e.key === "enter") this.ok.is_focused() ? this.yes() : this.no.is_focused() ? this.cancel() : danger ? (this.no.focus(), cx.notify()) : this.yes();
+        // 버튼에 포커스가 없을 때(창 빈 곳을 눌렀을 때 등): 실행하지 않고 처음 버튼(위험하면 "취소", 보통은 실행)으로 포커스만.
+        if (e.key === "enter") this.ok.is_focused() ? this.yes() : this.no.is_focused() ? this.cancel() : ((danger ? this.no : this.ok).focus(), cx.notify());
         else if (e.key === "escape") this.cancel();
         else if (e.key === "tab" || e.key === "left" || e.key === "right") { (this.ok.is_focused() ? this.no : this.ok).focus(); cx.notify(); }
         else return;
