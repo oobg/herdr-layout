@@ -4,8 +4,9 @@
 //   오른쪽: 고른 실행 하나. 머리줄(상태 · 워크플로 · 브라우저), 제목·브랜치·이벤트·커밋, 동작(다시 실행 · 취소 · 끝나면 알림 ·
 //          에이전트에게 알리기), 잡 목록(도는·실패한 잡은 단계까지 펼침, 지금 도는 단계 강조), 실패 로그(끝 80줄), 배포 환경.
 // 순수 함수(상태 매핑·걸린 시간·로그 자르기·필터·핀)는 actions/run.js(node로 시험할 수 있다).
-// 다시 실행·취소·작업 중인 에이전트에게 보내기는 menu.js의 확인 창(confirm)을 거친다. 확인 창은 ACTIONS[이름](ctx)만 부르므로
+// 다시 실행·취소는 menu.js의 확인 창(confirm)을 거친다. 확인 창은 ACTIONS[이름](ctx)만 부르므로
 // 이 모듈이 불릴 때 actions.* 동작을 더한다(pr.js와 같은 방식). 동작이 끝나면 TICK을 바꿔 앱이 다시 읽게 한다.
+// 에이전트에게 실패 알리기는 send.js(공용): 지금 스페이스의 에이전트 중 고른 하나에게, 상태 규칙·확인 창도 거기서.
 // 갱신: 이 앱이 그려지는 동안만(에이전트 앱과 같은 방식: 알렸는데 그려지지 않았으면 멈추고, 다시 그려지면 깨운다).
 //   도는 실행이 있으면 10초, 없으면 60초. 한 번에 목록 하나 + 고른 실행 하나만 gh로 읽는다.
 //   로그는 끝난 실행에서 한 번만(실행 id·시도 번호로 기억), 배포는 1분(없으면 10분)에 한 번.
@@ -15,9 +16,10 @@
 
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, focused, agents, exec, hc, openOverlay, notify, shared, setShared } from "herdr";
+import { spaces, panes, focused, exec, openOverlay, notify, shared, setShared } from "herdr";
 import { ACTIONS } from "./menu.js";
 import { failHint } from "./pr/status.js";
+import { candidates, chosen, recipients, sendToAgent } from "./send.js";
 import {
   FILTERS, state, active, elapsed, dur, ago, runTime, jobTime, filterRuns, tailLog, failSpot, tellText, latestDeploys, addPin, dropPin, MAX_PINS,
 } from "./actions/run.js";
@@ -44,7 +46,7 @@ const firstLine = (s) => String(s ?? "").trim().split("\n")[0].slice(0, 200);
 function load(k, d) { try { return JSON.parse(localStorage.getItem(k) ?? "null") ?? d; } catch { return d; } }
 function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 이번 실행 동안만 */ } }
 
-// ── 확인 창이 부르는 동작. ctx는 값만: { id, root, on, name } / { address, text, who }
+// ── 확인 창이 부르는 동작. ctx는 값만: { id, root, on, name }
 
 async function gh(ctx, args, done, failed) {
   let r;
@@ -61,14 +63,6 @@ async function gh(ctx, args, done, failed) {
 
 ACTIONS["actions.rerun"] = (ctx) => gh(ctx, ["run", "rerun", String(ctx.id), "--failed"], "실패한 잡을 다시 실행합니다", "다시 실행하지");
 ACTIONS["actions.cancel"] = (ctx) => gh(ctx, ["run", "cancel", String(ctx.id)], "실행을 취소했습니다", "취소하지");
-ACTIONS["actions.tell"] = async (ctx) => {
-  let r;
-  try { r = await hc(["send", ctx.address, ctx.text]); }
-  catch (e) { r = { code: -1, stdout: "", stderr: String(e?.message ?? e) }; }
-  if (r.code === 0) notify({ title: `${ctx.who}에게 실패를 알렸습니다`, body: firstLine(ctx.text), level: "info" });
-  else notify({ title: `${ctx.who}에게 보내지 못했습니다`, body: firstLine(r.stderr || r.stdout) || "hc send가 실패했습니다", level: "error" });
-};
-
 const confirm = (action, title, detail, ctx, opts = {}) =>
   openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", action, title, detail, ctx, ...opts } });
 
@@ -479,30 +473,19 @@ export class ActionsApp {
       out.push(btn("act-cancel", "취소", t.ansi1, () => confirm("actions.cancel", "실행 취소",
         `${ctx.name}\n도는 잡을 멈춥니다. 다시 돌리려면 처음부터 다시 실행해야 합니다.`, ctx, { yes: "실행 취소", danger: true })));
     }
+    let pick = null;
     if (!going && spot) {
-      for (const a of this.spaceAgents()) {
-        const label = this.spaceAgents().length > 1 ? `${a.title.slice(0, 14) || "에이전트"}에게 알리기` : "에이전트에게 실패 알리기";
-        out.push(btn(`act-tell-${a.address}`, label, t.foreground, () => this.tell(v, a)));
-      }
+      const list = candidates({ space: location().space }), to = chosen(list, this.tellTo);
+      if (to) out.push(btn("act-tell", "에이전트에게 실패 알리기", t.foreground, () => this.tell(v, to)));
+      pick = recipients("act", list, to?.address, (address) => { this.tellTo = address; }, t);
     }
-    return h_flex().flex_wrap().gap(8).items_center().children(out);
-  }
-
-  // 지금 스페이스의 에이전트(최대 3). 포커스된 것을 앞에.
-  spaceAgents() {
-    const sp = location().space;
-    return (agents() ?? []).filter((a) => a.space === sp).sort((a, b) => Number(b.focused) - Number(a.focused)).slice(0, 3);
+    const row = h_flex().flex_wrap().gap(8).items_center().children(out);
+    return pick ? v_flex().gap(8).child(row).child(pick) : row;
   }
 
   tell(v, a) {
     const entry = this.logs.get(`${v.databaseId}:${v.attempt ?? 1}`);
-    const text = tellText(v, entry?.log ?? null, TELL_LINES);
-    const ctx = { address: a.address, text, who: a.title || "에이전트" };
-    if (a.status === "working" || a.status === "blocked") {
-      confirm("actions.tell", `${ctx.who}에게 실패 알리기`,
-        `${a.status === "working" ? "에이전트가 작업 중입니다. 지금 보내면 하던 일 뒤에 이어서 읽습니다." : "에이전트가 답을 기다리는 중이라 보내지 못할 수 있습니다."}\n\n${firstLine(text)}`,
-        ctx, { yes: "보내기" });
-    } else ACTIONS["actions.tell"](ctx);
+    sendToAgent(a, tellText(v, entry?.log ?? null, TELL_LINES));
   }
 
   // 잡 목록: 도는·실패한 잡은 단계까지 펼친다(누르면 접고 편다).

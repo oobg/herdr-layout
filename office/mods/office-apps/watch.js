@@ -1,17 +1,17 @@
 // office-apps의 출력 감시 앱: 셸·개발 서버·테스트 터미널의 출력에서 오류 줄을 모아 본다(iTerm2 Triggers·Captured Output처럼).
 //   왼쪽: 머리줄(에이전트 포함 · 모두 지우기) + 걸린 줄 목록(최근 순). 줄 = 터미널(스페이스 › 탭 · 프로그램) · 시각 / 걸린 줄 앞부분(모노 12) · ×n
-//   오른쪽: 걸린 줄과 앞뒤 2줄 문맥(모노), 동작 = 그 터미널로 가기 · 에이전트에게 보내기(같은 스페이스의 에이전트에게 hc send) · 지우기
+//   오른쪽: 걸린 줄과 앞뒤 2줄 문맥(모노), 동작 = 그 터미널로 가기 · 에이전트에게 보내기(그 터미널과 같은 스페이스의 에이전트 중 고른 하나) · 지우기
 // 대상: panes()의 터미널 중 에이전트가 아닌 것(에이전트 앱 withSilent와 같은 판정). 에이전트는 "에이전트 포함"을 켜면 본다.
 //   git·less·vim처럼 글을 보여 주기만 하는 프로그램은 코드·문서의 "error"가 걸리므로 늘 뺀다.
 // 데이터: 터미널마다 `hc read <주소> --json --lines 1000`(원격은 주소에 machine/이 붙어 hc가 처리한다).
 //   지난번 글과 같으면 건너뛰고, 다르면 새로 생긴 줄만 규칙에 넣는다(watch/rules.js: fresh·scan·merge).
 //   처음 읽을 때는 읽은 창 전체를 본다: 이 앱은 보일 때만 읽으므로, 열기 전에 난 오류가 사람이 보러 온 것이다.
 // 갱신: 이 앱이 그려지는 동안만 10초마다. 매 차례 끝에 다시 그리라고 알리고, 알렸는데 그려지지 않았으면(다른 앱·칸 숨김) 멈춘다.
-// "에이전트에게 보내기"는 작업 중이면 확인 창(menu.js Confirm) → ACTIONS["watch.send"].
+// "에이전트에게 보내기"는 send.js(공용): 받는 사람 고르기 줄, 상태 규칙(입력 대기면 보내지 않음, 작업 중·상태 모름은 확인 창)도 거기서.
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { hc, panes, spaces, agents, layout, run, setShared, openOverlay, notify } from "herdr";
-import { ACTIONS } from "./menu.js";
+import { hc, panes, spaces, layout, run, setShared, notify } from "herdr";
+import { candidates, chosen, recipients, sendToAgent } from "./send.js";
 import { lines, fresh, scan, merge, fillAfter, message } from "./watch/rules.js";
 
 const EVERY = 10000;
@@ -20,7 +20,6 @@ const CODE_FONT = "D2Coding";
 const SILENT_AGENT = /claude|codex|grok|antigravity|gemini|cursor|opencode|\bamp\b|\bpi\b/i;
 // 글을 보여 주기만 하는 프로그램(페이저·편집기·모니터): 화면의 코드·문서가 걸리므로 보지 않는다
 const VIEWER = /^(git|less|more|most|man|bat|vi|vim|nvim|neovim|nano|emacs|hx|helix|micro|htop|btop|top|lazygit|tig|gitui|yazi|ranger|lf|nnn)$/i;
-const STATUS = { working: "작업 중", blocked: "입력 대기", done: "끝남", idle: "대기 중" };
 
 const isAgent = (p) => Boolean(p.status || p.program?.agent || SILENT_AGENT.test(p.program?.key ?? ""));
 const isViewer = (p) => VIEWER.test(p.program?.key ?? "") || VIEWER.test(p.program?.name ?? "");
@@ -58,22 +57,8 @@ function goTo(address) {
   }
 }
 
-// 같은 스페이스에서 받을 에이전트: 같은 탭 → 포커스된 것 → 첫 번째. 그 터미널 자신은 빼고, 입력 대기는 맨 뒤.
-function recipient(term) {
-  if (!term) return null;
-  const list = (agents() ?? []).filter((a) => a.space === term.space && a.address !== term.address);
-  const rank = (a) => (a.tab === term.tab ? 0 : 2) + (a.focused ? 0 : 1) + (a.status === "blocked" ? 4 : 0);
-  return list.slice().sort((a, b) => rank(a) - rank(b))[0] ?? null;
-}
-const agentName = (a) => (a.tab_name && a.tab_name !== String(a.tab_index) ? `${a.program?.name || a.title} (${a.tab_name})` : a.program?.name || a.title || a.address);
-
-// 확인 창은 따로 뜨는 복사본이라 값만 받는다: ctx = { address, name, text }
-async function send(ctx) {
-  const r = await hc(["send", ctx.address, ctx.text, "--json"]).catch((e) => ({ code: 1, stdout: "", stderr: String(e?.message ?? e) }));
-  if (r.code === 0) notify({ title: "에이전트에게 보냈습니다", body: ctx.name, level: "info" });
-  else notify({ title: `${ctx.name}에게 보내지 못했습니다`, body: (r.stderr || r.stdout || "").trim().slice(0, 300), level: "error" });
-}
-ACTIONS["watch.send"] = send;
+// 받을 후보: 그 터미널과 같은 스페이스의 에이전트(같은 탭이 앞, 그 터미널 자신은 뺌). 순서·표시·상태 규칙은 send.js.
+const recipientsOf = (term) => (term ? candidates({ space: term.space, near: { tab: term.tab, exclude: term.address } }) : []);
 
 export class WatchApp {
   init(_p, _cx) {
@@ -222,20 +207,11 @@ export class WatchApp {
     const x = this.current();
     if (!x) return null;
     const term = terminalsNow().find((m) => m.address === x.terminal) ?? null;
-    const to = recipient(term);
+    const list = recipientsOf(term), to = chosen(list, this.to);
     const btn = (id, text, fn) => div().id(id).flex_none().px(10).py(4).rounded(6).border_1().border_color(t.border).text_size(12)
       .text_color(t.foreground).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(fn).child(text);
-    const note = (text) => div().flex_none().text_size(12).text_color(t.dim).child(text);
 
-    const sendIt = () => {
-      if (!to) return;
-      const ctx = { address: to.address, name: agentName(to), text: message(this.names[x.terminal] ?? x.terminal, x) };
-      if (to.status === "working") {
-        openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", action: "watch.send",
-          title: "작업 중인 에이전트에게 보낼까요?", ctx, yes: "보내기",
-          detail: `${ctx.name}이(가) 지금 작업 중입니다. 보내면 하던 일 사이에 이 오류 내용이 들어갑니다.` } });
-      } else send(ctx);
-    };
+    const sendIt = () => { if (to) sendToAgent(to, message(this.names[x.terminal] ?? x.terminal, x)); };
 
     const mono = (l, hit) => div().font_family(CODE_FONT).text_size(12).min_h(18)
       .text_color(hit ? t.foreground : t.muted).when(hit, (el) => el.font_semibold()).child(l || " ");
@@ -246,14 +222,12 @@ export class WatchApp {
       .child(h_flex().h(40).flex_none().px(14).gap(8).items_center().border_b_1().border_color(t.border)
         .child(div().flex_1().min_w(0).truncate().text_size(14).font_semibold().text_color(t.foreground).child(this.names[x.terminal] ?? x.terminal))
         .when(Boolean(term), (el) => el.child(btn("watch-go", "그 터미널로 가기", () => goTo(x.terminal))))
-        .when(Boolean(term && to), (el) => el.child(btn("watch-send", `${to.program?.name || "에이전트"}에게 보내기`, sendIt)))
-        .when(Boolean(term && !to), (el) => el.child(note("이 스페이스에 에이전트가 없습니다"))))
+        .when(Boolean(term && to), (el) => el.child(btn("watch-send", "에이전트에게 보내기", sendIt))))
       .child(v_flex().id("watch-detail").flex_1().min_h(0).overflow_y_scrollbar().px(20).py(14).gap(10)
         .child(div().text_size(12).text_color(t.dim).child(meta.join(" · ")))
         .child(v_flex().gap(1)
           .children([...x.before.map((l) => mono(l, false)), mono(x.line, true), ...x.after.map((l) => mono(l, false))]))
-        .when(Boolean(to), (el) => el.child(div().text_size(12).text_color(t.dim)
-          .child(`받는 에이전트: ${agentName(to)} · ${STATUS[to.status] ?? "상태 모름"}`)))
+        .when(Boolean(term), (el) => el.child(recipients("watch", list, to?.address, (address) => { this.to = address; }, t)))
         .child(h_flex().child(btn("watch-dismiss", "지우기", (_e, cx) => this.dismiss(x.id, cx)))));
   }
 }

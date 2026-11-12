@@ -6,21 +6,20 @@
 //         지금 작업 공간에 메모가 없으면 맨 위에 "이 작업 공간 메모 시작".
 //   오른쪽: 머리줄(이름 · 보낼 내용 전체|남은 할 일 · 에이전트에게 보내기 · 복사) → 할 일 체크 목록(누르면 토글하고 저장)
 //         + 할 일 추가 입력(Enter) → 메모 편집기(멈추고 1초 뒤 자동 저장, "저장됨 · 방금").
-//   보내기: 지금 스페이스의 에이전트 터미널로 `hc send <주소> -- <글>`. 여럿이면 머리줄 아래에서 고르고,
-//         작업 중·상태 모름이면 확인 창(ACTIONS["notes.send"]), 입력 대기면 보내지 않는다(대화 상자에 답이 들어갈 수 있어서).
+//   보내기: send.js(공용). 지금 스페이스의 에이전트 중 머리줄 아래 "보낼 곳"에서 고른 하나에게. 상태 규칙(입력 대기면 보내지 않음,
+//         작업 중·상태 모름은 확인 창)도 거기서. 보는 메모가 지금 작업 공간의 것이 아니면 늘 확인 창에서 두 이름을 밝힌다.
 // 셸 계약: move(delta, cx) 작업 공간 이동 · activate(cx) 메모 편집기로 키보드 · emptyState() · dispose()(남은 저장을 마친다).
 import { div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import { agents, spaces, panes, focused, exec, hc, home, appHome, readTextFile, writeTextFile, notify, openOverlay } from "herdr";
+import { spaces, panes, focused, exec, home, appHome, readTextFile, writeTextFile, notify } from "herdr";
 import * as fs from "fs/promises";
-import { ACTIONS } from "./menu.js";
+import { candidates, chosen, recipients, sendToAgent } from "./send.js";
 import {
   DIR, noteId, notePath, rootName, parseFile, serialize, parseTodos, split, join, toggleLine, todoLine,
   payload, ago, order,
 } from "./notes/model.js";
 
 const SAVE_MS = 1000;
-const STATUS = { working: "작업 중", blocked: "입력 대기", done: "끝남", idle: "대기 중" };
 
 function load(k, d) { try { return JSON.parse(localStorage.getItem(k) ?? "null") ?? d; } catch { return d; } }
 function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 이번 실행 동안만 */ } }
@@ -45,42 +44,14 @@ async function resolveRoot({ cwd, folder, on }) {
 
 const tilde = (p) => { const h = home(); return p === h ? "~" : p.startsWith(h + "/") ? `~${p.slice(h.length)}` : p; };
 
-// 보내기·복사가 쓰는 동작. 확인 창(오버레이 복사본)에서도 부르므로 모듈 최상위에 두고 값만 받는다.
-//   ctx = { address, text, label }
-async function sendNow(ctx) {
-  // "--" 뒤는 옵션으로 읽지 않는다(글이 "-"로 시작해도). --force는 쓰지 않는다: 입력 대기면 hc가 거절한다.
-  const r = await hc(["send", ctx.address, "--", ctx.text]).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
-  if (r.code === 0) notify({ title: `${ctx.label}에게 보냈습니다`, body: ctx.text.split("\n")[0], level: "info" });
-  else notify({ title: `${ctx.label}에게 보내지 못했습니다`, body: (r.stderr || r.stdout || "").trim().slice(0, 300), level: "error" });
-}
-function register() { ACTIONS["notes.send"] = (ctx) => { sendNow(ctx); }; }
-register();
-
 async function copyText(text) {
   const r = await exec("sh", ["-c", 'printf %s "$1" | pbcopy', "copy", text]).catch(() => ({ code: 1 }));
   if (r.code === 0) notify({ title: "메모를 복사했습니다", body: text.split("\n")[0], level: "info" });
   else notify({ title: "복사하지 못했습니다", level: "error" });
 }
 
-// 지금 스페이스의 에이전트: 상태를 알리는 것(agents()) + 상태를 알리지 않는 에이전트 프로그램(Codex 등, agent.js withSilent와 같은 규칙)
-const SILENT_AGENT = /claude|codex|grok|antigravity|gemini|cursor|opencode|\bamp\b|\bpi\b/i;
-function spaceAgents(space) {
-  if (!space) return [];
-  const tabs = new Map(space.tabs.map((x) => [x.id, x]));
-  const list = agents().filter((a) => a.space === space.id)
-    .map((a) => ({ address: a.address, status: a.status, name: a.program?.name || a.title || a.address, tab: a.tab_name, title: a.title }));
-  const have = new Set(list.map((a) => a.address));
-  for (const p of panes() ?? []) {
-    if (!p.terminal || p.status || have.has(p.terminal) || !tabs.has(p.tab)) continue;
-    if (!(p.program?.agent || SILENT_AGENT.test(p.program?.key ?? ""))) continue;
-    list.push({ address: p.terminal, status: null, name: p.program?.name || p.title || p.terminal, tab: tabs.get(p.tab)?.name ?? "", title: p.title });
-  }
-  return list;
-}
-
 export class NotesApp {
   init(_p, cx) {
-    register();
     this.notes = new Map();   // id → { id, root, machine, name, updated, open, path }
     this.scanned = false;
     this.here = null;         // 지금 작업 공간 { id, root, machine, name }
@@ -91,7 +62,7 @@ export class NotesApp {
     this.state = "saved";     // saved | dirty | saving | error
     this.savedAt = null;
     this.saveTask = null;
-    this.picking = false;     // 에이전트 고르기 줄을 펼쳤는지
+    this.to = null;           // 보낼 에이전트 주소(지금 스페이스 안에서)
     this.which = load("notes.which", "all");   // 보낼 내용: all | todo
     this.rows = [];
 
@@ -158,7 +129,6 @@ export class NotesApp {
     if (id === this.sel && this.cur?.id === id) return;
     this.flush(cx);
     this.sel = id;
-    this.picking = false;
     this.cur = null;
     this.clash = null;
     this.loadingId = id;
@@ -333,12 +303,13 @@ export class NotesApp {
       .child(div().flex_none().text_size(14).font_semibold().text_color(t.foreground).child(c.name))
       .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(where))
       .child(h_flex().flex_none().gap(2).child(seg("all", "전체")).child(seg("todo", "남은 할 일")))
-      .child(btn("nt-send", "에이전트에게 보내기", (_e, cx) => this.send(text, space, cx), !text || !space))
+      .child(btn("nt-send", "에이전트에게 보내기", () => this.send(text, space), !text || !space))
       .child(btn("nt-copy", "복사", () => copyText(text), !text));
 
     return v_flex().size_full().min_h(0)
       .child(head)
-      .when(this.picking, (el) => el.child(this.picker(text, space, t)))
+      .when(Boolean(space), (el) => el.child(div().flex_none().px(14).py(6).border_b_1().border_color(t.border)
+        .child(recipients("nt", this.agentsHere(space), this.target(space)?.address, (address) => { this.to = address; }, t))))
       .child(v_flex().flex_1().min_h(0).px(20).py(14).gap(6)
         .child(this.todoView(c, cx, t))
         .child(h_flex().pt(10).items_center()
@@ -379,51 +350,15 @@ export class NotesApp {
         .text_size(12.5).text_color(t.foreground));
   }
 
-  // ── 보내기 ────────────────────────────────────────────
-  // 에이전트가 하나면 바로 그 에이전트에게, 여럿이면 머리줄 아래에 고르기 줄을 편다.
-  send(text, space, cx) {
-    if (!text) return;
-    const list = spaceAgents(space);
-    if (!list.length) { notify({ title: "이 스페이스에 에이전트가 없습니다", body: "에이전트를 띄운 뒤 다시 보내세요", level: "info" }); return; }
-    if (list.length === 1) { this.sendTo(list[0], text, space); return; }
-    this.picking = !this.picking;
-    cx.notify();
-  }
+  // ── 보내기(send.js) ───────────────────────────────────
+  agentsHere(space) { return space ? candidates({ space: space.id }) : []; }
+  target(space) { return chosen(this.agentsHere(space), this.to); }
 
-  // 대기 중·끝남이면 바로, 작업 중·상태 모름이면 확인 창, 입력 대기면 보내지 않는다.
-  //   보는 메모가 지금 작업 공간의 것이 아니면 늘 확인 창에서 두 이름을 밝힌다.
-  sendTo(a, text, space) {
-    this.picking = false;
-    const label = a.tab ? `${a.name}(${a.tab})` : a.name;
+  // 보는 메모가 지금 작업 공간의 것이 아니면 늘 확인 창에서 두 이름을 밝힌다.
+  send(text, space) {
+    const a = text ? this.target(space) : null;
+    if (!a) { if (text) notify({ title: "이 스페이스에 에이전트가 없습니다", body: "에이전트를 띄운 뒤 다시 보내세요", level: "info" }); return; }
     const foreign = this.cur && this.here && this.cur.id !== this.here.id;
-    const ctx = { address: a.address, text, label };
-    if (a.status === "blocked") {
-      notify({ title: `${label}이(가) 입력을 기다리는 중이라 보내지 않았습니다`, body: "그 터미널에서 먼저 답한 뒤 다시 보내세요", level: "warning" });
-      return;
-    }
-    if (!foreign && (a.status === "idle" || a.status === "done")) { sendNow(ctx); return; }
-    const why = foreign ? `'${this.cur.name}' 메모를 지금 스페이스 '${space?.name ?? ""}'의 에이전트에게 보냅니다`
-      : a.status === "working" ? "지금 작업 중입니다" : "상태를 알 수 없습니다(상태를 알리지 않는 에이전트)";
-    openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: {
-      role: "confirm", action: "notes.send", ctx, yes: "보내기",
-      title: `${label}에게 보낼까요?`,
-      detail: `${why}. 보내면 그 입력 칸에 메모를 붙여 넣고 Enter를 누릅니다. 첫 줄: ${text.split("\n")[0]}`,
-    } });
-  }
-
-  picker(text, space, t) {
-    const list = spaceAgents(space);
-    return v_flex().flex_none().px(14).py(8).gap(2).border_b_1().border_color(t.border)
-      .child(h_flex().items_center().pb(2)
-        .child(div().flex_1().text_size(12).text_color(t.muted).child("어느 에이전트에게 보낼까요?"))
-        .child(div().id("nt-pick-x").flex_none().text_size(11).text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground))
-          .on_click((_e, cx) => { this.picking = false; cx.notify(); }).child("취소")))
-      .children(list.map((a) => h_flex().id(`nt-pick-${a.address}`).h(26).px(6).gap(8).items_center().rounded(4).cursor_pointer()
-        .hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => { this.sendTo(a, text, space); cx.notify(); })
-        .child(div().size(7).flex_none().rounded_full().bg(t[a.status] ?? t.unknown ?? t.idle))
-        .child(div().flex_none().text_size(13).text_color(t.foreground).child(a.name))
-        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(a.tab || ""))
-        .child(div().flex_none().text_size(11).text_color(a.status === "blocked" ? t.blocked : t.muted).child(STATUS[a.status] ?? "상태 모름"))));
+    sendToAgent(a, text, { note: foreign ? `'${this.cur.name}' 메모를 지금 스페이스 '${space?.name ?? ""}'의 에이전트에게 보냅니다.` : null });
   }
 }

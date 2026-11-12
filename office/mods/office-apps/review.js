@@ -8,23 +8,22 @@
 //   기본 브랜치는 origin/HEAD → origin/main → origin/master → main → master 중 처음 있는 것.
 //   diff 줄 그리기·색·위아래/좌우는 commit/diffview.js(커밋·PR 앱과 같다). diff 줄을 누르면 "파일:줄"을 피드백에 붙인다
 //   (가상 목록의 on_item_click; 다시 누르면 풀린다).
-// 보내기: `hc send <주소> <글>`(원격은 machine/tN 주소 그대로 이 Mac의 hc로). 작업 중이면 확인 창을 거친다(작업 중 입력은
-//   다음 차례로 쌓인다). 입력 대기(blocked)면 보내지 않는다(hc send는 대화 상자에 답하지 않으려고 거절한다; --force는 쓰지 않는다).
-//   확인 창은 오버레이 복사본이라 결과를 공유 상태(SENT)로 돌려주고, 앱이 렌더 때 받아 입력칸을 비운다.
+// 보내기: send.js(공용). 후보는 그 폴더에서 일하는 에이전트(스페이스가 달라도), 순서·표시·상태 규칙·확인 창·hc send는 거기서.
+//   결과는 공유 상태(SENT)로 돌아오고(확인 창은 오버레이 복사본), 앱이 렌더 때 받아 입력칸을 비운다.
 // 갱신: 이 앱이 그려지는 동안만 10초마다(에이전트 앱과 같은 방식: 알렸는데 그려지지 않았으면 멈추고, 다시 그려지면 이어 간다) + 수동.
 // git은 읽기만 한다(commit/git.js READ). 순수 함수는 review/model.js(node로 시험).
 // 셸 계약: list · detail · subtitle · move · activate · emptyState · dispose
 
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, Scrollbar, v_virtual_list } from "gpui-base";
-import { agents, panes, spaces, exec, readTextFile, home, openOverlay, notify, shared, setShared, settings } from "herdr";
-import { ACTIONS } from "./menu.js";
+import { agents, panes, spaces, exec, readTextFile, home, shared, settings } from "herdr";
+import { candidates, recipients, sendToAgent, statusWord } from "./send.js";
 import { BIG, READ, parseNameStatus, parseNumstat, mergeFiles, diffLines, addedLines, diffRows } from "./commit/git.js";
 import {
   DIFF_LINE, NARROW, inlineRow, splitRow, inlineWidth, splitWidth, diffPalette, wordSpans, splitRows, isDark, diffMode, modeToggle,
 } from "./commit/diffview.js";
 import {
-  STATUS, withSilent, workdirs, groupRoots, parseShortstat, summary, changed, sortGroups, pickLine, feedbackText, baseCandidates, pickBase,
+  withSilent, workdirs, groupRoots, parseShortstat, summary, changed, sortGroups, pickLine, feedbackText, baseCandidates, pickBase,
 } from "./review/model.js";
 
 const APPS = "mods/office-apps";
@@ -51,29 +50,9 @@ function programIcon(p, size, t) {
 }
 
 const statusColor = (s, t) => ({ working: t.working, blocked: t.blocked, done: t.done, idle: t.idle })[s] ?? t.dim;
-const statusWord = (s) => STATUS[s] ?? "상태 모름";
-const liveStatus = (address) => agents().find((a) => a.address === address)?.status ?? null;
-
-// ── 보내기(확인 창 복사본에서도 돈다: ctx는 값만) ───────────────────
-// ctx: { id, address, text, who }
-async function sendNow(ctx) {
-  setShared(SENT, { id: ctx.id, phase: "sending" });
-  let r;
-  // hc send는 사람이 쓰다 만 입력이 있으면 기다린다(draft_wait 기본 60초): 넉넉히 2분.
-  try { r = await exec("hc", ["send", "--", ctx.address, ctx.text], { timeout: 120000 }); }
-  catch (e) { r = { code: -1, stdout: "", stderr: String(e?.message ?? e) }; }
-  const ok = r.code === 0;
-  if (ok) notify({ title: "보냈습니다", body: ctx.who, level: "success" });
-  else notify({ title: `${ctx.who}에게 보내지 못했습니다`, body: firstLine(r.stderr || r.stdout) || `hc 종료 코드 ${r.code}`, level: "error" });
-  setShared(SENT, { id: ctx.id, phase: "done", ok });
-}
-
-function register() { ACTIONS["review.send"] = (ctx) => { sendNow(ctx); }; }
-register();
 
 export class ReviewApp {
   init(_p, _cx) {
-    register();
     this.roots = {};          // 작업 폴더 key([머신, 폴더]) → git 루트 | null(레포 아님)
     this.stats = {};          // 묶음 key([머신, 루트]) → { files, add, del, untracked, branch }
     this.groups = [];
@@ -336,15 +315,13 @@ printf '%s\n%s' "$c" "$f"`;
   narrow() { return (this.dw ?? 1000) < NARROW; }
   split() { return diffMode() === "split" && !this.narrow(); }
 
-  // ── 보내기 ─────────────────────────────────────────────
-  target(g = this.current()) {
-    if (!g) return null;
-    return g.agents.find((a) => a.address === this.to[g.key]) ?? g.agents[0] ?? null;
-  }
+  // ── 보내기(send.js) ─────────────────────────────────────
+  // 그 폴더의 에이전트(지금 상태, 공용 순서)
+  agentsOf(g) { return g ? candidates({ list: g.agents }) : []; }
 
-  who(a) {
-    const name = a.program?.name || a.title || a.address;
-    return `${name} · ${a.space_name} › ${a.tab_name}`;
+  target(g = this.current()) {
+    const list = this.agentsOf(g);
+    return list.find((a) => a.address === this.to[g?.key]) ?? list[0] ?? null;
   }
 
   send(cx) {
@@ -352,19 +329,11 @@ printf '%s\n%s' "$c" "$f"`;
     if (!a || this.sending) return;
     const text = feedbackText({ path: this.file, line: this.pick?.line, side: this.pick?.side, text: this.input.value() });
     if (!text) return;
-    const st = liveStatus(a.address) ?? a.status;
-    if (st === "blocked") { notify({ title: "보내지 않았습니다", body: "에이전트가 입력을 기다리는 중입니다. 터미널에서 먼저 답하세요.", level: "warning" }); return; }
-    const ctx = { id: String(Date.now()), address: a.address, text, who: this.who(a) };
-    if (st === "working") {
-      this.waiting = ctx.id;
-      openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 200, props: { role: "confirm", action: "review.send", ctx,
-        title: "작업 중인 에이전트에게 보낼까요?",
-        detail: `${ctx.who}\n지금 하는 일이 끝난 뒤 다음 입력으로 처리됩니다. 작업 중에 보낸 글은 차례대로 쌓입니다.`,
-        yes: "그래도 보내기" } });
-      return;
-    }
-    this.sending = ctx.id; this.waiting = ctx.id;
-    cx.spawn(async (cx) => { await sendNow(ctx); this.syncSent(); cx.notify(); });
+    const r = sendToAgent(a, text, { reply: SENT });
+    if (r.state === "confirm") this.waiting = r.id;
+    if (r.state !== "sending") return;
+    this.sending = r.id; this.waiting = r.id;
+    cx.spawn(async (cx) => { await r.done; this.syncSent(); cx.notify(); });
     cx.notify();
   }
 
@@ -539,26 +508,15 @@ printf '%s\n%s' "$c" "$f"`;
   // 피드백: 보낼 곳(여럿이면 골라 누름) · 붙을 위치 / 입력칸 / 보내기
   feedback(g, t) {
     const a = this.target(g);
-    const st = a ? liveStatus(a.address) ?? a.status : null;
+    const st = a?.status ?? null;
     const blocked = st === "blocked", sending = Boolean(this.sending);
     const can = Boolean(a) && !blocked && !sending && !this.empty;
     const where = this.file ? (this.pick ? `${this.file}:${this.pick.line}${this.pick.side === "old" ? " (지운 줄)" : ""}` : this.file) : null;
-    const chip = (x) => {
-      const on = x.address === a?.address, s = liveStatus(x.address) ?? x.status;
-      return h_flex().id(`review-to-${x.address}`).flex_none().px(6).py(2).gap(5).items_center().rounded(4).cursor_pointer()
-        .when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s2) => s2.bg(t.hover)))
-        .on_click((_e, cx) => { this.to[g.key] = x.address; cx.notify(); })
-        .child(programIcon(x.program, 13, t))
-        .child(div().max_w(160).truncate().text_size(12).text_color(on ? t.foreground : t.muted).child(`${x.space_name} › ${x.tab_name}`))
-        .child(div().text_size(11).text_color(statusColor(s, t)).child(statusWord(s)));
-    };
     const note = blocked ? "입력을 기다리는 중이라 보낼 수 없습니다. 터미널에서 먼저 답하세요."
       : sending ? "보내는 중" : st === "working" ? "작업 중: 보낸 글은 다음 차례에 처리됩니다" : "";
     return v_flex().flex_none().px(12).py(8).gap(6).border_t_1().border_color(t.border)
       .child(h_flex().gap(6).items_center().min_w(0)
-        .child(div().flex_none().text_size(12).text_color(t.muted).child("보낼 곳"))
-        .children(g.agents.map(chip))
-        .child(div().flex_1())
+        .child(div().flex_1().min_w(0).child(recipients("review", this.agentsOf(g), a?.address, (address) => { this.to[g.key] = address; }, t)))
         .when(Boolean(where), (el) => el.child(h_flex().flex_none().max_w(320).gap(4).items_center()
           .child(div().truncate().text_size(11).font_family(CODE_FONT).text_color(t.muted).child(where))
           .when(Boolean(this.pick), (e2) => e2.child(div().id("review-unpick").px(4).rounded(4).text_size(11).text_color(t.dim).cursor_pointer()
