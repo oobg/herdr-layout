@@ -4,7 +4,9 @@
 //         (답 필요·작업 중·완료, 접어 둔 탭은 흐린 "접어 둠").
 //   오른쪽: 스페이스 = 폴더·브랜치·기기, 탭 요약, 가기·이름 바꾸기·닫기.
 //           탭 = 칸 목록(누르면 그 칸으로), 가기·이름 바꾸기·접어 두기/펼치기·닫기.
-//           정리 = 닫아도 될 만한 탭(workspace/tidy.js candidates)을 이유와 함께, 체크한 것만 한 번에 닫는다.
+//           정리 = 닫아도 될 만한 탭(workspace/tidy.js review)을 이유와 함께, 체크한 것만 한 번에 닫는다.
+//                  그 아래 흐린 "후보에서 뺀 탭 n · 이유별 수"(누르면 펼쳐 탭마다 이유).
+//                  닫기(탭·스페이스·일괄)는 모두 취소 우선이고, 실행 직전에 창을 열 때보다 위험해진 탭은 빼고 알린다.
 //                  그 아래 "재울 수 있는 에이전트": 쉬는 Claude Code를 /exit로 끝내 메모리를 비우고(workspace/sleep.js·sleeper.js),
 //                  잠든 기록(data/office-apps/sleeping.json)으로 같은 칸에서 claude --resume. 트리 탭 줄엔 "잠듦", 탭 상세엔 "깨우기".
 // 셸 계약: move(delta, cx) 선택 이동 · activate(cx) 고른 스페이스·탭으로 가기 · emptyState().
@@ -13,10 +15,10 @@
 // 확인 창·이름 입력 창은 오버레이 복사본이라 값만 넘기고, 동작은 ACTIONS["workspace.*"]·ROLES["workspace-prompt"]에 둔다.
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { spaces, panes, agents, focused, layout, home, run, setShared, openOverlay, closeOverlay, props, theme } from "herdr";
+import { spaces, panes, agents, focused, layout, home, run, setShared, openOverlay, closeOverlay, notify, props, theme } from "herdr";
 import { ACTIONS } from "./menu.js";
 import { ROLES } from "./files.js";
-import { viewedTabs, panesOf, hasWorking, tabWord, candidates, stillClosable, treeRows, agentCount, tilde, WORD } from "./workspace/tidy.js";
+import { viewedTabs, panesOf, hasWorking, tabWord, review, skipSummary, riskOf, recheckTidy, recheckClose, treeRows, agentCount, tilde, WORD } from "./workspace/tidy.js";
 import { sleepable, confirmed, pruneSleeping, paneState, sleepingTabs, savedLine, SLEPT } from "./workspace/sleep.js";
 import { readSleeping, updateSleeping, probe, sleepAgents, wake, forget } from "./workspace/sleeper.js";
 
@@ -44,14 +46,41 @@ function goTab(space, tab) { run("space.select", { id: space }); run("tab.select
 function goPane(space, tab, pane) { goTab(space, tab); run("pane.focus", { pane }); }
 
 // ── 확인 창·입력 창 동작(값만 받는다) ──────────────────────
+// 터미널을 끝내는 닫기(탭·스페이스·일괄 정리)는 창을 열 때 탭마다 위험도(workspace/tidy.js riskOf)를 ctx.snap에 담고,
+// 실행 직전에 다시 재서 더 위험해진 것(작업 중·답 필요·새 에이전트·셸 아닌 프로그램·지금 보는 탭·잠듦)은 닫지 않고 알린다.
+// 확인 창은 오버레이 복사본이라 잠든 기록은 파일에서 다시 읽는다.
+async function liveOpts() {
+  const ps = panes() ?? [];
+  const rs = await readSleeping().catch(() => []);
+  return { sps: spaces(), ps, opts: { viewed: viewed(), asleep: sleepingTabs(rs ?? [], ps) } };
+}
+const listOf = (xs) => xs.map((x) => `${x.name} · ${x.why}`).join("\n").slice(0, 400);
+
 const ACT = {
   // ctx: { kind: "space"|"tab", id }
   rename: (ctx, name) => run(ctx.kind === "space" ? "space.rename" : "tab.rename", { id: ctx.id, name }),
-  closeSpace: (ctx) => run("space.close", { id: ctx.id, confirmed: true }),
-  closeTab: (ctx) => run("tab.close", { id: ctx.id, confirmed: true }),
-  // ctx: { ids }. 창을 연 뒤 보게 됐거나 작업을 시작한 탭은 건너뛴다.
-  closeTabs: (ctx) => {
-    for (const id of stillClosable(ctx.ids, spaces(), panes() ?? [], viewed())) run("tab.close", { id, confirmed: true });
+  // ctx: { id, name, snap }. 창을 연 뒤 생긴 탭이나 더 위험해진 탭이 있으면 스페이스째 닫지 않는다.
+  closeSpace: async (ctx) => {
+    const { sps, ps, opts } = await liveOpts();
+    const s = sps.find((x) => x.id === ctx.id);
+    if (!s) return;
+    const bad = recheckClose(s.tabs.map((tb) => tb.id), ctx.snap, sps, ps, opts);
+    if (bad.length) return notify({ title: `스페이스 '${ctx.name}'를 닫지 않았습니다`, body: `창을 연 뒤 바뀐 탭이 있습니다\n${listOf(bad)}`, level: "warning" });
+    run("space.close", { id: ctx.id, confirmed: true });
+  },
+  // ctx: { id, name, snap }
+  closeTab: async (ctx) => {
+    const { sps, ps, opts } = await liveOpts();
+    const bad = recheckClose([ctx.id], ctx.snap, sps, ps, opts);
+    if (bad.length) return notify({ title: `탭 '${ctx.name}'을 닫지 않았습니다`, body: bad[0].why, level: "warning" });
+    run("tab.close", { id: ctx.id, confirmed: true });
+  },
+  // ctx: { ids, snap }. 지금도 후보이고 더 위험해지지 않은 탭만 닫고, 뺀 것은 이름과 이유를 알린다.
+  closeTabs: async (ctx) => {
+    const { sps, ps, opts } = await liveOpts();
+    const { keep, dropped } = recheckTidy(ctx.ids, ctx.snap, sps, ps, opts);
+    for (const id of keep) run("tab.close", { id, confirmed: true });
+    if (dropped.length) notify({ title: `${dropped.length}개는 닫지 않았습니다${keep.length ? ` · ${keep.length}개 닫음` : ""}`, body: listOf(dropped), level: "warning" });
   },
   // ctx: { items }. 재우기(workspace/sleeper.js): 다시 확인하고 하나씩 /exit.
   sleep: (ctx) => sleepAgents(ctx),
@@ -200,9 +229,9 @@ export class WorkspaceApp {
     const sps = spaces(), ps = panes() ?? [];
     this.sps = sps; this.ps = ps; this.ags = agents() ?? [];
     this.viewed = viewedTabs(sps, focused()?.tab ?? null);
-    // 잠든 칸이 있는 탭은 닫기 후보에서 뺀다(깨울 곳이 사라진다)
+    // 잠든 칸이 있는 탭은 닫기 후보에서 뺀다(깨울 곳이 사라진다). 뺀 탭은 이유와 함께 정리 화면 아래에.
     this.zTabs = sleepingTabs(this.sleeping, ps);
-    this.cands = candidates(sps, ps, { viewed: this.viewed }).filter((c) => !this.zTabs.has(c.tab.id));
+    ({ cands: this.cands, skipped: this.skipped } = review(sps, ps, { viewed: this.viewed, asleep: this.zTabs }));
     this.zcands = confirmed(sleepable(sps, ps, { viewed: this.viewed, sleeping: this.sleeping }), this.probes);
     this.orphans = this.sleeping.filter((r) => paneState(r, ps) === "gone");
     // 후보에서 빠진 칸의 체크는 버린다(나중에 다시 후보가 되면 해제된 채로)
@@ -216,6 +245,9 @@ export class WorkspaceApp {
   }
 
   current() { return this.rows.find((r) => r.key === this.sel) ?? null; }
+
+  // 확인 창을 열 때의 위험도(실행 직전 비교용, workspace/tidy.js riskOf)
+  snap(ids) { return riskOf(ids, this.sps, this.ps, { viewed: this.viewed, asleep: this.zTabs }); }
 
   select(key, cx) {
     this.sel = key;
@@ -338,7 +370,7 @@ export class WorkspaceApp {
     const lines = [this.info("폴더", where(s.folder, s.machine) || "홈", t)];
     if (s.branch) lines.push(this.info("브랜치", s.branch, t));
     lines.push(this.info("기기", s.machine ?? "이 컴퓨터", t));
-    const close = () => confirm("closeSpace", { id: s.id }, `스페이스 '${s.name}' 닫기`,
+    const close = () => confirm("closeSpace", { id: s.id, name: s.name, snap: this.snap(s.tabs.map((tb) => tb.id)) }, `스페이스 '${s.name}' 닫기`,
       `탭 ${s.tabs.length}개와 그 안의 터미널을 모두 끝냅니다.` +
         (all ? ` 에이전트 ${all}개${working ? `(작업 중 ${working}개)` : ""}도 함께 끝납니다.` : ""),
       { yes: "닫기", danger: true });
@@ -364,11 +396,13 @@ export class WorkspaceApp {
   tabView(s, tab, t) {
     const mine = panesOf(tab.id, this.ps), busy = hasWorking(tab, mine), shown = this.viewed.has(tab.id);
     const agentsIn = mine.filter((p) => p.status || p.program?.agent).length;
-    const close = () => confirm("closeTab", { id: tab.id }, `탭 '${tab.name}' 닫기`,
-      `칸 ${mine.length}개의 터미널을 끝냅니다.` +
-        (busy ? " 작업 중인 에이전트가 있습니다. 닫으면 하던 일이 멈춥니다." : agentsIn ? ` 에이전트 ${agentsIn}개의 대화 화면도 닫힙니다.` : ""),
-      { yes: "닫기", danger: busy });
     const slept = this.zTabs.get(tab.id) ?? [];
+    // 터미널을 끝내므로 상태와 무관하게 취소 우선(danger). 실행 직전에 다시 본다(ACT.closeTab).
+    const close = () => confirm("closeTab", { id: tab.id, name: tab.name, snap: this.snap([tab.id]) }, `탭 '${tab.name}' 닫기`,
+      `칸 ${mine.length}개의 터미널을 끝냅니다.` +
+        (busy ? " 작업 중인 에이전트가 있습니다. 닫으면 하던 일이 멈춥니다." : agentsIn ? ` 에이전트 ${agentsIn}개의 대화 화면도 닫힙니다.` : "") +
+        (slept.length ? " 잠든 에이전트가 있어 닫으면 새 탭에서 깨워야 합니다." : ""),
+      { yes: "닫기", danger: true });
     const sub = [s.name, shown ? "지금 보는 탭" : "", tab.settled ? "접어 둠" : "", slept.length ? SLEPT : ""].filter(Boolean).join(" · ");
     return v_flex().size_full().min_h(0)
       .child(this.head(tab.name, sub, [
@@ -378,7 +412,7 @@ export class WorkspaceApp {
         tab.settled
           ? this.btn("ws-settle", "펼치기", () => run("tab.unsettle", { id: tab.id }), t)
           : this.btn("ws-settle", "접어 두기", () => run("tab.settle", { id: tab.id }), t),
-        this.btn("ws-close", "닫기…", close, t, busy),
+        this.btn("ws-close", "닫기…", close, t, true),
       ], t))
       .child(v_flex().id("ws-detail").flex_1().min_h(0).overflow_y_scrollbar().px(14).py(10)
         .child(div().px(6).pb(4).text_size(12).font_semibold().text_color(t.muted).child(`칸 ${mine.length}`))
@@ -406,14 +440,17 @@ export class WorkspaceApp {
     const cs = this.cands;
     const on = (c) => this.checks[c.tab.id] ?? c.check;
     const picked = cs.filter(on);
-    const closeAll = () => confirm("closeTabs", { ids: picked.map((c) => c.tab.id) }, `탭 ${picked.length}개 닫기`,
-      picked.map((c) => `${c.space.name} › ${c.tab.name}`).join("\n"), { yes: "닫기", danger: true, tall: picked.length > 3 });
+    const ids = picked.map((c) => c.tab.id);
+    const closeAll = () => {
+      const snap = this.snap(ids);
+      for (const c of picked) if (snap[c.tab.id]) snap[c.tab.id].check = c.check;
+      confirm("closeTabs", { ids, snap }, `탭 ${picked.length}개 닫기`,
+        picked.map((c) => `${c.space.name} › ${c.tab.name}`).join("\n"), { yes: "닫기", danger: true, tall: picked.length > 3 });
+    };
     return v_flex().size_full().min_h(0)
       .child(this.head("정리", "", [this.btn("ws-close-picked", picked.length ? `선택한 ${picked.length}개 닫기…` : "선택한 탭 없음", picked.length ? closeAll : null, t, true)], t))
       .child(v_flex().id("ws-detail").flex_1().min_h(0).overflow_y_scrollbar().px(14).py(10)
-        .child(div().px(6).pb(8).text_size(12).text_color(t.dim)
-          .child("지금 보는 탭, 작업 중인 에이전트가 있는 탭, 스페이스의 하나뿐인 탭은 넣지 않습니다"))
-        .when(!cs.length, (el) => el.child(div().px(6).pt(6).text_size(13).text_color(t.muted).child("닫을 만한 탭이 없습니다")))
+        .when(!cs.length, (el) => el.child(div().px(6).pt(2).text_size(13).text_color(t.muted).child("닫을 만한 탭이 없습니다")))
         .children(cs.map((c) => {
           const v = on(c);
           return h_flex().id(`ws-c-${c.tab.id}`).min_h(40).px(6).py(4).gap(10).items_center().rounded(4).cursor_pointer().hover((x) => x.bg(t.hover))
@@ -426,7 +463,26 @@ export class WorkspaceApp {
                 .child(div().flex_none().max_w(140).truncate().text_size(11).text_color(t.dim).child(c.space.name)))
               .child(div().truncate().text_size(11).text_color(t.dim).child(c.reason)));
         }))
+        .child(this.skippedSection(t))
         .child(this.sleepSection(t)));
+  }
+
+  // 후보에서 뺀 탭: 흐린 머리줄 하나(누르면 펼침). 펼치면 줄마다 탭 이름 · 스페이스 / 이유. 줄은 누를 수 없다.
+  skippedSection(t) {
+    const xs = this.skipped ?? [];
+    if (!xs.length) return div();
+    const open = Boolean(this.skipOpen);
+    const sum = skipSummary(xs).slice(0, 3).map(([k, n]) => `${k} ${n}`).join(" · ");
+    return v_flex().pt(10)
+      .child(h_flex().id("ws-skip-head").h(24).px(6).gap(6).items_center().rounded(4).cursor_pointer().hover((x) => x.bg(t.hover))
+        .on_click((_e, cx) => { this.skipOpen = !open; cx.notify(); })
+        .child(svg(`${APPS}/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim))
+        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(`후보에서 뺀 탭 ${xs.length}`))
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(sum)))
+      .when(open, (el) => el.children(xs.map((x) => h_flex().min_h(22).pl(24).pr(6).gap(8).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.muted).child(x.tab.name))
+        .child(div().flex_none().max_w(110).truncate().text_size(11).text_color(t.dim).child(x.space.name))
+        .child(div().flex_none().max_w(200).truncate().text_size(11).text_color(t.dim).child(x.why)))));
   }
 
   // 재울 수 있는 에이전트(기본 체크 해제) · 칸이 닫힌 잠든 에이전트(깨우면 새 탭)
