@@ -1,5 +1,6 @@
 // office-apps의 알림함 앱: 여러 스페이스의 에이전트 중 "나를 기다리는 것"을 한 곳에 모아 처리한다.
-//   왼쪽: 묶음 머리줄 "답 필요 n" · "완료 n"(안 본 사이 끝남) · "작업 중 n"(기본 접힘) · "상태 모름 n"(기본 접힘).
+//   왼쪽: 묶음 머리줄 "답 필요 n" · "완료 n"(안 본 사이 끝남) · "작업 중 n"(기본 접힘) · "상태 모름 n"(상태를 보고하지 않는 에이전트, 기본 펼침:
+//         답을 기다리는지 알 수 없어서. 줄을 고르고 Enter·더블클릭이면 그 터미널로).
 //         줄 = 프로그램 아이콘 · 스페이스 › 탭 · 경과("4분째 기다림", "12분 전"). 답 필요는 오래 기다린 순, 완료는 최근 순.
 //         빈 묶음은 머리줄째 숨긴다. 대기(idle)는 기다리는 게 아니라서 넣지 않는다. 묶음 펼침은 localStorage.
 //         상태 낱말은 status.js 표(사무실과 같은 말). 완료는 사무실이 붙잡은 동안(공유 상태 office.finished) idle이어도 완료.
@@ -19,6 +20,7 @@ import { statusWord, FINISHED } from "./status.js";
 
 const APPS = "mods/office-apps";
 const FAST = 4000, REST = 60000, INFO_TTL = 15000;
+const OPEN_KEY = "inbox.open2";   // 묶음 펼침(상태 모름 기본 펼침으로 바뀌어 예전 "inbox.open"은 읽지 않는다)
 // 작게 그리면 잘 안 보이는 기본 아이콘 대신 브랜드 로고(에이전트 앱의 그림을 쓴다)
 const BRAND = [[/claude/i, `${APPS}/agent/icons/claude.svg`, "#d97757"], [/codex|openai/i, `${APPS}/agent/icons/openai.svg`, null]];
 
@@ -46,7 +48,7 @@ function programIcon(p, size, t) {
 export class InboxApp {
   init(_p, _cx) {
     this.sel = load("inbox.sel", null);           // 고른 줄의 key(터미널 주소)
-    this.open = openState(load("inbox.open", null)); // 묶음 id → 펼쳤는지
+    this.open = openState(load(OPEN_KEY, null)); // 묶음 id → 펼쳤는지
     this.groups = { blocked: [], done: [], working: [], unknown: [] };
     this.rows = [];        // 보이는 줄(접힌 묶음 제외)
     this.info = {};        // 주소 → { pid, cwd, at }  (hc get)
@@ -82,7 +84,7 @@ export class InboxApp {
 
   fold(id, cx) {
     this.open[id] = !this.open[id];
-    save("inbox.open", this.open);
+    save(OPEN_KEY, this.open);
     this.rows = visibleRows(this.groups, this.open);
     this.sel = pick(this.rows, this.sel);
     this.kick(cx);
@@ -108,10 +110,12 @@ export class InboxApp {
     if (r) goTo(this.target(r));
   }
 
+  // 판정 범위를 밝힌다: 상태를 보고하지 않는 에이전트가 있으면 "없다"고 말하지 않는다.
   emptyState() {
-    const { working, unknown } = this.groups;
-    const rest = [working.length && `작업 중 ${working.length}`, unknown.length && `상태 모름 ${unknown.length}`].filter(Boolean).join(" · ");
-    return { text: "기다리는 에이전트가 없습니다", sub: rest ? `${rest} — 왼쪽 묶음을 펼쳐 볼 수 있습니다` : "" };
+    const { blocked, working, unknown } = this.groups;
+    if (unknown.length) return { text: `확인된 답 필요 ${blocked.length}명 · 상태 모름 ${unknown.length}명`,
+      sub: "상태 모름은 답을 기다리는지 알 수 없습니다. 왼쪽 묶음을 펼쳐 터미널에서 확인하세요" };
+    return { text: "기다리는 에이전트가 없습니다", sub: working.length ? `작업 중 ${working.length} — 왼쪽 묶음을 펼쳐 볼 수 있습니다` : "" };
   }
 
   dispose() {
@@ -206,12 +210,14 @@ export class InboxApp {
       .when(Boolean(right), (el) => el.child(div().flex_none().text_size(11).text_color(r.group === "blocked" ? t.blocked : t.dim).child(right)));
   }
 
+  // 부제: 답 필요 · 완료, 상태 모름이 있으면 그 수도(답 필요 0이 "기다리는 것 없음"으로 읽히지 않게)
   subtitle(t) {
-    const b = this.groups.blocked.length, d = this.groups.done.length;
+    const b = this.groups.blocked.length, d = this.groups.done.length, u = this.groups.unknown.length;
     return h_flex().gap(10).items_center().text_size(12).text_color(t.dim).truncate()
-      .child(div().flex_none().text_color(b ? t.blocked : t.dim).child(`답 필요 ${b}`))
+      .child(div().flex_none().text_color(b ? t.blocked : t.dim).child(`${statusWord("blocked")} ${b}`))
       .child(div().flex_none().child("·"))
-      .child(div().flex_none().child(`완료 ${d}`));
+      .child(div().flex_none().child(`${statusWord("done")} ${d}`))
+      .when(u > 0, (el) => el.child(div().flex_none().child("·")).child(div().flex_none().text_color(t.muted).child(`${statusWord(null)} ${u}`)));
   }
 
   detail(cx, t) {

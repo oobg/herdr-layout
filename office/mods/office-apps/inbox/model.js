@@ -10,7 +10,7 @@ export const GROUPS = [
   { id: "blocked", title: STATUS_WORD.blocked, fold: false },
   { id: "done", title: STATUS_WORD.done, fold: false },
   { id: "working", title: STATUS_WORD.working, fold: true },
-  { id: "unknown", title: UNKNOWN_WORD, fold: true },
+  { id: "unknown", title: UNKNOWN_WORD, fold: false },   // 답을 기다리는지 모르니 숨기지 않는다
 ];
 
 // agents()는 상태를 보고(OSC 7501)하는 터미널만 준다. Codex처럼 보고 훅이 없는 에이전트도 보이게,
@@ -60,7 +60,7 @@ export function visibleRows(groups, open) {
   return GROUPS.flatMap((g) => (open[g.id] ? groups[g.id] : []));
 }
 
-// 접힘 상태: 저장된 값이 없으면 기본(답 필요·완료는 펼침, 작업 중·상태 모름은 접힘)
+// 접힘 상태: 저장된 값이 없으면 기본(답 필요·완료·상태 모름은 펼침, 작업 중은 접힘)
 export function openState(saved) {
   return Object.fromEntries(GROUPS.map((g) => [g.id, typeof saved?.[g.id] === "boolean" ? saved[g.id] : !g.fold]));
 }
