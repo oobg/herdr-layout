@@ -3,6 +3,8 @@
 //         줄 = 상태 기호·제목(커밋 메시지 첫 줄)·상대 시각 / 상태 낱말·워크플로·브랜치·걸린 시간.
 //   오른쪽: 고른 실행 하나. 머리줄(상태 · 워크플로 · 브라우저), 제목·브랜치·이벤트·커밋, 동작(다시 실행 · 실행 멈추기 · 끝나면 알림 ·
 //          에이전트에게 알리기), 잡 목록(도는·실패한 잡은 단계까지 펼침, 지금 도는 단계 강조), 실패 로그(끝 80줄), 배포 환경.
+//          실패 잡이 여럿이면 실패 로그 위에 잡 이름을 골라 그 잡의 로그를 본다(잡마다 gh run view --job, 최대 JOB_LOGS개).
+//          "에이전트에게 실패 알리기"는 고른 잡의 로그 20줄을 보내고, 여럿이면 "잡 n개 실패"와 잡마다 첫 오류 줄을 앞에 붙인다.
 // 순수 함수(상태 매핑·걸린 시간·로그 자르기·필터·핀)는 actions/run.js(node로 시험할 수 있다).
 // 다시 실행·실행 멈추기(gh run cancel)는 menu.js의 확인 창(confirm)을 거친다(창 닫기 "취소"와 헷갈리지 않게 "멈추기"로 쓴다). 확인 창은 ACTIONS[이름](ctx)만 부르므로
 // 이 모듈이 불릴 때 actions.* 동작을 더한다(pr.js와 같은 방식). 동작이 끝나면 TICK을 바꿔 앱이 다시 읽게 한다.
@@ -21,7 +23,7 @@ import { ACTIONS } from "./menu.js";
 import { failHint } from "./pr/status.js";
 import { candidates, chosen, recipients, sendToAgent, nextRecipient } from "./send.js";
 import {
-  FILTERS, state, active, elapsed, dur, ago, runTime, jobTime, filterRuns, tailLog, failSpot, tellText, latestDeploys, addPin, dropPin, MAX_PINS,
+  FILTERS, state, active, elapsed, dur, ago, runTime, jobTime, filterRuns, tailLog, failSpot, failJobs, firstError, tellText, latestDeploys, addPin, dropPin, MAX_PINS,
 } from "./actions/run.js";
 
 const ME = "mods/office-apps";
@@ -30,7 +32,7 @@ const TICK = "office-apps.actions.tick";
 const LIMIT = 30;
 const FAST = 10000, SLOW = 60000, PIN_EVERY = 30000;
 const DEPLOY_EVERY = 60000, DEPLOY_NONE = 600000;
-const LOG_LINES = 80, TELL_LINES = 20;
+const LOG_LINES = 80, TELL_LINES = 20, JOB_LOGS = 6;
 const CODE_FONT = "D2Coding";
 const LIST_FIELDS = "databaseId,displayTitle,workflowName,headBranch,event,status,conclusion,createdAt,updatedAt,startedAt,url,headSha,attempt";
 const VIEW_FIELDS = "databaseId,displayTitle,workflowName,headBranch,event,status,conclusion,createdAt,updatedAt,startedAt,url,headSha,attempt,jobs";
@@ -113,7 +115,7 @@ export class ActionsApp {
     this.pins = load("actions.pins", []);
     this.tick = shared(TICK);
     this.context = null;
-    this.logs = new Map();     // "id:attempt" → { loading } | { log, spot } | { error }
+    this.logs = new Map();     // "id:attempt:잡 id" → { loading } | { log, spot } | { error }
     this.deploys = null;       // { repo, at, list }
     this.timer = null; this.busy = false; this.again = false;
     this.rendered = 0; this.notified = 0;
@@ -227,11 +229,20 @@ export class ActionsApp {
     if (this.view?.databaseId === id) this.loadLog(this.view, cx);
   }
 
-  // 실패 로그: 끝난 실행에 실패한 잡이 있을 때 한 번만(실행 id·시도 번호로 기억). 도는 중이면 gh가 로그를 주지 않는다.
+  // 실패 잡 목록(잡 id를 모르면 실행 하나로)과 고른 잡
+  failed(v) { const js = failJobs(v); return js.some((j) => j.jobId) ? js.filter((j) => j.jobId).slice(0, JOB_LOGS) : js.slice(0, 1).map((j) => ({ ...j, jobId: null })); }
+  spotOf(v) { const js = this.failed(v); return js.find((j) => j.jobId === this.failJob) ?? js[0] ?? null; }
+  logKey(v, j) { return `${v.databaseId}:${v.attempt ?? 1}:${j?.jobId ?? "run"}`; }
+
+  // 실패 로그: 끝난 실행의 실패 잡마다 한 번만(실행 id·시도 번호·잡 id로 기억). 도는 중이면 gh가 로그를 주지 않는다.
+  //   잡이 여럿이면 다 읽어 둔다(에이전트에게 보낼 때 잡마다 첫 오류 줄을 붙인다).
   loadLog(v, cx) {
-    const spot = failSpot(v);
-    if (!spot || active(v)) return;
-    const k = `${v.databaseId}:${v.attempt ?? 1}`;
+    if (active(v)) return;
+    for (const spot of this.failed(v)) this.loadJobLog(v, spot, cx);
+  }
+
+  loadJobLog(v, spot, cx) {
+    const k = this.logKey(v, spot);
     if (this.logs.has(k)) return;
     const entry = { loading: true, spot };
     this.logs.set(k, entry);
@@ -315,6 +326,7 @@ export class ActionsApp {
     this.sel = id;
     if (this.view?.databaseId !== id) { this.view = null; this.viewError = null; }
     this.openJobs = {};
+    this.failJob = null;       // 실패 로그를 볼 잡 id(null = 첫 실패 잡)
   }
 
   select(id, cx) {
@@ -494,9 +506,12 @@ export class ActionsApp {
     return pick ? v_flex().gap(8).child(row).child(pick) : row;
   }
 
+  // 고른 잡의 로그 n줄. 실패 잡이 여럿이면 잡마다 첫 오류 줄(읽은 것만)을 앞에 붙인다.
   tell(v, a) {
-    const entry = this.logs.get(`${v.databaseId}:${v.attempt ?? 1}`);
-    sendToAgent(a, tellText(v, entry?.log ?? null, TELL_LINES));
+    const spot = this.spotOf(v), entry = this.logs.get(this.logKey(v, spot));
+    const all = failJobs(v);
+    const jobs = all.length > 1 ? all.map((j) => ({ ...j, line: firstError(this.logs.get(this.logKey(v, j))?.log) })) : [];
+    sendToAgent(a, tellText(v, entry?.log ?? null, TELL_LINES, { spot, jobs }));
   }
 
   // 잡 목록: 도는·실패한 잡은 단계까지 펼친다(누르면 접고 편다).
@@ -533,12 +548,23 @@ export class ActionsApp {
 
   // 실패 로그(끝 80줄, 오류 줄만 강조)
   logView(v, t) {
-    const spot = failSpot(v);
+    const spot = this.spotOf(v), all = failJobs(v);
     if (!spot) return [];
     const head = (text) => div().text_size(12).font_semibold().text_color(t.muted).child(text);
-    const title = `실패 로그 · ${spot.job}${spot.more ? ` 외 ${spot.more}개 잡` : ""}`;
+    const title = all.length > 1 ? `실패 로그 · 잡 ${all.length}개 실패` : `실패 로그 · ${spot.job}`;
     if (active(v)) return [v_flex().gap(6).child(head(title)).child(div().text_size(12).text_color(t.dim).child("실행이 끝나면 로그를 읽습니다"))];
-    const e = this.logs.get(`${v.databaseId}:${v.attempt ?? 1}`);
+    // 실패 잡이 여럿이면 잡 이름을 골라 그 잡의 로그를 본다(키보드 멈출 곳)
+    const js = this.failed(v);
+    const pick = js.length > 1 ? h_flex().flex_wrap().gap(4).items_center().children(js.map((j) => {
+      const id = `act-fj-${j.jobId}`, on = j.jobId === spot.jobId;
+      const press = (cx) => { this.failJob = j.jobId; this.loadJobLog(v, j, cx); cx.notify(); };
+      this.stops.push({ id, kind: "button", run: press });
+      return div().id(id).flex_none().max_w(240).truncate().px(8).py(2).rounded(4).text_size(12).cursor_pointer()
+        .border_1().border_color(this.kb?.on?.(id) ? t.accent : "#00000000")
+        .text_color(on ? t.foreground : t.muted).when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover)))
+        .on_click((_e, cx) => press(cx)).child(j.job);
+    })).when(all.length > js.length, (el) => el.child(div().text_size(11).text_color(t.dim).child(`외 ${all.length - js.length}개`))) : null;
+    const e = this.logs.get(this.logKey(v, spot));
     let inner;
     if (!e || e.loading) inner = div().text_size(12).text_color(t.dim).child("로그를 읽는 중");
     else if (e.error) inner = div().text_size(12).text_color(t.dim).child(e.error);
@@ -546,7 +572,9 @@ export class ActionsApp {
     else inner = v_flex().px(10).py(8).rounded(6).border_1().border_color(t.border).font_family(CODE_FONT).text_size(11.5)
       .children(e.log.lines.map((l) => div().min_h(16).text_color(l.err ? t.ansi1 : l.group ? t.muted : t.foreground)
         .when(Boolean(l.hard), (el) => el.font_semibold()).child(l.text || " ")));
-    return [v_flex().gap(6).child(head(title)).child(inner)];
+    const scope = all.length > 1 ? `보낼 때: 잡 ${all.length}개의 첫 오류 줄 + ${spot.job} 로그 ${TELL_LINES}줄` : `보낼 때: 오류 줄 근처 ${TELL_LINES}줄`;
+    return [v_flex().gap(6).child(head(title)).when(Boolean(pick), (el) => el.child(pick)).child(inner)
+      .child(div().text_size(11).text_color(t.dim).child(scope))];
   }
 
   // 배포 환경: 환경마다 최신 하나(없으면 그리지 않는다). 이 실행이 만든 배포면 "이 실행".

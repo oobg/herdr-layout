@@ -6,12 +6,17 @@
 //   tailLog(raw, n, job)       gh run view --log-failed 출력 → { job, lines: [{ text, err, hard, group }], first }
 //                         (마지막 ##[error] 줄이 있는 잡의, 그 줄에서 끝나는 n줄. first: 첫 진짜 오류 줄 위치)
 //   failSpot(view)        실패한 첫 잡과 그 안의 실패 단계 { job, jobId, step, url, more }
-//   tellText(view, log, n)  에이전트에게 보낼 글
+//   failJobs(view)        실패한 잡 모두 [{ job, jobId, step, url }]
+//   firstError(log)       tailLog 결과의 첫 진짜 오류 줄(없으면 마지막 오류 줄, 그것도 없으면 마지막 줄)
+//   tellText(view, log, n, { spot, jobs })  에이전트에게 보낼 글. jobs(잡마다 { job, step, line })가 둘 이상이면
+//                         "잡 n개 실패" 요약과 잡마다 첫 오류 줄을 앞에 붙이고, 고른 잡(spot)의 로그 n줄을 뒤에. TELL_MAX 글자에서 자른다.
 //   latestDeploys(nodes)  GraphQL deployments → 환경마다 최신 하나 { env, state, kind, word, sym, ref, at, run }
 //   addPin · dropPin      지켜보기 핀 목록(최대 MAX_PINS)
 
 export const MAX_PINS = 3;
 const LINE_MAX = 300;   // 에이전트에게 보내는 로그 한 줄의 최대 글자
+export const TELL_MAX = 6000;   // 에이전트에게 보내는 글 전체의 최대 글자
+const JOBS_MAX = 10;    // 요약에 적을 실패 잡 수
 
 // GitHub 시각의 빈 값("0001-01-01T00:00:00Z")은 없음으로
 export function when(iso) {
@@ -142,14 +147,35 @@ export function failSpot(view) {
   return { job: job.name, jobId: job.databaseId ?? null, step: step?.name ?? null, url: job.url ?? null, more: failed - 1 };
 }
 
-export function tellText(view, log, n = 20) {
-  const spot = failSpot(view);
-  const where = spot ? (spot.step ? `${spot.job} / ${spot.step}` : spot.job) : "잡을 알 수 없음";
+export function failJobs(view) {
+  return (view?.jobs ?? []).filter((j) => state(j).kind === "fail").map((j) => ({
+    job: j.name, jobId: j.databaseId ?? null, step: (j.steps ?? []).find((s) => state(s).kind === "fail")?.name ?? null, url: j.url ?? null,
+  }));
+}
+
+const cut = (text, max = LINE_MAX) => (text.length > max ? `${text.slice(0, max)}…` : text);
+
+export function firstError(log) {
+  const lines = log?.lines ?? [];
+  if (!lines.length) return "";
+  let l = log.first >= 0 ? lines[log.first] : null;
+  if (!l) for (let i = lines.length - 1; i >= 0 && !l; i--) if (lines[i].err) l = lines[i];
+  return cut(String((l ?? lines[lines.length - 1]).text ?? "").trim());
+}
+
+export function tellText(view, log, n = 20, { spot = failSpot(view), jobs = [] } = {}) {
+  const at2 = (j) => (j.step ? `${j.job} / ${j.step}` : j.job);
+  const where = spot ? at2(spot) : "잡을 알 수 없음";
   // 첫 진짜 오류 줄 앞 3줄부터 n줄. 그런 줄이 없으면 끝 n줄.
   const lines = log?.lines ?? [], at = log?.first ?? -1;
   const start = at >= 0 ? Math.max(0, at - 3) : Math.max(0, lines.length - n);
-  const tail = lines.slice(start, start + n).map((l) => (l.text.length > LINE_MAX ? `${l.text.slice(0, LINE_MAX)}…` : l.text)).join("\n").trim();
-  return [`${view?.workflowName ?? "워크플로"} 실패: ${where}`, view?.url ?? "", tail].filter(Boolean).join("\n");
+  const tail = lines.slice(start, start + n).map((l) => cut(l.text)).join("\n").trim();
+  const wf = view?.workflowName ?? "워크플로";
+  if (jobs.length < 2) return cut([`${wf} 실패: ${where}`, view?.url ?? "", tail].filter(Boolean).join("\n"), TELL_MAX);
+  const list = jobs.slice(0, JOBS_MAX).map((j) => `- ${at2(j)}: ${j.line || "(오류 줄 없음)"}`);
+  if (jobs.length > JOBS_MAX) list.push(`- 외 ${jobs.length - JOBS_MAX}개`);
+  const head = [`${wf} 실패: 잡 ${jobs.length}개 실패`, view?.url ?? "", ...list].filter(Boolean).join("\n");
+  return cut(tail ? `${head}\n\n${where} 로그:\n${tail}` : head, TELL_MAX);
 }
 
 // ── 배포(GraphQL repository.deployments nodes)
