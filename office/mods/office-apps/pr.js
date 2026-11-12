@@ -16,7 +16,9 @@ import { spaces, panes, focused, exec, readTextFile, props, openOverlay, closeOv
 import { Menu, ACTIONS, TICK, popupAt } from "./menu.js";
 import { ROLES } from "./files.js";
 import { BIG, diffLines, diffRows, columns } from "./commit/git.js";
-import { DIFF_LINE, inlineRow, splitRow, inlineWidth, splitWidth, diffPalette, wordSpans, splitRows, isDark } from "./commit/diffview.js";
+import {
+  DIFF_LINE, NARROW, inlineRow, splitRow, inlineWidth, splitWidth, diffPalette, wordSpans, splitRows, isDark, diffMode, modeToggle,
+} from "./commit/diffview.js";
 import { splitDiff } from "./pr/diff.js";
 
 const ME = "mods/office-apps";
@@ -26,8 +28,6 @@ const LIMIT = 50;          // 목록에 가져올 PR 수
 const POLL = 120000;       // 목록 자동 갱신 간격(네트워크 요청이라 느리게)
 const BODY_LINES = 6;      // 접힌 본문에 보이는 줄 수
 const CODE_FONT = "D2Coding";
-const NARROW = 760;        // diff 칸이 이보다 좁으면 좌우 모드여도 위아래로 그린다(커밋 앱과 같은 기준)
-const MODE_KEY = "commit.diffMode";   // localStorage: "inline"(위아래) | "split"(좌우). 커밋 앱과 같은 키라 두 앱이 모드를 나눈다.
 const FILE_MAX = 1000000;  // 임시 파일로 받은 출력의 상한(readTextFile은 1MiB까지)
 
 // 필터: 이름 · gh pr list 인자 · 비었을 때 안내
@@ -684,7 +684,7 @@ export class PrApp {
       .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(this.file))
       .when(Boolean(f?.additions), (el) => el.child(div().flex_none().text_size(11).text_color(t.ansi2).child(`+${f.additions}`)))
       .when(Boolean(f?.deletions), (el) => el.child(div().flex_none().text_size(11).text_color(t.ansi1).child(`−${f.deletions}`)))
-      .child(this.modeToggle(t))
+      .child(modeToggle(t, "pr", this.narrow()))
       .child(div().id("pr-diff-close").px(6).rounded(4).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => { this.openFile(null); cx.notify(); }).child("✕"));
     let body;
@@ -707,28 +707,9 @@ export class PrApp {
         .text_size(11).text_color(t.dim).child(foot)));
   }
 
-  // 보기 모드: 커밋 앱과 같은 키를 그릴 때마다 읽어 커밋 앱에서 바꾼 것도 따른다.
-  mode() { try { return localStorage.getItem(MODE_KEY) === "split" ? "split" : "inline"; } catch { return this.modeMem ?? "inline"; } }
+  // 보기 모드는 commit/diffview.js가 그릴 때마다 읽는다(커밋 앱과 같은 값).
   narrow() { return (this.dw ?? 1000) < NARROW; }
-  split() { return this.mode() === "split" && !this.narrow(); }
-
-  setMode(mode, cx) {
-    this.modeMem = mode;
-    try { localStorage.setItem(MODE_KEY, mode); } catch { /* 이번 실행 동안만 */ }
-    cx.notify();
-  }
-
-  // 작은 글자 전환: 위아래 | 좌우(커밋 앱과 같은 모양). 좁아서 위아래로 그리는 중이면 "좌우" 옆에 표시.
-  modeToggle(t) {
-    const cur = this.mode();
-    const opt = (id, mode, label) => div().id(id).px(6).py(2).rounded(4).text_size(11).cursor_pointer()
-      .text_color(cur === mode ? t.foreground : t.dim).when(cur === mode, (el) => el.bg(t.hover))
-      .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => this.setMode(mode, cx)).child(label);
-    return h_flex().flex_none().ml(4).gap(2).items_center()
-      .child(opt("pr-mode-inline", "inline", "위아래"))
-      .child(div().text_size(11).text_color(t.dim).child("|"))
-      .child(opt("pr-mode-split", "split", cur === "split" && this.narrow() ? "좌우(좁아서 위아래)" : "좌우"));
-  }
+  split() { return diffMode() === "split" && !this.narrow(); }
 
   // diff 줄 그리기: commit/diffview.js(커밋 앱과 같은 색·바뀐 글자 강조·위아래/좌우).
   drawDiff(rows, t) {
