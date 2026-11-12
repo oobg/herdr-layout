@@ -604,15 +604,22 @@ class Floor {
       .child(svg(`mods/office/icons/chevron-${open ? "down" : "right"}.svg`).size(10).flex_none().text_color(t.muted))
       .child(div().text_size(11).font_semibold().text_color(t.muted).child(text));
     // 구역 하나: 펼치면 전부(길면 최근 cap개와 "이전 n개"), 접으면 마지막 한 줄.
-    //   keep: 잘라 낼 때도 남길 항목(아직 도는 서브에이전트는 "이전 n개" 아래로 숨기지 않는다).
+    //   keep: 잘라 낼 때도, 접었을 때도 남길 항목(아직 도는 서브에이전트는 숨기지 않는다).
+    //   "이전 n개"를 누르면 cap을 풀어 다 보이고(접힘과 같이 localStorage에 기억), 맨 위 "최근 cap개만"으로 되돌린다.
     const section = (key, text, items, def, row, cap, keep = () => false) => {
       if (!items.length) return [];
-      const open = this.isOpen(`${a.address}|${sub ?? ""}|${key}`, def);
+      const base = `${a.address}|${sub ?? ""}|${key}`;
+      const open = this.isOpen(base, def), all = this.isOpen(`${base}|all`, false);
       const idx = items.map((_, i) => i);
-      const pick = open ? idx.filter((i) => i >= items.length - cap || keep(items[i])) : [items.length - 1];
+      const pick = open ? idx.filter((i) => all || i >= items.length - cap || keep(items[i]))
+        : idx.filter((i) => i === items.length - 1 || keep(items[i]));
       const hidden = items.length - pick.length;
+      const more = (label) => div().id(`ov-more-${id}-${key}`).pl(14).text_size(11).text_color(t.dim).cursor_pointer()
+        .hover((st) => st.text_color(t.foreground))
+        .on_click((_e, cx) => { cx.stop_propagation(); this.toggle(`${base}|all`, false, cx); }).child(label);
       return [head(key, text, open, def),
-        ...(open && hidden > 0 ? [div().pl(14).text_size(11).text_color(t.dim).child(`이전 ${hidden}개`)] : []),
+        ...(open && hidden > 0 ? [more(`이전 ${hidden}개`)] : []),
+        ...(open && all && items.length > cap ? [more(`최근 ${cap}개만`)] : []),
         ...pick.map((i) => row(items[i], i))];
     };
     const out = [];
@@ -632,7 +639,9 @@ class Floor {
     const kids = (main.agents ?? []).filter((g) => (g.parent ?? null) === sub)
       .map((g) => (g.running && v.ended?.[g.id] ? { ...g, running: false, failed: v.ended[g.id] !== "completed" } : g))
       .filter((g) => g.running || g.failed);   // 완료된 서브에이전트는 목록에서 닫고, 중단된 것은 남긴다
-    out.push(...section("agents", `서브에이전트 ${kids.length}`, kids, true, (g) => {
+    const running = kids.filter((g) => g.running).length;
+    const kidsHead = ["서브에이전트", running ? `작업 중 ${running}` : null, kids.length - running ? `중단 ${kids.length - running}` : null].filter(Boolean).join(" · ");
+    out.push(...section("agents", kidsHead, kids, true, (g) => {
       const canOpen = depth < 2;
       const rowKey = `${a.address}|${g.id}|row`;
       const open = canOpen && this.isOpen(rowKey, g.running);
@@ -642,12 +651,8 @@ class Floor {
         .child(g.running ? svg(SPINNER).size(13).flex_none().text_color(t.working).spin(900) : icon("서브에이전트"))
         .child(div().flex_none().px(5).rounded(4).bg("#d699b622").text_size(11).text_color("#d699b6").child(g.type))
         .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(g.what))
-        .child(div().flex_none().text_size(11).text_color(g.running ? t.working : g.failed ? t.blocked : t.muted)
-          .child(g.running ? "작업 중" : g.failed ? "중단" : [
-            "완료",
-            Number.isFinite(g.tools) ? `도구 ${g.tools}번` : null,
-            Number.isFinite(g.ms) ? (g.ms < 60000 ? `${Math.round(g.ms / 1000)}초` : `${Math.round(g.ms / 60000)}분`) : null,
-          ].filter(Boolean).join(" · ")));
+        .child(div().flex_none().text_size(11).text_color(g.running ? t.working : t.blocked)
+          .child(g.running ? "작업 중" : "중단"));   // 목록에는 도는 것과 중단된 것만 남는다
       if (!open) return line;
       const sv = this.subFor(a, main, g, cx);
       const inner = sv ? this.sections(a, main, sv, g.id, depth + 1, cx, t) : [];
