@@ -77,6 +77,7 @@ function goTo({ address, space }) {
 // 이어할 폴더: 기록에 적힌 cwd. 모르면 기록 폴더가 지금 폴더의 것일 때만 지금 폴더(다른 폴더면 claude --resume이 세션을 못 찾는다).
 const folderOf = (s, cwd) => s.cwd || (cwd && (!s.dir || s.dir === slug(cwd)) ? cwd : null);
 const PROJECTS = "$HOME/.claude/projects";
+const PERM = "권한 확인 있음";   // 이어하기·깨우기는 claude --resume만(권한 건너뛰기 플래그 없음). 다른 곳과 같은 낱말
 const projOf = (s, cwd) => `${PROJECTS}/${s.dir ?? slug(cwd)}`;
 
 // 이어하기: 브랜치 앱 inTab과 같은 방식(새 탭 + 터미널 칸 열기).
@@ -299,9 +300,9 @@ export class SessionsApp {
     if (this.launchingNow(s.id) || o?.elsewhere) return;
     const z = this.asleep.get(s.id);
     if (z) return this.wakeIt(s, z, cx);
-    this.launching.set(s.id, Date.now());
     const folder = folderOf(s, this.loc.cwd);
     if (!folder) return;
+    this.launching.set(s.id, Date.now());
     try { resume(s, folder); } catch { this.launching.delete(s.id); cx.notify(); return; }
     cx.notify();
     // 몇 번 다시 읽어 "지금 열림"으로 바꾼다. LAUNCH까지 안 보이면 잠금이 풀려 다시 시도할 수 있다(그때 다시 그린다).
@@ -396,8 +397,8 @@ export class SessionsApp {
     const o = this.opened.get(s.id), z = this.asleep.get(s.id);
     if (o?.address) return ["지금 열림", t.working];
     if (this.launchingNow(s.id)) return [z ? "깨우는 중" : "여는 중", t.muted];   // 다른 곳에서 열림보다 먼저
-    if (z) return [wakingNow(z) ? "깨우는 중" : SLEPT, t.muted];
     if (o?.elsewhere) return ["다른 곳에서 열림", t.muted];
+    if (z) return [wakingNow(z) ? "깨우는 중" : SLEPT, t.muted];
     return [whenLabel(s.mtime), t.dim];
   }
 
@@ -497,6 +498,8 @@ export class SessionsApp {
       .child(h_flex().h(40).flex_none().px(14).gap(8).items_center().border_b_1().border_color(t.border)
         .child(div().flex_1().min_w(0).truncate().text_size(14).font_semibold().text_color(t.foreground).child(oneLine(s.ask) || "요청 없음"))
         .when(Boolean(busy), (el) => el.child(div().flex_none().px(10).py(4).text_size(12).text_color(t.dim).child(busy)))
+        // 이 경로는 권한 건너뛰기 플래그 없이 띄운다(오버뷰 +·워크트리는 "권한 확인 없이"): 버튼 옆에 흐리게
+        .when(Boolean(label) && !o?.address, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(PERM)))
         .when(Boolean(label), (el) => el.child(btn("sessions-act", label, (_e, cx) => this.act(s, cx)))))
       .child(v_flex().id("sessions-detail").flex_1().min_h(0).overflow_y_scrollbar().px(20).py(14).gap(2).children(items));
   }

@@ -123,12 +123,15 @@ export async function sleepAgents(ctx) {
 // 돌려주는 값: { ok, to?: { space, tab, pane, terminal }(옮겨 갈 곳), why?(실패 이유), removed?(기록을 지웠는지) }
 const WAIT = 15;   // 깨운 뒤 Claude Code가 뜨기를 기다리는 초
 
-// 조건을 1초마다 WAIT초까지 본다(setTimeout이 없어 sleep 프로세스로 기다린다). 맞으면 그 값, 아니면 null.
+// 조건을 1초마다 WAIT초까지 본다(setTimeout이 없어 sleep 프로세스로 기다린다). 두 번 잇달아 맞으면 그 값, 아니면 null
+//   (재개가 시작됐다 곧 끝나는 경우 — 세션을 못 찾음 등 — 를 성공으로 치지 않게).
 async function waitFor(fn) {
+  let hit = 0;
   for (let i = 0; i < WAIT; i++) {
     await exec("sleep", ["1"]).catch(() => null);
     const v = fn(panes() ?? []);
-    if (v) return v;
+    hit = v ? hit + 1 : 0;
+    if (hit >= 2) return v;
   }
   return null;
 }

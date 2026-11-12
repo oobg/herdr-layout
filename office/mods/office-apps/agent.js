@@ -437,8 +437,8 @@ export class AgentApp {
       if (staleNote) items.push(staleNote);
       // Codex는 대화 기록을 아직 읽지 못한다고 정직하게(누르면 그 터미널로). 다른 에이전트도 Claude Code만 읽는다고 밝힌다.
       if (!claude && isCodex(r.program, r.app) && r.kind !== "rec")
-        items.push(this.note("Codex 대화는 아직 읽지 못합니다 · 터미널로", t).id("agent-codex-note").cursor_pointer()
-          .hover((x) => x.text_color(t.muted)).on_click(() => goTo(this.target(r))));
+        items.push(div().id("agent-codex-note").pt(14).text_size(12).text_color(t.dim).cursor_pointer()
+          .hover((x) => x.text_color(t.muted)).on_click(() => goTo(this.target(r))).child("Codex 대화는 아직 읽지 못합니다 · 터미널로"));
       else items.push(this.note(!claude ? "Claude Code 에이전트만 하는 일을 읽을 수 있습니다" : !v ? "기록을 읽는 중" : "대화 기록을 찾지 못했습니다", t));
     }
 

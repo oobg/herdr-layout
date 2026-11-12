@@ -232,6 +232,8 @@ export class WorkspaceApp {
     cx?.notify?.();
     const r = await wake(rec).catch(() => ({ ok: false, why: "깨우지 못했습니다" }));
     this.waking.delete(rec.address);
+    // 깨우는 동안 TICK이 읽어 온 기록에는 waking 잠금이 남아 있다: 파일에서 다시 읽어 실패 뒤 바로 다시 깨울 수 있게
+    this.sleeping = (await readSleeping().catch(() => null)) ?? this.sleeping.map((x) => (x.address === rec.address ? { ...x, waking: 0 } : x));
     if (r.ok || r.removed) this.sleeping = this.sleeping.filter((x) => x.address !== rec.address);
     if (r.why && r.removed) notify({ title: `'${rec.tabName}' 탭을 깨우지 않았습니다`, body: r.why, level: "info" });
     else if (r.why) this.wakeWhy[rec.address] = r.why;
@@ -390,6 +392,9 @@ export class WorkspaceApp {
       .child(text);
   }
 
+  // 깨우기 옆 흐린 낱말: claude --resume만 보내고 권한 건너뛰기 플래그는 붙이지 않는다(오버뷰 +·워크트리는 "권한 확인 없이")
+  perm(t) { return div().flex_none().self_center().text_size(11).text_color(t.dim).child("권한 확인 있음"); }
+
   head(title, sub, buttons, t) {
     return v_flex().flex_none().px(14).py(10).gap(8).border_b_1().border_color(t.border)
       .child(h_flex().gap(8).items_center()
@@ -450,7 +455,7 @@ export class WorkspaceApp {
     return v_flex().size_full().min_h(0)
       .child(this.head(tab.name, sub, [
         ...(slept.length ? [slept.some((r) => this.isWaking(r)) ? this.btn("ws-wake", "깨우는 중", null, t)
-          : this.btn("ws-wake", "깨우기", (_e, cx) => this.wakeTab(tab.id, cx), t)] : []),
+          : this.btn("ws-wake", "깨우기", (_e, cx) => this.wakeTab(tab.id, cx), t), this.perm(t)] : []),
         this.btn("ws-go", "이 탭으로 가기", () => this.leave(() => goTab(s.id, tab.id)), t),
         this.btn("ws-rename", "이름 바꾸기", () => ask("tab", tab.id, "탭 이름 바꾸기", tab.named ? tab.name : ""), t),
         tab.settled
@@ -575,6 +580,7 @@ export class WorkspaceApp {
             .child(div().truncate().text_size(12.5).text_color(t.foreground).child(r.tabName || r.address))
             .child(div().truncate().text_size(11).text_color(t.dim).child(`${where(r.cwd, r.machine)}${r.machine ? ` · ${r.machine}` : ""} · 깨우면 새 탭에서 이어 갑니다`))
             .when(Boolean(this.wakeWhy[r.address]), (el) => el.child(div().truncate().text_size(11).text_color(t.muted).child(this.wakeWhy[r.address]))))
+          .child(this.perm(t))
           .child(this.isWaking(r) ? this.btn(`ws-o-wake-${r.address}`, "깨우는 중", null, t)
             : this.btn(`ws-o-wake-${r.address}`, "깨우기", (_e, cx) => cx.spawn(async (cx) => this.wakeOne(r, cx)), t))
           .child(this.btn(`ws-o-forget-${r.address}`, "기록 지우기", (_e, cx) => cx.spawn(async (cx) => {
