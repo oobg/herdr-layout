@@ -26,6 +26,7 @@ const PROBE_AGAIN = 60000;   // 재울 만한 칸의 기록을 다시 확인하�
 const TICK = 15000;          // 앱이 보이는 동안 잠든 기록·후보를 다시 보는 간격
 
 const APPS = "mods/office-apps";
+const CLEAR = "#00000000";     // 키보드 커서가 없을 때 체크 줄 테두리(자리만 잡아 커서가 와도 줄이 움직이지 않게)
 const BRAND = [[/claude/i, `${APPS}/agent/icons/claude.svg`, "#d97757"], [/codex|openai/i, `${APPS}/agent/icons/openai.svg`, null]];
 
 function load(k, d) { try { return JSON.parse(localStorage.getItem(k) ?? "null") ?? d; } catch { return d; } }
@@ -331,7 +332,17 @@ export class WorkspaceApp {
   }
 
   // ── 오른쪽 ────────────────────────────────────────────
+  // 런처 키 계약: 지난 그리기에서 모은 멈출 곳(버튼·체크, 화면 순서). run은 그 줄의 on_click과 같은 함수.
+  focusables() { return this.stops ?? []; }
+
+  // 그리면서 멈출 곳을 모은다. 키보드 커서가 있으면 true(테두리 t.accent로 그린다).
+  stop(id, kind, fn) {
+    (this.stops || (this.stops = [])).push({ id, kind, run: (cx) => fn(null, cx) });
+    return Boolean(this.kb?.on?.(id));
+  }
+
   detail(cx, t) {
+    this.stops = [];
     this.prepare(cx);
     const r = this.current();
     if (!r) return null;
@@ -341,7 +352,8 @@ export class WorkspaceApp {
   }
 
   btn(id, text, fn, t, danger = false) {
-    return div().id(id).flex_none().px(10).py(4).rounded(6).border_1().border_color(t.border).text_size(12)
+    const on = fn ? this.stop(id, "button", fn) : false;
+    return div().id(id).flex_none().px(10).py(4).rounded(6).border_1().border_color(on ? t.accent : t.border).text_size(12)
       .when(Boolean(fn), (el) => el.text_color(danger ? t.ansi1 : t.foreground).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(fn))
       .when(!fn, (el) => el.text_color(t.dim))
       .child(text);
@@ -452,9 +464,11 @@ export class WorkspaceApp {
       .child(v_flex().id("ws-detail").flex_1().min_h(0).overflow_y_scrollbar().px(14).py(10)
         .when(!cs.length, (el) => el.child(div().px(6).pt(2).text_size(13).text_color(t.muted).child("닫을 만한 탭이 없습니다")))
         .children(cs.map((c) => {
-          const v = on(c);
+          const v = on(c), flip = (_e, cx) => { this.checks[c.tab.id] = !v; cx.notify(); };
+          const f = this.stop(`ws-c-${c.tab.id}`, "check", flip);
           return h_flex().id(`ws-c-${c.tab.id}`).min_h(40).px(6).py(4).gap(10).items_center().rounded(4).cursor_pointer().hover((x) => x.bg(t.hover))
-            .on_click((_e, cx) => { this.checks[c.tab.id] = !v; cx.notify(); })
+            .border_1().border_color(f ? t.accent : CLEAR)
+            .on_click(flip)
             .child(div().size(14).flex_none().rounded(3).border_1().border_color(v ? t.foreground : t.border)
               .flex().items_center().justify_center().text_size(11).text_color(t.foreground).child(v ? "✓" : ""))
             .child(v_flex().flex_1().min_w(0)
@@ -473,9 +487,11 @@ export class WorkspaceApp {
     if (!xs.length) return div();
     const open = Boolean(this.skipOpen);
     const sum = skipSummary(xs).slice(0, 3).map(([k, n]) => `${k} ${n}`).join(" · ");
+    const fold = (_e, cx) => { this.skipOpen = !open; cx.notify(); }, f = this.stop("ws-skip-head", "button", fold);
     return v_flex().pt(10)
       .child(h_flex().id("ws-skip-head").h(24).px(6).gap(6).items_center().rounded(4).cursor_pointer().hover((x) => x.bg(t.hover))
-        .on_click((_e, cx) => { this.skipOpen = !open; cx.notify(); })
+        .border_1().border_color(f ? t.accent : CLEAR)
+        .on_click(fold)
         .child(svg(`${APPS}/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim))
         .child(div().flex_none().text_size(11.5).text_color(t.dim).child(`후보에서 뺀 탭 ${xs.length}`))
         .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(sum)))
@@ -503,8 +519,11 @@ export class WorkspaceApp {
       .when(!zs.length, (el) => el.child(div().px(6).pt(2).text_size(12.5).text_color(t.muted).child(this.loaded ? "재울 만한 에이전트가 없습니다" : "기록을 확인하는 중")))
       .children(zs.map((c) => {
         const v = Boolean(this.zchecks[c.address]);
+        const flip = (_e, cx) => { if (v) delete this.zchecks[c.address]; else this.zchecks[c.address] = true; cx.notify(); };
+        const f = this.stop(`ws-z-${c.address}`, "check", flip);
         return h_flex().id(`ws-z-${c.address}`).min_h(40).px(6).py(4).gap(10).items_center().rounded(4).cursor_pointer().hover((x) => x.bg(t.hover))
-          .on_click((_e, cx) => { if (v) delete this.zchecks[c.address]; else this.zchecks[c.address] = true; cx.notify(); })
+          .border_1().border_color(f ? t.accent : CLEAR)
+          .on_click(flip)
           .child(div().size(14).flex_none().rounded(3).border_1().border_color(v ? t.foreground : t.border)
             .flex().items_center().justify_center().text_size(11).text_color(t.foreground).child(v ? "✓" : ""))
           .child(v_flex().flex_1().min_w(0)
