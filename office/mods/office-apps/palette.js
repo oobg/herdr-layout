@@ -6,11 +6,13 @@
 //   위험해 보이는 명령(이름에 close·kill·reset·remove·quit)은 확인 창(menu.js Confirm, danger)을 거친다.
 //   단축키는 herdr keys()(keys.json과 같은 내용)를 읽기만 한다 — 키를 묶는 일은 하지 않는다.
 //   순수 함수(목록·단축키·위험 판단·인자 만들기·검색)는 palette/core.js(herdr를 import하지 않아 node로 시험).
+//   Herdr 명령 설명은 palette/ko.js의 한국어 한 줄로 보이고, 상세에서 그 아래 영어 원문을 흐리게 둔다. 검색은 둘 다에서.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, ScrollHandle } from "gpui-base";
 import { commands, keys, readTextFile, appHome, run, notify, shared, setShared, openOverlay } from "herdr";
 import { ACTIONS } from "./menu.js";
 import * as P from "./palette/core.js";
+import { argLabel } from "./palette/ko.js";
 
 const ME = "mods/office-apps";
 const CODE_FONT = "D2Coding";
@@ -163,7 +165,7 @@ export class PaletteApp {
     if (danger) {
       openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: {
         role: "confirm", action: "palette.run", ctx, title: `${c.name} 실행`, yes: "실행", danger: true,
-        detail: c.about ? `${c.about} — ${shown(r)}` : shown(r),
+        detail: (c.ko || c.about) ? `${c.ko || c.about} — ${shown(r)}` : shown(r),
       } });
       return;
     }
@@ -188,7 +190,7 @@ export class PaletteApp {
       .hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { this.pick(c.name); this.activate(cx); cx.notify(); })
       .child(h_flex().gap(6).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child((P.summary(c.about) || c.name) + (more ? "…" : "")))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(P.title(c) + (more ? "…" : "")))
         .when(Boolean(k), (el) => el.child(div().flex_none().text_size(11).text_color(t.muted).child(k.label))))
       .child(div().truncate().font_family(CODE_FONT).text_size(11).text_color(t.muted).child(c.name));
   }
@@ -238,13 +240,13 @@ export class PaletteApp {
 
     // 인자: 필수 인자가 있으면 입력 칸, 없으면 이름만(선택 인자는 이 앱에서 넣지 않는다)
     const argRows = needs
-      ? this.inputs.map((i) => h_flex().gap(10).items_center()
-        .child(v_flex().w(110).flex_none()
-          .child(div().truncate().font_family(CODE_FONT).text_size(12).text_color(t.foreground).child(i.arg.name))
-          .child(div().text_size(11).text_color(t.muted).child(i.arg.required ? "필수" : "선택")))
-        .child(div().flex_1().min_w(0).child(Input.new(i.state).h(28).text_size(13).text_color(t.foreground))))
+      ? this.inputs.map((i) => v_flex().gap(3)
+        .child(h_flex().gap(6).items_center()
+          .child(div().min_w(0).truncate().font_family(CODE_FONT).text_size(12).text_color(t.foreground).child(argLabel(i.arg.name)))
+          .child(div().flex_none().text_size(11).text_color(t.muted).child(i.arg.required ? "필수" : "선택")))
+        .child(Input.new(i.state).h(28).text_size(13).text_color(t.foreground)))
       : args.length
-        ? [div().font_family(CODE_FONT).text_size(12).text_color(t.muted).child(args.map((a) => a.name).join(" · ")),
+        ? [div().font_family(CODE_FONT).text_size(12).text_color(t.muted).child(args.map((a) => argLabel(a.name)).join(" · ")),
           note("모두 선택 인자입니다. 이 앱에서는 인자 없이 실행합니다")]
         : [note("없음")];
 
@@ -257,11 +259,12 @@ export class PaletteApp {
 
     return v_flex().id("pl-detail-root").size_full().min_h(0)
       .child(h_flex().h(40).flex_none().px(14).gap(8).items_center().border_b_1().border_color(t.border)
-        .child(div().flex_1().min_w(0).truncate().text_size(14).font_semibold().text_color(t.foreground).child(P.summary(c.about) || c.name))
+        .child(div().flex_1().min_w(0).truncate().text_size(14).font_semibold().text_color(t.foreground).child(P.title(c)))
         .child(runBtn))
       .child(v_flex().id("pl-detail").flex_1().min_h(0).overflow_y_scrollbar().px(18).py(12).gap(6)
         .child(div().font_family(CODE_FONT).text_size(12).text_color(t.muted).child(c.name))
-        .child(div().text_color(t.foreground).child(c.about || "설명이 없습니다"))
+        .child(div().text_color(t.foreground).child(c.ko || c.about || "설명이 없습니다"))
+        .when(Boolean(c.ko && c.about), (el) => el.child(div().text_size(12).text_color(t.muted).child(c.about)))
         .when(danger, (el) => el.child(div().text_size(12).text_color(t.ansi1).child("위험할 수 있는 명령 · 실행 전에 한 번 더 묻습니다")))
         .child(section("인자"))
         .children(argRows)

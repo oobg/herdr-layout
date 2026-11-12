@@ -1,5 +1,7 @@
 // 명령 앱의 순수 함수: 명령 목록 합치기, 단축키 붙이기, 사람 말 한 줄, 위험 판단, 인자 만들기, 검색·최근 순서.
 //   herdr를 import하지 않는다 — node로 `herdr-app commands` 출력과 keys.json을 넣어 시험한다.
+//   Herdr 명령의 한국어 한 줄은 palette/ko.js(ko 필드). 표에 없으면 영어 about에서 첫 문장을 뽑는다.
+import { koOf } from "./ko.js";
 
 // 이 레이아웃의 앱 명령(office-apps의 nextCommand가 받는 것, main.js 머리 주석의 "키·명령").
 //   main.js를 import할 수 없어(main.js가 이 앱을 import한다) 앱 id를 여기 손으로 적는다. 앱을 더하면 여기도 더한다.
@@ -29,16 +31,16 @@ export const APP_COMMANDS = [
   { name: "office-apps.files-toggle-ignored", args: [], about: "파일 앱에서 gitignore 항목 감추기를 켜고 끕니다." },
 ];
 
-// Herdr 명령 + 앱 명령. 이름이 겹치면 Herdr 쪽을 둔다. app: 앱 명령인지
+// Herdr 명령 + 앱 명령. 이름이 겹치면 Herdr 쪽을 둔다. app: 앱 명령인지, ko: 한국어 한 줄(표에 없으면 "")
 export function allCommands(herdr) {
   const seen = new Set();
   const out = [];
   for (const c of herdr ?? []) {
     if (!c?.name || seen.has(c.name)) continue;
     seen.add(c.name);
-    out.push({ name: c.name, args: (c.args ?? []).map((a) => ({ name: a.name, required: Boolean(a.required) })), about: c.about ?? "", app: false });
+    out.push({ name: c.name, args: (c.args ?? []).map((a) => ({ name: a.name, required: Boolean(a.required) })), about: c.about ?? "", ko: koOf(c.name), app: false });
   }
-  for (const c of APP_COMMANDS) if (!seen.has(c.name)) { seen.add(c.name); out.push({ ...c, app: true }); }
+  for (const c of APP_COMMANDS) if (!seen.has(c.name)) { seen.add(c.name); out.push({ ...c, ko: "", app: true }); }
   return out;
 }
 
@@ -65,6 +67,9 @@ export function summary(about) {
   }
   return s.replace(/[.\s,]+$/, "").trim();
 }
+
+// 목록·상세 제목에 쓸 한 줄: 한국어 표 → about 첫 문장 → 이름
+export const title = (c) => c?.ko || summary(c?.about) || c?.name || "";
 
 // keys.json { section: { "cmd-shift-p": "app.palette" } } 또는 herdr keys() [{ section, keys, action }] → [{ section, keys, action }]
 export function bindingList(src) {
@@ -161,7 +166,7 @@ export function pushRecent(list, name) {
 
 // 검색 + 묶음. items: allCommands 결과에 keys(단축키 배열)를 붙인 것. 결과 [{ title, rows: [cmd…] }]
 //   최근 실행한 명령은 맨 위 "최근" 묶음에만 둔다(아래에 다시 나오지 않게 — 한 줄은 한 번만 고를 수 있다).
-//   검색: 이름·사람 말·설명 전체·단축키(기호와 원래 글자)에서 부분 일치. 이름·사람 말 일치를 앞에.
+//   검색: 이름·사람 말(한국어 한 줄과 영어 첫 문장)·설명 전체·단축키(기호와 원래 글자)에서 부분 일치. 이름·사람 말 일치를 앞에.
 // 단축키 글자 비교: 수정 키 기호의 순서를 맞춘다(⌘⇧P와 ⇧⌘P를 같게)
 const MOD_ORDER = "⌃⌥⇧⌘";
 const normKey = (s) => [...s].filter((ch) => MOD_ORDER.includes(ch)).sort((a, b) => MOD_ORDER.indexOf(a) - MOD_ORDER.indexOf(b)).join("")
@@ -171,7 +176,7 @@ export function groups(items, query, recent) {
   const q = String(query ?? "").trim().toLowerCase(), qk = normKey(q);
   const score = (c) => {
     if (!q) return 0;
-    if (c.name.toLowerCase().includes(q) || summary(c.about).toLowerCase().includes(q)) return 1;
+    if (c.name.toLowerCase().includes(q) || (c.ko ?? "").toLowerCase().includes(q) || summary(c.about).toLowerCase().includes(q)) return 1;
     if ((c.keys ?? []).some((k) => normKey(k.label.toLowerCase()).includes(qk) || k.keys.toLowerCase().includes(q))) return 2;
     if (c.about.toLowerCase().includes(q)) return 3;
     return 0;
