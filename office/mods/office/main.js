@@ -7,7 +7,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import * as fs from "fs/promises";
 import { readActivity, readSub } from "./activity.js";
-import { placeOf, summary, artifactTitle } from "./parse.js";
+import { placeOf, summary, artifactTitle, plainTitle } from "./parse.js";
 import * as md from "./md.js";
 import { STATUS_WORD, UNKNOWN_WORD, FINISHED, holdDone } from "./status.js";
 import { CI_KEY, CI_EVERY, githubRepo, ciRun, ciWord, sameCi } from "./ci.js";
@@ -392,7 +392,7 @@ class Floor {
             .when(closable, (x) => x.cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
               .on_click((_e, cx) => { cx.stop_propagation(); openCloseConfirm(a, name(a)); }))
             .child("✕"))))
-        .when(Boolean(a.title), (el) => el.child(div().pl(sub ? 24 : 46).truncate().text_size(12).text_color(t.muted).child(a.title)));
+        .when(Boolean(a.title), (el) => el.child(div().pl(sub ? 24 : 46).truncate().text_size(12).text_color(t.muted).child(plainTitle(a.title))));
     };
     const sync = [g.ahead ? `↑${g.ahead}` : null, g.behind ? `↓${g.behind}` : null].filter(Boolean).join(" ");
 

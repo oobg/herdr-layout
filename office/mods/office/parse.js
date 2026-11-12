@@ -262,3 +262,8 @@ export function placeOf(p, h, cwd) {
   if (p.startsWith(h + "/")) return ["홈", `~/${p.slice(h.length + 1)}`];
   return [null, p];
 }
+
+// 창 제목의 인라인 코드 백틱만 걷는다("`.handoff.md` 인수인계" → ".handoff.md 인수인계"). 짝이 맞는 것만, 그 밖은 그대로.
+export function plainTitle(s) {
+  return String(s ?? "").replace(/`([^`\n]+)`/g, "$1");
+}
