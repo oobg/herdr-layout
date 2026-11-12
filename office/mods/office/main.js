@@ -358,7 +358,7 @@ class Floor {
         .child("+"));
     // 에이전트 줄: 1행 상태·이름·경과, 2행 하는 일(창 제목). 상태 단어에만 색.
     const agentRow = (a, sub) => {
-      const label = a.status == null ? UNKNOWN_WORD : STATUS_WORD[a.status] ?? "", color = COLOR[a.status] ?? t.dim;
+      const label = a.status == null ? UNKNOWN_WORD : STATUS_WORD[a.status] ?? "", color = COLOR[a.status] ?? t.muted;
       const m = a.status === "working" ? mins(tabOf(a)?.working_since) : null;
       // 지금 보고 있는(포커스된) 에이전트 줄은 선택 표시. 누르면 그 터미널로 전환(탭 역할).
       const here = Boolean(a.focused) || focused()?.terminal === a.address;
@@ -683,7 +683,7 @@ class Floor {
     const head = (key, text, open, def) => h_flex().id(`ov-h-${id}-${key}`).pt(4).gap(4).items_center().cursor_pointer()
       .on_click((_e, cx) => { cx.stop_propagation(); this.toggle(`${a.address}|${sub ?? ""}|${key}`, def, cx); })
       .child(svg(`mods/office/icons/chevron-${open ? "down" : "right"}.svg`).size(10).flex_none().text_color(t.muted))
-      .child(div().text_size(11).font_semibold().text_color(t.muted).child(text));
+      .child(div().text_size(12).font_semibold().text_color(t.muted).child(text));
     // 구역 하나: 펼치면 전부(길면 최근 cap개와 "이전 n개"), 접으면 마지막 한 줄.
     //   keep: 잘라 낼 때도, 접었을 때도 남길 항목(아직 도는 서브에이전트는 숨기지 않는다).
     //   "이전 n개"를 누르면 cap을 풀어 다 보이고(접힘과 같이 localStorage에 기억), 맨 위 "최근 cap개만"으로 되돌린다.
@@ -696,7 +696,7 @@ class Floor {
       const pick = open ? idx.filter((i) => all || (front ? i < cap : i >= items.length - cap) || keep(items[i]))
         : idx.filter((i) => i === (front ? 0 : items.length - 1) || keep(items[i]));
       const hidden = items.length - pick.length;
-      const more = (label) => div().id(`ov-more-${id}-${key}`).pl(14).text_size(11).text_color(t.dim).cursor_pointer()
+      const more = (label) => div().id(`ov-more-${id}-${key}`).pl(14).text_size(12).text_color(t.muted).cursor_pointer()
         .hover((st) => st.text_color(t.foreground))
         .on_click((_e, cx) => { cx.stop_propagation(); this.toggle(`${base}|all`, false, cx); }).child(label);
       if (front) return [head(key, text, open, def), ...pick.map((i) => row(items[i], i)),
@@ -784,7 +784,7 @@ class Floor {
       const key = `${id}|say`, full = this.isOpen(key, false);
       const p = this.sayBlocks(id, say);
       const shown = full ? { blocks: p.blocks, more: false } : p.short;
-      const toggle = (label) => div().id(`ov-say-more-${id}`).text_size(11).text_color(t.dim).cursor_pointer()
+      const toggle = (label) => div().id(`ov-say-more-${id}`).text_size(12).text_color(t.muted).cursor_pointer()
         .hover((st) => st.text_color(t.foreground))
         .on_click((_e, cx) => { cx.stop_propagation(); this.toggle(key, false, cx); }).child(label);
       out.push(h_flex().gap(8).items_start().min_h(18)
@@ -1040,7 +1040,7 @@ class AddAgent {
       .child(div().w(16).flex_none().flex().justify_center().child(programIcon(a, 14, t)))
       .child(div().flex_1().min_w(0).truncate().child(a.name));
     const ok = (this.list ?? []).filter((a) => a.ok), rest = (this.list ?? []).filter((a) => !a.ok);
-    const note = (text) => div().px(8).py(6).text_color(t.dim).child(text);
+    const note = (text) => div().px(8).py(6).text_size(12).text_color(t.muted).child(text);
     return v_flex().id("office-add-agent").track_focus(this.h).size_full().p(5).gap(1).bg(t.popover).text_size(12.5).overflow_y_scrollbar()
       .on_key_down((e, cx) => { if (e.key === "escape") { closeOverlay(p.overlay); cx.stop_propagation(); } })
       .child(div().px(8).pt(4).pb(4).text_size(11).text_color(t.dim).child("에이전트 띄우기"))
@@ -1048,7 +1048,7 @@ class AddAgent {
       .when(this.failed, (el) => el.child(note("설치된 에이전트를 확인하지 못했습니다")))
       .when(this.list != null && !this.list.length, (el) => el.child(note("설치된 에이전트가 없습니다")))
       .children(ok.map(row))
-      .when(rest.length > 0, (el) => el.child(div().px(8).pt(8).pb(2).text_size(11).text_color(t.dim).child("구독 확인 안 됨")).children(rest.map(row)));
+      .when(rest.length > 0, (el) => el.child(div().px(8).pt(8).pb(2).text_size(12).text_color(t.muted).child("구독 확인 안 됨")).children(rest.map(row)));
   }
 }
 
