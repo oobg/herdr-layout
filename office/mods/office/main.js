@@ -278,6 +278,7 @@ class Floor {
       .child(div().id("ov-add-agent").w(20).h(18).flex().items_center().justify_center().rounded(4).text_size(14).text_color(t.muted)
         .cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
         .on_click((_e, cx) => { cx.stop_propagation(); openAddMenu(s, this.where(s, panes())); })
+        .tooltip("에이전트 띄우기")
         .child("+"));
     // 에이전트 줄: 1행 상태·이름·경과, 2행 하는 일(창 제목). 상태 단어에만 색.
     const agentRow = (a, sub) => {
@@ -771,6 +772,7 @@ class Termbar {
       .child(div().id("office-close").px(6).rounded(4).text_color(t.muted).cursor_pointer()
         .hover((st) => st.bg(t.hover).text_color(t.foreground))
         .on_click(() => closeTerm())
+        .tooltip("터미널 칸 닫기")
         .child("✕"));
   }
 }
