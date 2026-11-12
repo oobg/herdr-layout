@@ -49,7 +49,7 @@ export const oneLine = (s) => String(s ?? "").split("\n").find((l) => l.trim())?
 
 // 목록 셸 출력:
 //   @@T <전체 개수>
-//   @@F <id> <수정 시각 초> <크기> <만든 시각 초>   (뒤에 그 파일 앞부분의 user 줄들, 이미 아는 id면 없음)
+//   @@F <id> <수정 시각 초> <크기> <만든 시각 초> <기록 폴더 이름>   (뒤에 그 파일 앞부분의 user 줄들, 이미 아는 id면 없음)
 export function parseListing(out) {
   let total = 0, cur = null;
   const files = [];
@@ -58,9 +58,9 @@ export function parseListing(out) {
     if (line.startsWith("@@T ")) { total = Number(line.slice(4)) || 0; continue; }
     if (line.startsWith("@@F ")) {
       flush();
-      const [id, m, z, b] = line.slice(4).split(" ");
+      const [id, m, z, b, dir] = line.slice(4).split(" ");
       const birth = Number(b) > 0 ? Number(b) * 1000 : 0;
-      cur = { id, mtime: Number(m) * 1000 || 0, size: Number(z) || 0, birth, lines: [] };
+      cur = { id, mtime: Number(m) * 1000 || 0, size: Number(z) || 0, birth, dir: dir || null, lines: [] };
       continue;
     }
     if (cur && line) cur.lines.push(line);
@@ -204,22 +204,44 @@ export const artifacts = (text) => artifactList(collectArtifacts(text));
 
 // ── 셸 스크립트(sh -c, 인자로 값을 넘긴다. node로도 그대로 돌려 볼 수 있게 여기 둔다) ──
 
-// 목록: $1 기록 폴더($HOME 그대로, eval로 편다) $2 몇 개 $3 앞부분을 이미 읽은 id들(쉼표로).
-//   최근 수정 순 n개의 크기·수정 시각·만든 시각(stat: macOS -f, 리눅스 -c)과, 처음 보는 파일만 앞 2MB 안의 앞 user 줄 3개
-//   (시작 훅·첨부가 앞에 수백 KB 붙기도 한다. grep -m이 거기서 멈춰 그 뒤는 읽지 않는다).
-//   폴더가 없으면 exit 3.
+// 목록: $1 기록 폴더들의 부모($HOME 그대로, eval로 편다) $2 몇 개 $3 앞부분을 이미 읽은 id들(쉼표로)
+//   $4… 그 아래 폴더 이름 패턴(scopeGlobs: 슬러그 그대로, "슬러그-*", "*"). 슬러그는 영문·숫자·'-'뿐이라 따옴표 없이 펴도 안전하다.
+//   고른 폴더들의 *.jsonl 중 최근 수정 순 n개의 크기·수정 시각·만든 시각(stat: macOS -f, 리눅스 -c)·폴더 이름과, 처음 보는 파일만
+//   앞 2MB 안의 앞 user 줄 3개(시작 훅·첨부가 앞에 수백 KB 붙기도 한다. grep -m이 거기서 멈춰 그 뒤는 읽지 않는다).
+//   부모 폴더가 없으면 exit 3.
 export const LIST_SH = [
-  'p=$(eval echo "$1"); n=$2; known=",$3,"',
-  '[ -d "$p" ] || exit 3',
-  'cd "$p" || exit 3',
-  'echo "@@T $(ls *.jsonl 2>/dev/null | wc -l | tr -d " ")"',
-  'ls -t *.jsonl 2>/dev/null | head -n "$n" | while IFS= read -r f; do',
-  '  id=${f%.jsonl}',
+  'b=$(eval echo "$1"); n=$2; known=",$3,"; shift 3',
+  '[ -d "$b" ] || exit 3',
+  'cd "$b" || exit 3',
+  'dirs=""; for g in "$@"; do for d in ./$g; do [ -d "$d" ] && case " $dirs " in *" $d "*) ;; *) dirs="$dirs $d" ;; esac; done; done',
+  'set --; for d in $dirs; do for f in "$d"/*.jsonl; do [ -f "$f" ] && set -- "$@" "$f"; done; done',
+  'echo "@@T $#"',
+  '[ $# -gt 0 ] || exit 0',
+  'ls -t -- "$@" | head -n "$n" | while IFS= read -r f; do',
+  '  d=${f%/*}; d=${d#./}; id=${f##*/}; id=${id%.jsonl}',
   '  s=$(stat -f "%m %z %B" "$f" 2>/dev/null || stat -c "%Y %s %W" "$f" 2>/dev/null)',
-  '  echo "@@F $id $s"',
+  '  echo "@@F $id $s $d"',
   '  case "$known" in *",$id,"*) ;; *) head -c 2097152 "$f" | LC_ALL=C grep -m 3 -F \'"type":"user"\' ;; esac',
   'done',
 ].join("\n");
+
+// ── 범위 ────────────────────────────────────────────────
+// 세션 앱 범위: "here" 이 폴더 · "repo" 이 레포의 모든 폴더(워크트리와 그 하위 폴더) · "all" 전체 최근
+export const SCOPES = [["here", "이 폴더"], ["repo", "이 레포"], ["all", "전체 최근"]];
+
+// 범위 → LIST_SH 폴더 패턴. roots: repo일 때 워크트리 경로들(git이 아니면 이 폴더 하나).
+//   슬러그는 '/'와 '-'를 구분하지 못해 "슬러그-*"가 이웃 폴더(repo-other)도 잡는다: 목록을 읽은 뒤 inRoots로 거른다.
+export function scopeGlobs(scope, cwd, roots = []) {
+  if (scope === "all") return ["*"];
+  if (scope === "repo") return [...new Set((roots.length ? roots : [cwd]).flatMap((r) => [slug(r), `${slug(r)}-*`]))];
+  return [slug(cwd)];
+}
+
+// 세션 폴더(cwd)가 roots 중 하나이거나 그 아래인지. cwd를 모르면(앞부분에 없음) 둔다.
+export const inRoots = (cwd, roots) => !cwd || roots.some((r) => cwd === r || cwd.startsWith(`${r.replace(/\/$/, "")}/`));
+
+// git worktree list --porcelain → 워크트리 경로들(첫째가 주 작업 폴더)
+export const parseWorktrees = (out) => String(out).split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice(9).trim()).filter(Boolean);
 
 // 아티팩트: $1 기록 폴더 $2 세션 id $3 지난번에 읽은 크기(없으면 0).
 //   첫 줄에 지금 크기, 이어서 Artifact 호출 줄과 아티팩트 주소가 든 줄만(다시 담은 api-request·첨부 줄은 뺀다).

@@ -1,6 +1,10 @@
 // office-apps의 세션 앱: 지금 스페이스 폴더의 지난 Claude Code 세션을 보고 이어 한다.
-//   범위: 파일·브랜치 앱과 같은 규칙(포커스된 패인의 폴더, 없으면 스페이스 폴더, 다른 머신이면 on)의 폴더.
+//   폴더: 파일·브랜치 앱과 같은 규칙(포커스된 패인의 폴더, 없으면 스페이스 폴더, 다른 머신이면 on).
 //         기록 = ~/.claude/projects/<폴더 경로의 영문·숫자 밖 글자를 '-'로>/*.jsonl (agent/activity.js sessionOf와 같은 규칙).
+//         Claude Code만 읽는다(부제에 "Claude Code만"). Codex 세션(~/.codex/sessions)은 아직 읽지 않는다.
+//   범위: 왼쪽 위 조용한 글자 탭 "이 폴더 · 이 레포 · 전체 최근"(열 때마다 이 폴더). 이 레포 = git worktree list의 모든 워크트리와
+//         그 하위 폴더(슬러그가 겹치는 이웃 폴더는 기록의 cwd로 거른다), 전체 최근 = projects 아래 모든 폴더. 키보드는 Tab으로 오간다.
+//         다른 폴더의 세션은 목록에 그 폴더 이름(흐리게), 상세·이어하기는 그 세션의 기록 폴더(dir)·cwd로.
 //   왼쪽: 날짜 묶음(오늘/어제/이번 주/그 전) 아래 줄 = 첫 요청 한 줄 · 흐린 시각. 지금 터미널에서 도는 세션은 "지금 열림".
 //         최근 50개, 더 있으면 맨 아래 "더 보기"(50개씩).
 //   오른쪽: 요청(첫 요청) · 마지막 말(마크다운 앞 6줄, agent/say.js) · 마지막 턴에서 고친 파일 · 게시한 아티팩트(누르면 브라우저.
@@ -13,7 +17,8 @@
 //   마지막 말·고친 파일은 고른 세션만 끝 2MB(agent/activity.js readLog, 크기가 그대로면 다시 읽지 않는다),
 //   아티팩트는 고른 세션 전체를 grep하되 지난번 크기 뒤에 붙은 부분만 이어 읽는다.
 // 갱신: 이 앱이 그려지는 동안 30초마다. 알렸는데 그려지지 않았으면 멈추고 다시 그려질 때 이어 간다(에이전트 앱과 같은 방식).
-// 셸 계약: move(delta, cx) 세션 줄만 오간다(날짜 머리줄은 건너뜀) · activate(cx) 이어하기/그 터미널로 가기 · emptyState · dispose.
+// 셸 계약: move(delta, cx) 세션 줄만 오간다(날짜 머리줄은 건너뜀) · activate(cx) 이어하기/깨우기/그 터미널로 가기 · emptyState · dispose
+//   · focusables(범위 글자 탭 셋 + 주 동작 버튼).
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, panes, focused, exec, layout, run, setShared } from "herdr";
@@ -23,7 +28,8 @@ import { sayView } from "./agent/say.js";
 import { readSleeping, wake } from "./workspace/sleeper.js";
 import { paneState, wakingNow, SLEPT } from "./workspace/sleep.js";
 import { slug, parseListing, rowsOf, oneLine, whenLabel, stamp, span, bytes, collectArtifacts, artifactList,
-  needsPageTitle, titleOfHtml, artifactTitle, LIST_SH, ARTS_SH, OPEN_SH, parseOpen } from "./sessions/list.js";
+  needsPageTitle, titleOfHtml, artifactTitle, LIST_SH, ARTS_SH, OPEN_SH, parseOpen,
+  SCOPES, scopeGlobs, inRoots, parseWorktrees } from "./sessions/list.js";
 
 const PAGE = 50;            // 목록을 몇 개씩
 const EVERY = 30000;        // 다시 읽는 간격
@@ -68,16 +74,23 @@ function goTo({ address, space }) {
   }
 }
 
+// 이어할 폴더: 기록에 적힌 cwd. 모르면 기록 폴더가 지금 폴더의 것일 때만 지금 폴더(다른 폴더면 claude --resume이 세션을 못 찾는다).
+const folderOf = (s, cwd) => s.cwd || (cwd && (!s.dir || s.dir === slug(cwd)) ? cwd : null);
+const PROJECTS = "$HOME/.claude/projects";
+const projOf = (s, cwd) => `${PROJECTS}/${s.dir ?? slug(cwd)}`;
+
 // 이어하기: 브랜치 앱 inTab과 같은 방식(새 탭 + 터미널 칸 열기).
-function resume(s, cwd) {
+function resume(s, folder) {
   const name = oneLine(s.ask).slice(0, 24) || "이어하기";
-  run("tab.new", { name, folder: s.cwd || cwd, argv: ["claude", "--resume", s.id] });
+  run("tab.new", { name, folder, argv: ["claude", "--resume", s.id] });
   run("layout.show", { id: "office-term" });
 }
 
 export class SessionsApp {
   init(_p, _cx) {
-    this.where = null;          // 지금 보는 폴더 키 [on, cwd]
+    this.where = null;          // 지금 보는 폴더 키 [on, cwd, 범위]
+    this.scope = "here";        // 범위(sessions/list.js SCOPES): here 이 폴더 · repo 이 레포의 모든 폴더 · all 전체 최근. 열 때마다 이 폴더부터
+    this.roots = null;          // repo 범위의 워크트리 경로들(git이 아니면 [cwd])
     this.loc = { cwd: null, on: null };
     this.sessions = [];         // 최신순 { id, mtime, size, birth, ask, cwd, startAt }
     this.total = 0;
@@ -105,9 +118,9 @@ export class SessionsApp {
   // 렌더마다: 폴더가 바뀌었으면 비우고 바로 읽고, 타이머가 멈춰 있으면 다시 건다.
   ensure(cx) {
     this.rendered = Date.now();
-    const loc = location(), k = JSON.stringify([loc.on, loc.cwd]);
+    const loc = location(), k = JSON.stringify([loc.on, loc.cwd, this.scope]);
     if (k !== this.where) {
-      this.where = k; this.loc = loc;
+      this.where = k; this.loc = loc; this.roots = null;
       this.sessions = []; this.total = 0; this.limit = PAGE; this.heads = new Map(); this.opened = new Map();
       this.det = {}; this.sel = null; this.more = false; this.loaded = false; this.failed = false;
       this.kick(cx);
@@ -142,14 +155,24 @@ export class SessionsApp {
 
   async refresh(k) {
     const loc = this.loc;
-    if (!loc.cwd) return false;
-    const proj = `$HOME/.claude/projects/${slug(loc.cwd)}`;
-    const r = await exec("sh", ["-c", LIST_SH, "sessions", proj, String(this.limit), [...this.heads.keys()].join(",")], { on: loc.on });
+    if (!loc.cwd && this.scope !== "all") return false;
+    // 이 레포: 워크트리 목록(git worktree list). git이 아니면 이 폴더와 그 하위 폴더.
+    if (this.scope === "repo" && !this.roots) {
+      const w = await exec("git", ["worktree", "list", "--porcelain"], { cwd: loc.cwd, on: loc.on }).catch(() => null);
+      if (k !== this.where) return false;
+      const roots = w?.code === 0 ? parseWorktrees(w.stdout) : [];
+      this.roots = roots.length ? roots : [loc.cwd];
+      this.gitRepo = roots.length > 0;
+    }
+    const globs = scopeGlobs(this.scope, loc.cwd, this.roots ?? []);
+    const r = await exec("sh", ["-c", LIST_SH, "sessions", PROJECTS, String(this.limit), [...this.heads.keys()].join(","), ...globs], { on: loc.on });
     if (k !== this.where) return false;   // 그새 다른 폴더로 옮겼다
     if (r.code !== 0 && r.code !== 3) throw new Error(`list ${r.code}`);
-    const { total, files } = r.code === 3 ? { total: 0, files: [] } : parseListing(r.stdout);
+    let { total, files } = r.code === 3 ? { total: 0, files: [] } : parseListing(r.stdout);
     for (const f of files) if (f.head) this.heads.set(f.id, { ask: f.ask, cwd: f.cwd, startAt: f.startAt });
-    const next = files.map(({ id, mtime, size, birth }) => ({ id, mtime, size, birth, ...(this.heads.get(id) ?? {}) }));
+    let next = files.map(({ id, mtime, size, birth, dir }) => ({ id, mtime, size, birth, dir, ...(this.heads.get(id) ?? {}) }));
+    // 이 레포: "슬러그-*"가 잡은 이웃 폴더(repo-other)의 세션은 기록의 cwd로 거른다
+    if (this.scope === "repo") { const kept = next.filter((x) => inRoots(x.cwd, this.roots)); total -= next.length - kept.length; next = kept; }
     const sig = (list) => list.map((s) => `${s.id}:${s.size}:${s.mtime}`).join(",");
     let changed = sig(next) !== sig(this.sessions) || total !== this.total;
     this.sessions = next; this.total = total;
@@ -207,7 +230,7 @@ export class SessionsApp {
 
   // 고른 세션의 상세: 마지막 말·고친 파일(readLog: 끝 2MB, 같은 크기면 건너뜀)과 아티팩트(지난번 크기 뒤만 이어 읽기).
   async readDetail(s, loc, k) {
-    const proj = `$HOME/.claude/projects/${slug(loc.cwd)}`;
+    const proj = projOf(s, loc.cwd);
     const prev = this.det[s.id];
     const log = await readLog({ project: proj, session: s.id, cwd: s.cwd ?? loc.cwd }, null, prev?.log, loc.on).catch(() => prev?.log ?? null);
     const a = await exec("sh", ["-c", ARTS_SH, "arts", proj, s.id, String(prev?.artsAt ?? 0)], { on: loc.on }).catch(() => null);
@@ -277,7 +300,9 @@ export class SessionsApp {
     const z = this.asleep.get(s.id);
     if (z) return this.wakeIt(s, z, cx);
     this.launching.set(s.id, Date.now());
-    try { resume(s, this.loc.cwd); } catch { this.launching.delete(s.id); cx.notify(); return; }
+    const folder = folderOf(s, this.loc.cwd);
+    if (!folder) return;
+    try { resume(s, folder); } catch { this.launching.delete(s.id); cx.notify(); return; }
     cx.notify();
     // 몇 번 다시 읽어 "지금 열림"으로 바꾼다. LAUNCH까지 안 보이면 잠금이 풀려 다시 시도할 수 있다(그때 다시 그린다).
     for (const ms of LOOKS) cx.timer.after(ms, (cx) => { this.pids.clear(); this.kick(cx); });
@@ -303,17 +328,66 @@ export class SessionsApp {
   }
 
   emptyState() {
-    if (!this.loc.cwd) return { text: "폴더를 알 수 없습니다", sub: "터미널이 있는 스페이스를 고르세요" };
-    if (!this.loaded) return { text: "세션을 읽는 중", sub: tilde(this.loc.cwd) };
-    if (this.failed) return { text: "기록을 읽지 못했습니다", sub: tilde(this.loc.cwd) };
-    return { text: "이 폴더의 Claude Code 세션이 없습니다", sub: `${tilde(this.loc.cwd)} · 하위 폴더에서 시작한 세션은 그 폴더에서 보입니다` };
+    if (!this.loc.cwd && this.scope !== "all") return { text: "폴더를 알 수 없습니다", sub: "터미널이 있는 스페이스를 고르거나 왼쪽 위 '전체 최근'을 고르세요" };
+    if (!this.loaded) return { text: "세션을 읽는 중", sub: this.scopeLine() };
+    if (this.failed) return { text: "기록을 읽지 못했습니다", sub: this.scopeLine() };
+    if (this.scope === "repo") return { text: "이 레포의 Claude Code 세션이 없습니다", sub: this.scopeLine() };
+    if (this.scope === "all") return { text: "Claude Code 세션이 없습니다", sub: "Codex 세션은 아직 읽지 못합니다" };
+    return { text: "이 폴더의 Claude Code 세션이 없습니다", sub: `${tilde(this.loc.cwd)} · 하위 폴더·워크트리의 세션은 왼쪽 위 '이 레포'에서 봅니다` };
   }
 
+  // 범위가 덮는 곳: 이 폴더 = 폴더 · 이 레포 = 주 폴더 외 워크트리 n곳(하위 폴더 포함) · 전체 최근 = 모든 폴더
+  scopeLine() {
+    if (this.scope === "all") return "모든 폴더의 최근 세션";
+    if (this.scope === "repo") {
+      if (!this.roots) return `${tilde(this.loc.cwd)} · 워크트리를 찾는 중`;
+      const rs = this.roots;
+      if (!this.gitRepo) return `${tilde(this.loc.cwd)}와 하위 폴더 · git 저장소가 아님`;
+      return `${tilde(rs[0])}${rs.length > 1 ? ` 외 워크트리 ${rs.length - 1}곳` : ""} · 하위 폴더 포함`;
+    }
+    return tilde(this.loc.cwd);
+  }
+
+  // 부제: 범위가 덮는 곳 · "Claude Code만"(Codex 세션은 읽지 않는다) · 세션 수
   subtitle(t) {
-    const where = tilde(this.loc.cwd);
     return h_flex().gap(10).items_center().text_size(12).text_color(t.dim).truncate()
-      .child(div().flex_1().min_w(0).truncate().child(where))
-      .when(this.total > 0, (el) => el.child(div().flex_none().child(`세션 ${this.total}`)));
+      .child(div().flex_1().min_w(0).truncate().child(this.scopeLine()))
+      .child(div().flex_none().child(this.total > 0 ? `Claude Code만 · 세션 ${this.total}` : "Claude Code만"));
+  }
+
+  setScope(scope, cx) {
+    if (scope === this.scope) return;
+    this.scope = scope;
+    cx.notify();   // 다음 그리기의 ensure가 범위 키가 바뀐 것을 보고 비운 뒤 읽는다
+  }
+
+  // 런처 키 계약: 범위 글자 탭 셋과 상세의 주 동작 버튼(Tab으로 오가고 Enter로 누른다)
+  focusables() {
+    const out = SCOPES.map(([k]) => ({ id: `ss-scope-${k}`, kind: "button", run: (cx) => this.setScope(k, cx) }));
+    const s = this.current();
+    if (s && this.actLabel(s)) out.push({ id: "sessions-act", kind: "button", run: (cx) => this.act(s, cx) });
+    return out;
+  }
+
+  // 상세 주 동작 버튼 글자(없으면 null): 그 터미널로 가기 · 깨우기 · 이어하기
+  actLabel(s) {
+    const o = this.opened.get(s.id), z = !o ? this.asleep.get(s.id) : null;
+    if (o?.address) return "그 터미널로 가기";
+    if (this.launchingNow(s.id) || o?.elsewhere) return null;
+    if (z) return wakingNow(z) ? null : "깨우기";
+    return folderOf(s, this.loc.cwd) ? "이어하기" : null;
+  }
+
+  // 범위 글자 탭: 조용한 글자만(고른 것은 진하게), 키보드 커서가 있으면 테두리
+  scopeTabs(t) {
+    return h_flex().flex_none().px(4).pt(2).pb(6).gap(2).items_center()
+      .children(SCOPES.map(([k, label]) => {
+        const on = k === this.scope, kb = Boolean(this.kb?.on?.(`ss-scope-${k}`));
+        return div().id(`ss-scope-${k}`).flex_none().px(6).py(2).rounded(4).cursor_pointer().text_size(11.5)
+          .border_1().border_color(kb ? t.accent : "#00000000")
+          .text_color(on ? t.foreground : t.dim).when(on, (el) => el.font_semibold()).when(!on, (el) => el.hover((x) => x.text_color(t.muted)))
+          .on_click((_e, cx) => this.setScope(k, cx)).child(label);
+      }));
   }
 
   // ── 그리기 ─────────────────────────────────────────────
@@ -332,16 +406,20 @@ export class SessionsApp {
     const rows = rowsOf(this.sessions);
     const left = this.total - this.sessions.length;
     return v_flex().id("sessions-list").flex_1().min_h(0).overflow_y_scrollbar().p(4)
+      .child(this.scopeTabs(t))
       .when(!rows.length, (el) => el.child(div().p(8).text_size(12).text_color(t.dim)
-        .child(!this.loc.cwd ? "폴더 없음" : this.loaded ? "세션 없음" : "읽는 중")))
+        .child(!this.loc.cwd && this.scope !== "all" ? "폴더 없음" : this.loaded ? "세션 없음" : "읽는 중")))
       .children(rows.map((r, i) => {
         if (r.head) return div().id(`ss-h-${i}`).flex_none().px(6).pt(i ? 10 : 4).pb(2).text_size(11).text_color(t.dim).child(r.head);
         const s = r.s, on = s.id === this.sel, [right, rc] = this.right(s, t);
         const ask = oneLine(s.ask);
+        // 이 폴더 밖 범위: 다른 폴더의 세션이면 그 폴더 이름(마지막 조각)을 흐리게
+        const other = this.scope !== "here" && s.cwd && s.cwd !== this.loc.cwd ? s.cwd.split("/").filter(Boolean).pop() : "";
         return h_flex().id(`ss-${s.id}`).h(26).flex_none().px(6).gap(8).items_center().rounded(4).cursor_pointer()
           .when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((x) => x.bg(t.hover)))
           .on_click((e, cx) => { this.select(s.id, cx); if (e.click_count >= 2) this.act(s, cx); })
           .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(ask ? t.foreground : t.muted).child(ask || "요청 없음"))
+          .when(Boolean(other), (el) => el.child(div().flex_none().max_w(72).truncate().text_size(11).text_color(t.dim).child(other)))
           .child(div().flex_none().text_size(11).text_color(rc).child(right));
       }))
       .when(left > 0, (el) => el.child(h_flex().id("sessions-more").flex_none().mt(6).px(6).h(26).items_center().rounded(4)
@@ -355,7 +433,8 @@ export class SessionsApp {
     const s = this.current();
     if (!s) return null;
     const d = this.det[s.id], log = d?.log, o = this.opened.get(s.id);
-    const btn = (id, text, fn) => div().id(id).flex_none().px(10).py(4).rounded(6).border_1().border_color(t.border).text_size(12)
+    const btn = (id, text, fn) => div().id(id).flex_none().px(10).py(4).rounded(6).border_1()
+      .border_color(this.kb?.on?.(id) ? t.accent : t.border).text_size(12)
       .text_color(t.foreground).cursor_pointer().hover((x) => x.bg(t.hover)).on_click(fn).child(text);
     const head = (text) => div().pt(16).pb(4).text_size(12).font_semibold().text_color(t.muted).child(text);
 
@@ -408,16 +487,17 @@ export class SessionsApp {
       ? `${SLEPT} · 작업 공간 앱이 재웠습니다. 칸이 닫혀 깨우면 새 탭에서 이어 갑니다`
       : `${SLEPT} · 작업 공간 앱이 재웠습니다. 깨우면 '${z.tabName || "원래"}' 탭의 그 칸에서 이어 갑니다`));
     if (z && this.wakeWhy[s.id]) items.push(div().pt(2).text_size(12).text_color(t.muted).child(this.wakeWhy[s.id]));
+    if (!o && !z && !folderOf(s, this.loc.cwd)) items.push(div().pt(14).text_size(12).text_color(t.muted).child("기록에 폴더가 없어 여기서 이어 하지 않습니다"));
     if (o?.elsewhere && !this.launchingNow(s.id)) items.push(div().pt(14).text_size(12).text_color(t.muted).child("Herdr 밖의 터미널에서 열려 있어 여기서 이어 하지 않습니다"));
 
+    // 주 동작 버튼(actLabel)과, 여는 중·깨우는 중이면 그 낱말(흐리게)
+    const label = this.actLabel(s);
+    const busy = o?.address ? null : waking ? "깨우는 중" : this.launchingNow(s.id) ? "여는 중" : null;
     return v_flex().size_full().min_h(0)
       .child(h_flex().h(40).flex_none().px(14).gap(8).items_center().border_b_1().border_color(t.border)
         .child(div().flex_1().min_w(0).truncate().text_size(14).font_semibold().text_color(t.foreground).child(oneLine(s.ask) || "요청 없음"))
-        .when(Boolean(o?.address), (el) => el.child(btn("sessions-go", "그 터미널로 가기", (_e, cx) => this.act(s, cx))))
-        .when(!o?.address && this.launchingNow(s.id), (el) => el.child(div().flex_none().px(10).py(4).text_size(12).text_color(t.dim).child("여는 중")))
-        .when(Boolean(z) && waking, (el) => el.child(div().flex_none().px(10).py(4).text_size(12).text_color(t.dim).child("깨우는 중")))
-        .when(Boolean(z) && !waking, (el) => el.child(btn("sessions-wake", "깨우기", (_e, cx) => this.act(s, cx))))
-        .when(!o && !z && !this.launchingNow(s.id), (el) => el.child(btn("sessions-resume", "이어하기", (_e, cx) => this.act(s, cx)))))
+        .when(Boolean(busy), (el) => el.child(div().flex_none().px(10).py(4).text_size(12).text_color(t.dim).child(busy)))
+        .when(Boolean(label), (el) => el.child(btn("sessions-act", label, (_e, cx) => this.act(s, cx)))))
       .child(v_flex().id("sessions-detail").flex_1().min_h(0).overflow_y_scrollbar().px(20).py(14).gap(2).children(items));
   }
 }
