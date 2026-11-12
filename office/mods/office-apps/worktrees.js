@@ -30,6 +30,10 @@ const STATUS = { working: "작업 중", blocked: "입력 대기", done: "끝남"
 const RANK = { blocked: 3, working: 2, done: 1, idle: 0 };
 const FILES_MAX = 300;
 const FLAG = "--dangerously-skip-permissions"; // office/main.js YOLO.claude와 같다
+// 띄우는 길마다 권한 모드: 그냥 띄우기는 건너뛰기 플래그를 붙이고, 이슈에서 시작(남이 쓴 글이 첫 메시지)은 붙이지 않는다.
+//   버튼 옆에 같은 값에서 뽑은 한 낱말을 흐리게 보인다(다른 앱과 같은 낱말).
+const YOLO = { plain: true, issue: false };
+const perm = (yolo) => (yolo ? "권한 확인 없이" : "권한 확인 있음");
 const TERM = "office-term";
 
 // ── 위치 ────────────────────────────────────────────────────
@@ -167,7 +171,7 @@ class WorktreePrompt {
       .border_1().border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
       .text_color(primary ? t.solid_foreground : t.foreground).hover((s) => s.opacity(0.88)).on_click(action).child(text);
     const warn = name ? validName(name) : "";
-    const hint = `${tilde(worktreePath(p.ctx.root, name || "<이름>"))} · ${p.ctx.base ?? "HEAD"}에서`;
+    const hint = `${tilde(worktreePath(p.ctx.root, name || "<이름>"))} · ${p.ctx.base ?? "HEAD"}에서${p.ctx.issue ? ` · ${perm(YOLO.issue)}` : ""}`;
     return v_flex().id("wt-prompt").size_full().p(18).gap(10).bg(t.popover).text_color(t.foreground).text_size(13)
       .on_key_down((e, cx) => { if (e.key === "escape") { closeOverlay(p.overlay); cx.stop_propagation(); } })
       .child(h_flex().child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().child(p.title)).child(div().text_size(11).text_color(t.muted).child("Esc")))
@@ -322,7 +326,7 @@ export class WorktreesApp {
 
   async launch(path, task, cx) {
     const on = this.ctx?.on ?? null, all = this.paths();
-    const { name, argv } = await claudeAgent(on, !task);  // 이슈에서 시작(task 있음)은 권한 확인을 남긴다
+    const { name, argv } = await claudeAgent(on, task ? YOLO.issue : YOLO.plain);  // 이슈에서 시작(task 있음)은 권한 확인을 남긴다
     const s = spaceFor(path, all, on), extra = task ? { task } : {};
     if (s) {
       run("tab.new", { name, space: s.id, folder: path, argv, ...extra });
@@ -346,7 +350,7 @@ export class WorktreesApp {
         openOverlay({ mod: "office-apps", kind: "dialog", width: 440, height: 230, props: {
           role: "confirm", action: "worktrees.titleOnly", title: `이슈 #${issue.number} 본문을 읽지 못했습니다`, yes: "제목만으로 띄우기",
           ctx: { root, path, issue: { number: issue.number, title: issue.title } },
-          detail: `${why}\n워크트리 ${tilde(path)}는 만들어 두었습니다. 제목만 넘겨 에이전트를 띄울까요? (권한 확인 있음)\n닫으면 띄우지 않습니다. 나중에 "여기서 에이전트 띄우기"로 띄울 수 있습니다.`,
+          detail: `${why}\n워크트리 ${tilde(path)}는 만들어 두었습니다. 제목만 넘겨 에이전트를 띄울까요? (${perm(YOLO.issue)})\n닫으면 띄우지 않습니다. 나중에 "여기서 에이전트 띄우기"로 띄울 수 있습니다.`,
         } });
         cx.notify();
         return;
@@ -554,7 +558,7 @@ export class WorktreesApp {
       .child(h_flex().h(40).flex_none().px(14).gap(8).items_center().border_b_1().border_color(t.border)
         .child(svg(W("issue")).size(16).flex_none().text_color(t.muted))
         .child(div().flex_none().text_size(14).font_semibold().text_color(t.foreground).child("이슈에서 시작"))
-        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child("고르면 브랜치 이름을 묻고 워크트리를 만든 뒤 Claude Code에 이슈를 넘깁니다"))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(`고르면 브랜치 이름을 묻고 워크트리를 만든 뒤 Claude Code에 이슈를 넘깁니다 · ${perm(YOLO.issue)}`))
         .child(div().id("wt-issues-close").px(6).rounded(4).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover))
           .on_click((_e, cx) => { this.mode = "list"; cx.notify(); }).child("✕")))
       .child(h_flex().flex_none().px(14).py(8).gap(8).items_center().border_b_1().border_color(t.border)
@@ -586,7 +590,8 @@ export class WorktreesApp {
     // 터미널이 열린 에이전트가 있으면 "지우기"를 잠그고 먼저 끝내거나 재우게 한다(그 터미널로 가기).
     const live = !w.main && !w.bare ? liveIn(w.path, this.paths(), on) : [];
     const actions = h_flex().flex_wrap().gap(6).items_center()
-      .when(!w.bare && !w.prunable, (el) => el.child(this.button("wt-launch", "여기서 에이전트 띄우기", t, (cx) => this.launch(w.path, null, cx))))
+      .when(!w.bare && !w.prunable, (el) => el.child(this.button("wt-launch", "여기서 에이전트 띄우기", t, (cx) => this.launch(w.path, null, cx)))
+        .child(div().flex_none().pr(4).text_size(11).text_color(t.dim).child(perm(YOLO.plain))))
       .when(Boolean(space), (el) => el.child(this.button("wt-go", `${space.name} 스페이스로 가기`, t, () => showSpace(space.id))))
       .when(!w.main && !w.bare && !live.length, (el) => el.child(this.button("wt-remove", "지우기...", t, () => confirmRemove(this.removeCtx(w)), true)))
       .when(live.length > 0, (el) => el.child(h_flex().h(26).px(10).items_center().rounded(6).border_1().border_color(t.border)
