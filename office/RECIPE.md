@@ -23,7 +23,7 @@ root  column · padding 8 · gap 8 · background canvas
       └─ office-resources  block → mod office-resources
 ```
 
-레이아웃이 쓰는 모드는 `office`, `office-apps`, `office-usage`, `office-resources` 넷이다. 모두 `place: none`(레이아웃이 자리를 정한다)이고 `office`만 `focusable`이다.
+레이아웃이 쓰는 모드는 `office`, `office-apps`, `office-usage`, `office-resources` 넷이다. 모두 `place: none`(레이아웃이 자리를 정한다)이고 `office`와 `office-apps`가 `focusable`이다(`pane.go`로 들어오면 런처가 "focus" 명령을 받아 홈이면 검색창, 앱이면 상세 커서가 있던 곳 또는 왼쪽 목록에 포커스를 준다).
 
 ### 툴바 규칙 (패널 공통)
 
@@ -144,7 +144,7 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 | 워크트리 (`worktrees`) | `worktrees.js`, `worktrees/model.js` | 지금 레포의 워크트리. 왼쪽: 툴바(새 워크트리·이슈에서 시작·다시 읽기) + 목록(메인이 맨 위, 브랜치·기본 브랜치 대비 ↑↓·변경 수·에이전트 상태). 오른쪽: 경로·브랜치·에이전트·변경 파일(누르면 뷰어 창), 동작(에이전트 띄우기·스페이스로 가기·지우기 — 지우기는 확인 창 `worktrees.remove`. 그 폴더에 터미널이 열린 에이전트가 있으면 잠그고 "먼저 끝내거나 재우세요"·그 터미널로 가기, 실행 직전에도 다시 본다). 이름은 `worktrees-prompt`로 묻는다. "이슈에서 시작"은 이슈를 골라 워크트리를 만들고 그 폴더에서 Claude Code에 이슈 본문을 첫 메시지로 넘긴다. |
 | 검토 (`review`) | `review.js`, `review/model.js` | 왼쪽: 에이전트가 있는 작업 폴더(git 루트)별 변경 요약과 상태 낱말. 오른쪽: 보기 전환(커밋 안 된 변경 \| 기본 브랜치 대비), 바뀐 파일, diff(`commit/diffview.js`), diff 줄을 눌러 "파일:줄"을 붙인 피드백을 `hc send`로 그 에이전트에게. 받는 사람 고르기·상태 규칙은 `send.js`. 초안은 (기기, 폴더, 받는 에이전트)별로 두고, 고른 폴더나 받는 에이전트가 사라지면 다른 곳을 고르지 않고 보내기를 막는다. |
 | 메모 (`notes`) | `notes.js`, `notes/model.js` | 작업 공간(지금 칸 폴더의 git 루트, 아니면 스페이스 폴더)마다 메모와 할 일. 레포 밖 `data/office-apps/notes/`에 저장. 왼쪽: 메모가 있는 작업 공간(지금 것이 맨 위). 오른쪽: 할 일 체크 목록 + 추가 입력, 메모 편집기(1초 뒤 자동 저장), 에이전트에게 보내기(`send.js`)·복사. |
-| 알림함 (`inbox`) | `inbox.js`, `inbox/model.js` | 여러 스페이스의 에이전트 중 답 필요·완료(안 본 사이 끝남, 사무실이 붙잡은 `office.finished`면 idle이어도)·상태 모름(기본 펼침)을 한 곳에(작업 중은 접힌 묶음). 상태 모름이 있으면 빈 화면은 "확인된 답 필요 n명 · 상태 모름 m명". `office.ci`가 실패면 맨 위 "CI 실패" 줄(누르면 배포 앱). 오른쪽: 상태·마지막 말·요청, 터미널로 가기·에이전트 앱에서 자세히. 그려지는 동안만 갱신(고른 줄이 작업 중이면 4초, 아니면 1분). |
+| 알림함 (`inbox`) | `inbox.js`, `inbox/model.js` | 여러 스페이스의 에이전트 중 답 필요·완료(안 본 사이 끝남, 사무실이 붙잡은 `office.finished`면 idle이어도)·상태 모름(기본 펼침, 이 묶음 줄만 한 번 클릭으로 바로 그 터미널로 — 다른 묶음은 클릭=고르기·Enter·더블클릭=가기)을 한 곳에(작업 중은 접힌 묶음). 상태 모름이 있으면 빈 화면은 "확인된 답 필요 n명 · 상태 모름 m명". `office.ci`가 실패면 맨 위 "CI 실패" 줄(누르면 배포 앱). 오른쪽: 상태·마지막 말·요청, 터미널로 가기·에이전트 앱에서 자세히. 그려지는 동안만 갱신(고른 줄이 작업 중이면 4초, 아니면 1분). |
 | 세션 (`sessions`) | `sessions.js`, `sessions/list.js` | 지금 폴더의 지난 Claude Code 세션(`~/.claude/projects/…/*.jsonl`). 왼쪽: 날짜 묶음 아래 첫 요청 한 줄(최근 50개, 더 보기). 오른쪽: 요청·마지막 말·고친 파일·아티팩트·길이, "이어하기"(새 탭에서 `claude --resume`, 지금 열려 있으면 그 터미널로. 누른 뒤 열린 터미널이 보일 때까지 최대 15초 "여는 중"이라 다시 열지 않는다). 그려지는 동안 30초마다. |
 | 작업 공간 (`workspace`) | `workspace.js`, `workspace/tidy.js`, `workspace/sleep.js`, `workspace/sleeper.js`, `workspace/test.mjs` | 왼쪽: "정리" 줄 + 스페이스 › 탭 트리(상태 낱말). 오른쪽: 스페이스·탭 정보와 가기·이름 바꾸기(`workspace-prompt`)·접어 두기·닫기(확인 창 `workspace.*`), "정리"는 닫아도 될 탭을 이유와 함께 보여 체크한 것만 한 번에 닫고(git 동작 탭은 셸·git·pager만 남았으면 후보), 뺀 탭은 흐린 "후보에서 뺀 탭 n"을 펼쳐 이유를 본다. 그 아래 "재울 수 있는 에이전트"(아래 참고). 닫기(탭·스페이스·일괄)는 모두 취소 우선이고 실행 직전에 창을 열 때보다 위험해진 탭(작업 중·답 필요·새 프로그램·지금 보는 탭·잠듦)은 닫지 않고 알린다. 규칙 시험 `node office/mods/office-apps/workspace/test.mjs`. |
 | 출력 (`watch`) | `watch.js`, `watch/rules.js` | 에이전트가 아닌 터미널 출력(`hc read`)에서 오류 줄을 모은다. 왼쪽: 걸린 줄(최근 순, ×n). 오른쪽: 앞뒤 2줄 문맥, 그 터미널로 가기·에이전트에게 보내기(`send.js`)·지우기. 그려지는 동안만 10초마다, 새로 생긴 줄만 규칙에 넣는다. |
@@ -192,8 +192,23 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
    | `move(d, cx)` | 아니오 | 왼쪽 칸에 포커스가 있을 때 ↑(`-1`)/↓(`+1`). 고른 항목을 옮긴다(셸이 이어서 `cx.notify()`) |
    | `activate(cx)` | 아니오 | 왼쪽 칸에서 Enter. 고른 항목을 연다·펼친다 |
    | `emptyState()` | 아니오 | `detail`이 `null`일 때 오른쪽 문구 `{ text, sub }` |
+   | `focusables()` | 아니오 | 상세의 멈출 곳 `[{ id, kind: "button"\|"check"\|"input", run?(cx), focus?() }]`(화면 순서, 쓸 수 없는 버튼은 뺀다). `run`은 그 줄의 `on_click`과 같은 함수, 입력칸은 `focus`만. 런처가 `app.kb`를 넣어 주고 앱은 `kb.on(id)`이면 테두리를 `t.accent`로 그린다. 입력칸은 `div`로 감싸 `on_key_down`에서 `kb.from = id`(입력칸 안 Tab·Esc를 그 자리에서 이어 가게). 그리면서 모아 두고 돌려주는 방식이 가장 간단하다(검토·작업 공간·메모·배포) |
+   | `submitDetail(cx)` | 아니오 | 상세(버튼·체크에 커서)에서 ⌘Enter. 입력칸 안의 ⌘Enter는 앱이 그 입력의 `submit`(`e.secondary`)로 직접 받는다(한 길만) |
    | `dispose()` | 아니오 | 앱을 끌 때 한 번. 타이머·감시를 멈춘다 |
    | `openCommit(값, cx)` · `openRange(a, b, cx)` | 커밋 앱만 | `office-apps.commit:` · `range:` 명령이 앱을 연 뒤 부른다 |
+
+   앱 화면 키 계약(런처 `main.js`, 순서 계산은 `launcher/ring.js`):
+
+   | 키 | 왼쪽 목록 | 오른쪽 상세(버튼·체크에 커서) | 상세의 입력칸 안 |
+   |---|---|---|---|
+   | ↑↓ | 목록 이동(`move`) | 목록 이동(그대로 넘김) | 입력칸 몫 |
+   | Enter | 주 동작(`activate`) | 커서의 버튼 누르기(커서 없으면 `activate`) | 입력칸 몫 |
+   | Space | — | 커서의 체크 토글 | 입력칸 몫 |
+   | Tab / Shift+Tab | 상세의 첫/마지막 멈출 곳 | 다음/앞 멈출 곳, 끝에서 왼쪽 목록으로 감김 | 다음/앞 멈출 곳 |
+   | ⌘Enter | — | `submitDetail`(보내기·저장) | 앱이 `submit`(secondary)로 받음 |
+   | Esc | 홈(격자) | 왼쪽 목록으로(커서 없으면 홈) | 왼쪽 목록으로 |
+
+   커서는 키보드로 옮겼을 때만 테두리로 보이고(상세를 마우스로 누르면 끈다), 멈출 곳마다 핸들을 두지 않고 상세 칸 핸들 하나 + 커서 id로 가린다. 적용한 앱: 검토·작업 공간·메모·배포·포트·알림함.
 
    지금 스페이스를 보는 앱은 파일·브랜치 앱과 같은 규칙(포커스된 패인의 폴더, 없으면 스페이스 폴더, 다른 머신이면 `on`)을 따른다.
 2. **`main.js`의 `APPS`에 등록**한다: `{ id, group, name, desc, make: () => new XxxApp() }`. `group`은 레포·코드 일이면 `"apps"`, 에이전트·터미널·기기 일이면 `"agents"`, 창만 띄우는 항목은 `"system"`이고, 그 줄의 원하는 자리에 적는다(색은 두지 않는다). 들어가지 않고 동작만 하는 앱은 `make` 대신 `action: () => ...`. `make`도 `action`도 없으면 격자에는 보이되 들어가면 "준비 중인 앱입니다"가 나온다. 파일 맨 위에 import를 더한다.
