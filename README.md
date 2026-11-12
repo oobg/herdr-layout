@@ -70,13 +70,13 @@ Herdr 앱용 **Office** 레이아웃입니다. 위쪽은 코딩 에이전트들�
 ## 설치
 
 ```sh
-./install.sh                                # office/layouts, office/mods/*(office-git 제외)를 ~/.config/herdr-app 으로 복사
+./install.sh                                # office/layouts, office/mods/*를 ~/.config/herdr-app 으로 복사
 herdr-app do layout.switch --name office    # 또는 Herdr 설정에서 office 선택
 ```
 
 - `install.sh`는 `rsync --checksum`으로 내용이 바뀐 파일만 씁니다(바뀐 파일 목록을 출력). Herdr는 모드 폴더의 파일이 저장될 때마다 그 모드를 다시 불러오므로, 바뀌지 않은 파일은 다시 쓰지 않습니다. `gpui-kit.d.ts`, `jsconfig.json`은 복사하지 않습니다.
 - `HERDR_APP_HOME`을 주면 그 폴더에 설치합니다.
-- `office/mods/` 아래 폴더를 복사하되, 레이아웃에서 쓰지 않는 이식 원본 `office-git`은 설치하지 않습니다.
+- `office/mods/` 아래 폴더를 모두 복사합니다.
 - 예전 버전을 설치했다면 설치본에 `mods/office-files`, `mods/office-git`이 남아 있을 수 있습니다. 지금 레이아웃은 이 둘을 쓰지 않습니다. `install.sh`는 이 폴더들을 지우지 않습니다.
 - `ctrl-shift-l`(`layout.switch`)로 다른 레이아웃으로 바꿉니다. 지우려면 `layouts/office.json`과 `mods/office*` 폴더를 삭제합니다.
 

@@ -251,12 +251,12 @@ const LEFT = 250;   // 왼쪽 관리 칸 폭(가운데 내용 칸을 강조하�
 
 // 앱 타일 그림: 브러시드 금속 사물 오브제 PNG(apps/tiles/<id>.png, 투명 배경, 256px).
 //   한 장으로 생성한 8개 격자를 잘라 만들었다. 테마와 관계없이 같은 그림을 쓴다.
-//   그림이 없는 앱(TILES에 없음)은 예전처럼 앱 색(APPS color) div + 흰 선 아이콘으로 그린다.
+//   그림이 없는 앱(TILES에 없음)은 앱 색(APPS color) div 위에 이름 첫 글자를 흰색으로 그린다.
 const TILES = new Set(["files", "branch", "commit", "pr", "agent", "server", "settings", "manage"]);
 function tile(a, size) {
   if (TILES.has(a.id)) return image(`${ME}/apps/tiles/${a.id}.png`).size(size).flex_none();
   return div().size(size).flex_none().rounded(Math.round(size * 0.24)).bg(a.color).flex().items_center().justify_center()
-    .child(svg(`${ME}/apps/${a.id}.svg`).size(Math.round(size * 0.52)).text_color("#ffffff"));
+    .text_size(Math.round(size * 0.42)).font_semibold().text_color("#ffffff").child(a.name.slice(0, 1));
 }
 
 // 런처 우클릭 메뉴의 치수: 파일 우클릭 메뉴(menu.js)와 같은 줄 높이·구분선·머리줄.

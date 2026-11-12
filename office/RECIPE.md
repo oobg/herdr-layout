@@ -86,7 +86,7 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 
 ### 런처 (`main.js`)
 
-- **런처 화면:** 검색창(앱 이름·설명·id로 거름) + 앱 아이콘 격자(타일 56px, 앱 색 바탕 + 흰 아이콘 `apps/<id>.svg`). 앱 관리는 격자의 `manage` 앱으로 연다.
+- **런처 화면:** 검색창(앱 이름·설명·id로 거름) + 앱 아이콘 격자(타일 56px, 금속 오브제 그림 `apps/tiles/<id>.png`, 그림이 없는 앱은 앱 색 바탕 + 흰 첫 글자). 앱 관리는 격자의 `manage` 앱으로 연다.
   격자는 `APPS`의 `group`(`"apps"` | `"system"`, `GROUPS` 순서)으로 줄을 나누고 줄마다 작은 흐린 제목("앱" · "설정")을 단다. 걸러서 빈 줄은 제목째 숨긴다. 앱 관리 대화 상자 목록도 같은 순서·제목.
 - **앱 화면:** 위 막대 44px(`‹ 앱` · 타일 · 이름 · 앱의 `subtitle`) / 왼쪽 250px(`list`) / 오른쪽 나머지(`detail`, 바탕 `background`로 강조). `detail`이 `null`이면 앱의 `emptyState()` 문구, 없으면 "선택 내용이 없습니다 · 왼쪽에서 항목을 고르세요".
 - **키보드:** 왼쪽 칸에 런처의 포커스 핸들(`track_focus`)을 달고, 그 칸 자체가 포커스를 가졌을 때만 ↑↓ → `move(-1|+1, cx)`, Enter → `activate(cx)`. 칸을 누르면 GPUI가 포커스를 준다(안쪽 입력 상자는 자기가 먼저 가져가고, 그때는 키를 가로채지 않는다). 격자에서 눌러 들어갈 때도 이 칸에 포커스(시작 복원·명령으로 열 때는 키보드를 옮기지 않음).
@@ -178,7 +178,7 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 
    지금 스페이스를 보는 앱은 파일·브랜치 앱과 같은 규칙(포커스된 패인의 폴더, 없으면 스페이스 폴더, 다른 머신이면 `on`)을 따른다.
 2. **`main.js`의 `APPS`에 등록**한다: `{ id, group: "apps", name, desc, color, make: () => new XxxApp() }`(창만 띄우는 항목은 `group: "system"`). 들어가지 않고 동작만 하는 앱은 `make` 대신 `action: () => ...`. `make`도 `action`도 없으면 격자에는 보이되 들어가면 "준비 중인 앱입니다"가 나온다. 파일 맨 위에 import를 더한다.
-3. **아이콘** `apps/<id>.svg`를 둔다. 런처가 앱 색 타일 위에 `text_color("#ffffff")`로 칠하므로 단색 SVG로 그린다(지금 아이콘들과 같은 형식).
+3. **아이콘** `apps/tiles/<id>.png`(투명 배경 256px, 지금 타일들과 같은 금속 오브제)를 두고 `main.js`의 `TILES`에 id를 더한다. 그림이 없으면 앱 색 바탕에 이름 첫 글자로 그린다.
 4. **확인 창**이 필요하면 지금은 `menu.js`의 `ACTIONS`에 동작을 등록하는 방식이다. 모듈 최상위(함수 밖)에 `ACTIONS["<id>.<동작>"] = (ctx) => ...`를 두고, `openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", action, title, detail, ctx } })`로 띄운다. `ctx`에는 값만 담는다. 새 오버레이 역할이 필요하면 같은 방식으로 `files.js`의 `ROLES`에 더한다(`branch.js` 끝 참고).
 5. `herdr-app check office/mods/office-apps` → `./install.sh` → `herdr-app do office-apps.open-<id>` → `herdr-app shot`, `herdr-app status`의 errors 확인.
 
@@ -210,10 +210,6 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 - 계산(`calc.js`, herdr 없이 node로 돌려 볼 수 있음): 터미널마다 `hc get`의 뿌리(셸) pid를 한 번 얻어 두고, 3초마다 기기당 `ps -A -o pid=,ppid=,pcpu=,rss=` 한 번으로 자손 트리 합을 낸다. CPU는 코어 수로 나눠 기기 전체 대비 %. 터미널의 탭은 패인 → `herdr.tab` 라벨 → 서브에이전트면 부모의 탭. 다른 기기는 같은 스크립트를 `exec on`으로 돌리고, 실패하거나 연결이 없으면 기기 머리줄 아래 "<기기>에 연결할 수 없어 리소스를 알 수 없습니다." 한 줄.
 - 갱신은 앱 창이 앞에 있고 칸이 숨겨지지 않았을 때만(Herdr는 숨은 복사본의 타이머도 돌리므로 틱에서 거른다).
 
-## `mods/office-git` (레이아웃에서 쓰지 않음)
-
-예전 아래 칸의 독립 브랜치·커밋 그래프 모드다. 레포에 남아 있지만 지금 레이아웃은 쓰지 않고, 브랜치 앱(`office-apps/branch.js`)의 이식 원본이다. `install.sh`는 `mods/` 아래 폴더를 모두 복사하므로 설치본에는 들어간다. 예전 버전을 설치했던 곳에는 `mods/office-files`(지금의 `office-apps` 이전 이름)도 남아 있을 수 있다.
-
 ## 파일
 
 - `layouts/office.json`: 레이아웃
@@ -221,7 +217,6 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 - `mods/office-apps/`: 런처(`main.js`), 앱(`files.js`, `branch.js`, `commit.js`, `pr.js`, `agent.js`, `server.js`와 같은 이름 폴더), 파일 우클릭 메뉴·확인 창·`ACTIONS`(`menu.js`), 뷰어(`viewers.js`, `markdown.js`, `viewers/`), 앱 아이콘(`apps/`), 파일 아이콘(`icons/`, `icons.json`, MIT 라이선스)
 - `mods/office-usage/`: 사용량(`main.js`), Grok 토큰 갱신(`grok_refresh.py`), 로고(`icons/`)
 - `mods/office-resources/`: 리소스 관리자(`main.js`), ps 합계 계산(`calc.js`), 로고(`icons/`)
-- `mods/office-git/`: 쓰지 않는 예전 모드(브랜치 앱의 이식 원본)
 - `../tools/render-office.py`: 사무실 스프라이트 렌더(Blender)
 - `../tools/build-icons.py`: Material Icon Theme 패키지에서 파일 아이콘과 `icons.json` 생성
 - `../install.sh`: 위 파일들 중 바뀐 것만 `~/.config/herdr-app`에 복사
