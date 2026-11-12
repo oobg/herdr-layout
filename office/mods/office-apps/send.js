@@ -122,8 +122,11 @@ export function sendToAgent(a, text, { id = String(Date.now()), reply: key = nul
 
 // 받는 사람 고르기 줄: "보낼 곳" + 후보마다 한 칸(고른 것은 바탕). 후보가 없으면 그 이유 한 줄.
 //   id = 앱 접두사, sel = 고른 주소, pick(address, cx).
-export function recipients(id, list, sel, pick, t, empty = "이 스페이스에 에이전트가 없습니다") {
+//   focused(선택): 런처 키 계약의 멈출 곳으로 쓰는 앱만 넘긴다(true면 줄 테두리 t.accent, false면 자리만 잡는 투명 테두리).
+//     키보드로는 Enter·Space가 다음 후보로 넘긴다(nextRecipient). 넘기지 않는 앱(출력 등)은 모양 그대로.
+export function recipients(id, list, sel, pick, t, empty = "이 스페이스에 에이전트가 없습니다", focused) {
   const row = h_flex().flex_wrap().gap(6).items_center().min_w(0)
+    .when(focused !== undefined, (el) => el.px(2).rounded(4).border_1().border_color(focused ? t.accent : "#00000000"))
     .child(div().flex_none().text_size(12).text_color(t.muted).child("보낼 곳"));
   if (!list.length) return row.child(div().text_size(12).text_color(t.dim).child(empty));
   return row.children(list.map((a) => {
@@ -135,6 +138,13 @@ export function recipients(id, list, sel, pick, t, empty = "이 스페이스에 
       .child(div().flex_none().text_size(11).text_color(a.status === "blocked" ? t.blocked : t.dim).child(statusWord(a.status)));
   }));
 }
+
+// 키보드로 받는 사람 바꾸기: 고른 것 다음 후보(끝이면 처음, 고른 것이 없으면 첫 후보). 후보가 하나 이하면 null.
+export const nextRecipient = (list, sel) => {
+  if (list.length < 2) return null;
+  const i = list.findIndex((a) => a.address === sel);
+  return list[(i + 1) % list.length];
+};
 
 // 고른 주소가 후보에 있으면 그것, 없으면 첫 후보(입력 대기는 맨 뒤라 첫 후보가 막혀 있으면 모두 막혀 있다).
 export const chosen = (list, sel) => list.find((a) => a.address === sel) ?? list[0] ?? null;

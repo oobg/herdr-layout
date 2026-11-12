@@ -8,6 +8,14 @@
 // 앱 계약: init(props, cx) · list(cx, t) · detail?(cx, t) · subtitle?(t) · dispose?() — dispose는 선택, 끌 때 한 번 부른다.
 //   move?(d, cx) — 왼쪽 칸에서 ↑(-1)/↓(+1). activate?(cx) — 왼쪽 칸에서 Enter.
 //   emptyState?() → { text, sub } — detail이 null일 때 오른쪽 빈 화면 문구(없으면 기본 문구).
+//   키 계약(오른쪽 상세를 키보드로): focusables?() → [{ id, kind: "button"|"check"|"input", run?(cx), focus?() }]
+//     상세의 멈출 곳을 화면 순서(위→아래, 왼→오른)로. 쓸 수 없는(흐린) 버튼은 뺀다. run은 그 버튼·체크의 on_click과 같은 동작,
+//     input은 focus()(입력 상태의 focus)만. 키를 누를 때마다 다시 부르므로 그때 상태로 만든다.
+//     submitDetail?(cx) — 상세에서 ⌘Enter(입력칸 내용 보내기/저장). 입력칸 안의 ⌘Enter는 앱이 그 입력의 submit(secondary)로 직접 받는다.
+//     런처가 app.kb를 넣어 준다: kb.on(id) = 그 멈출 곳에 키보드 커서가 있음(테두리 t.accent로 그린다, 확인 창 버튼과 같은 모양).
+//     입력칸은 div로 감싸 on_key_down에서 kb.from = id 로 알린다(입력칸 안에서 올라온 Tab·Esc를 런처가 그 자리에서 이어 가게).
+//   키(앱 화면): ↑↓ 왼쪽 목록 이동 · Enter 주 동작 · Esc 홈 · Tab/Shift+Tab 왼쪽 목록 ↔ 상세 멈출 곳 차례로 ·
+//     상세에서 Enter 버튼 누르기 · Space 체크 토글 · ⌘Enter 보내기/저장 · Esc 왼쪽 목록으로. 순서 계산은 launcher/ring.js(node 시험).
 //   커밋 앱만: openCommit?(해시|"WORKTREE", cx) · openRange?(a, b, cx) — commit:/range: 명령이 부른다.
 // 런처 격자는 APPS의 group으로 줄을 나눈다(GROUPS 순서): "apps"(레포·코드 일) · "agents"(에이전트·터미널·기기 일)
 //   · "system"(설정·앱 관리처럼 창을 띄우는 것). 즐겨찾기가 있으면 맨 위에 "즐겨찾기" 줄(검색 중에는 숨김)을 더 둔다.
@@ -45,6 +53,7 @@ import { ReviewApp } from "./review.js";
 import { NotesApp } from "./notes.js";
 import { ActionsApp } from "./actions.js";
 import { cleanFavs, toggleFav, moveFav, homeRows } from "./launcher/favorites.js";
+import { step, detailKey, inputKey, listKey } from "./launcher/ring.js";
 
 const ME = "mods/office-apps";
 const DISABLED = "office-apps.disabled";   // { 앱 id: true } — 끈 앱
@@ -115,6 +124,10 @@ class Launcher {
   init(_p, cx) {
     this.app = null;          // 들어가 있는 앱 id
     this.lh = cx.focus_handle();   // 앱 화면 왼쪽 칸의 키보드 포커스(↑↓ · Enter를 앱의 move/activate로)
+    this.dh = cx.focus_handle();   // 오른쪽 상세 칸의 키보드 포커스. 멈출 곳(버튼·체크)마다 핸들을 두지 않고 커서(kb.at)로 가린다
+    // 상세 키보드 커서: at = 멈출 곳 id(null이면 왼쪽 목록), last = 그 순번(사라졌을 때 이어 갈 자리),
+    //   key = 키보드로 옮긴 커서인지(마우스로 누르면 끈다: 테두리는 키보드로 옮겼을 때만), from = 입력칸 감싼 곳이 알린 id
+    this.kb = { at: null, last: 0, key: false, from: null, on: (id) => this.kb.key && this.kb.at === id && Boolean(this.dh?.is_focused()) };
     this.seen = disabled();   // 마지막으로 본 끈 앱 목록(새로 꺼진 앱을 찾는 기준)
     this.inst = {};           // 앱 id → 인스턴스(켜진 앱을 처음 열 때 만든다)
     this.query = "";
@@ -134,6 +147,12 @@ class Launcher {
       for (;;) {
         const c = await nextCommand();
         if (c === "home") this.go(null, cx);
+        // pane.go로 이 칸에 들어왔거나 위에 뜬 창(확인 창 등)이 닫혔다: 홈이면 검색창, 앱이면 있던 곳(상세 커서 또는 왼쪽 목록)
+        else if (c === "focus") {
+          if (!this.app) this.search.focus();
+          else if (this.kb?.key && this.kb.at) this.moveTo(this.instance(this.app), this.kb.at);
+          else this.lh?.focus();
+        }
         // commit:<해시|WORKTREE>  커밋 앱에서 그 커밋(또는 작업 트리 변경)을 연다
         else if (c.startsWith("commit:")) this.toCommit(cx, (app) => app.openCommit?.(c.slice(7), cx));
         // range:<a>...<b>  커밋 앱에서 두 지점 사이를 비교한다(첫 "..."로 나눈다)
@@ -226,9 +245,68 @@ class Launcher {
     const act = APPS.find((a) => a.id === id)?.action;
     if (act && !this.disabled()[id]) { act(); return; }
     this.app = id && !this.disabled()[id] ? id : null;
+    if (this.kb) { this.kb.at = null; this.kb.key = false; this.kb.from = null; }
     const def = APPS.find((a) => a.id === this.app);
     if (def?.make && !this.inst[this.app]) { this.inst[this.app] = def.make(); this.inst[this.app].init({}, cx); }
     try { localStorage.setItem("app", JSON.stringify(this.app)); } catch { /* 이번 실행 동안만 */ }
+  }
+
+  // ── 상세 키보드(키 계약) ─────────────────────────────
+  stops(app) {
+    try { return (app?.focusables?.() ?? []).filter((s) => s && s.id != null); } catch { return []; }
+  }
+
+  // 커서를 그 멈출 곳으로(null·없는 id면 왼쪽 목록). 입력칸은 그 입력에, 버튼·체크는 상세 칸 핸들에 포커스를 준다.
+  moveTo(app, id) {
+    if (!this.kb) return;   // 코드를 다시 불러와 init 없이 남은 인스턴스
+    const kb = this.kb, list = this.stops(app), i = id == null ? -1 : list.findIndex((s) => s.id === id);
+    if (i < 0) { kb.at = null; kb.key = false; this.lh?.focus(); return; }
+    kb.at = id; kb.last = i; kb.key = true;
+    if (list[i].kind === "input") list[i].focus?.();
+    else this.dh?.focus();
+  }
+
+  // Tab(dir 1)·Shift+Tab(dir -1): at(null이면 왼쪽 목록)에서 고리를 따라 옮긴다. 멈출 곳이 없으면 false.
+  tabFrom(app, at, dir) {
+    if (!this.kb || !this.dh) return false;
+    const ids = this.stops(app).map((s) => s.id);
+    if (!ids.length) return false;
+    this.moveTo(app, step(ids, at, dir, this.kb.last));
+    return true;
+  }
+
+  // 오른쪽 상세 칸의 키. 입력칸 안에서 올라온 키(kb.from)는 Tab·Esc만, 상세 칸 핸들이 가진 키는 계약대로.
+  detailKeys(app, e, cx) {
+    const kb = this.kb;
+    if (!app || !kb) return;
+    const from = kb.from;
+    kb.from = null;
+    if (from != null && !this.dh?.is_focused() && !this.lh?.is_focused()) {
+      const k = inputKey(e);
+      if (!k) return;
+      if (k === "left") this.moveTo(app, null);
+      else if (!this.tabFrom(app, from, k === "next" ? 1 : -1)) return;
+      cx.stop_propagation(); cx.notify();
+      return;
+    }
+    if (!this.dh?.is_focused()) return;
+    const k = detailKey(e);
+    if (!k) return;
+    if (k === "up" || k === "down") { if (!app.move) return; app.move(k === "up" ? -1 : 1, cx); }
+    else if (k === "next" || k === "prev") { if (!this.tabFrom(app, kb.key ? kb.at : null, k === "next" ? 1 : -1)) return; }
+    // 마우스로 상세를 누른 뒤(커서 없음)의 Esc는 예전처럼 홈으로(바깥 Esc 처리로 넘긴다)
+    else if (k === "left") { if (!kb.key) return; this.moveTo(app, null); }
+    else if (k === "submit") { if (!app.submitDetail) return; app.submitDetail(cx); }
+    else if (k === "press") {
+      // 마우스로 상세를 누른 뒤(커서 없음)의 Enter는 예전처럼 왼쪽 목록의 Enter(주 동작)
+      if (!kb.key) { if (e.key !== "enter" || !app.activate) return; app.activate(cx); }
+      else {
+        const s = this.stops(app).find((x) => x.id === kb.at);
+        if (!s?.run) return;
+        s.run(cx);
+      }
+    }
+    cx.stop_propagation(); cx.notify();
   }
 
   // 켜진 앱만 열 때 만든다(go). 끈 앱은 만들지 않고, 끄면 있던 인스턴스도 정리(dispose)한 뒤 버린다.
@@ -317,6 +395,7 @@ class Launcher {
   // 앱 화면: 위 막대 / 왼쪽 목록 / 오른쪽 내용
   appView(id, cx, t) {
     const a = APPS.find((x) => x.id === id), app = this.instance(id);
+    if (app && this.kb) app.kb = this.kb;   // 앱이 멈출 곳 테두리를 그릴 때 본다(kb.on(id))
     const detail = app?.detail?.(cx, t) ?? null;
     // 빈 화면 문구: 앱이 emptyState()로 정하면 그것, 아니면 기본. 준비 중인 앱(인스턴스 없음)은 앱 설명
     const empty = (!detail && app?.emptyState?.()) || null;
@@ -344,6 +423,9 @@ class Launcher {
         .child(v_flex().id("apps-left").when(Boolean(this.lh), (el) => el.track_focus(this.lh)).w(LEFT).h_full().flex_none().min_h(0).border_r_1().border_color(t.border)
           .on_key_down((e, cx) => {
             if (!app || !this.lh?.is_focused()) return;
+            // Tab·Shift+Tab: 오른쪽 상세의 첫(마지막) 멈출 곳으로
+            const lk = listKey(e);
+            if (lk) { if (!this.tabFrom(app, null, lk === "next" ? 1 : -1)) return; cx.stop_propagation(); cx.notify(); return; }
             const m = e.modifiers;
             if (m.shift || m.alt || m.control || m.platform) return;
             if (e.key === "up" || e.key === "down") { if (!app.move) return; app.move(e.key === "up" ? -1 : 1, cx); }
@@ -354,7 +436,10 @@ class Launcher {
           .child(app ? app.list(cx, t) : v_flex().p(16).gap(6).child(div().text_color(t.muted).child("준비 중인 앱입니다"))
             .child(div().text_size(12).text_color(t.dim).child(a.desc))))
         // 오른쪽: 고른 항목(강조: 더 넓고 밝은 바탕)
-        .child(v_flex().flex_1().h_full().min_w(0).min_h(0).bg(t.background)
+        //   포커스(this.dh)를 달아 상세 키 계약(Tab 차례·Enter·Space·⌘Enter·Esc)을 받는다. 마우스로 누르면 키보드 커서 테두리를 끈다.
+        .child(v_flex().id("apps-right").when(Boolean(this.dh), (el) => el.track_focus(this.dh)).flex_1().h_full().min_w(0).min_h(0).bg(t.background)
+          .on_mouse_down("left", () => { if (this.kb) this.kb.key = false; })
+          .on_key_down((e, cx) => this.detailKeys(app, e, cx))
           .child(detail ?? v_flex().size_full().items_center().justify_center().gap(10)
             .child(this.tile(a, 40, t).opacity(0.5))
             .child(div().text_size(14).text_color(t.muted).child(empty?.text ?? "선택 내용이 없습니다"))
