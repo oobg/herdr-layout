@@ -20,13 +20,19 @@ import {
 
 // 에이전트 활동의 파일 줄을 누르면 office-apps의 뷰어 창(떠 있는 창, 역할 viewer)으로 연다.
 //   office-apps/files.js openViewer와 같은 값: 다른 모드라 import할 수 없어 여기서 같은 openOverlay를 부른다.
-//   key가 같으면(같은 머신의 같은 파일) 열린 창을 그 자리에서 바꿔 띄워 같은 파일 창이 늘지 않는다.
+//   key는 하나("office-apps.viewer")라 Herdr가 놓은 자리를 기억하고, 다른 파일이면 같은 창이 그 자리에서 내용만 바뀐다.
+//   크기는 뷰어 창이 남긴 공유 상태 office-apps.viewer.size({ w, h }, 없으면 1120×820)를 최소 560×400·앱 창의 0.96 안으로.
 //   on: 원격 터미널 주소("machine/t7")면 그 머신(뷰어는 글로만 읽는다), 아니면 이 기기.
 function openViewer(file, address) {
   if (!file || !file.startsWith("/")) return;
   const on = String(address ?? "").includes("/") ? String(address).split("/")[0] : null;
-  openOverlay({ mod: "office-apps", kind: "window", key: `office-apps.viewer:${on ?? ""}:${file}`,
-    width: 1120, height: 820, props: { role: "viewer", file, on } });
+  const s = shared("office-apps.viewer.size"), ok = (x) => typeof x === "number" && Number.isFinite(x);
+  let v = null;
+  try { v = globalThis.window?.viewport_size?.() ?? null; } catch { /* 앱 창 크기를 모르면 최대 없이 */ }
+  const fit = (x, def, min, max) => Math.round(Math.min(Math.max(ok(x) ? x : def, min), ok(max) ? Math.floor(max * 0.96) : Infinity));
+  const w = fit(s?.w, 1120, 560, v?.width), h = fit(s?.h, 820, 400, v?.height);
+  openOverlay({ mod: "office-apps", kind: "window", key: "office-apps.viewer",
+    width: w, height: h, props: { role: "viewer", file, on, w, h } });
 }
 
 const TERM = "office-term";

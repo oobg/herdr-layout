@@ -10,6 +10,7 @@ import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, setting
 import * as fs from "fs/promises";
 import { preview, mdRemoteImages } from "./viewers.js";
 import { codeLang } from "./markdown.js";
+import { DEFAULT_SIZE, ZOOM_MIN, ZOOM_MAX, clampSize, dragSize, nextPreset, stepZoom, pickSize, pickZoom } from "./viewers/size.js";
 import { Menu, Confirm, ACTIONS, TICK, menuHeight, popupAt } from "./menu.js";
 const PREVIEW = "office-apps.preview";
 
@@ -537,14 +538,15 @@ export class FilesApp {
 //   view는 viewers.js preview()의 결과, code·mdCode는 makeEditors가 만든 편집기 상태.
 
 // 편집기 상태 만들기. 편집기는 렌더 중에 만들 수 없어 미리보기를 받은 직후(이벤트·비동기 시점)에 만든다.
-export function makeEditors(s, v) {
+//   z: 배율(뷰어 창만 바꾼다, 파일 앱은 1). 편집기는 글자 크기를 나중에 못 바꿔 배율이 바뀌면 다시 만든다.
+export function makeEditors(s, v, z = 1) {
   const t = theme(), syntax = { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 };
-  if (v.kind === "code") s.code = EditorState.new({ language: v.lang, readonly: true, value: v.text, font_family: CODE_FONT, font_size: 12, syntax });
+  if (v.kind === "code") s.code = EditorState.new({ language: v.lang, readonly: true, value: v.text, font_family: CODE_FONT, font_size: 12 * z, syntax });
   // 마크다운 코드 블록: 블록마다 읽기 전용 편집기(줄 번호·접기 없음)
   if (v.kind === "md") {
     let n = 0;
     s.mdCode = v.blocks.map((b) => (b.kind === "code" && n++ < MD_CODE_MAX
-      ? EditorState.new({ language: codeLang(b.lang), readonly: true, value: b.text, font_family: CODE_FONT, font_size: 12, line_numbers: false, folding: false, syntax })
+      ? EditorState.new({ language: codeLang(b.lang), readonly: true, value: b.text, font_family: CODE_FONT, font_size: 12 * z, line_numbers: false, folding: false, syntax })
       : null));
   }
 }
@@ -557,53 +559,56 @@ export function releaseEditors(s) {
 }
 
 // 미리보기 본문. W: 그림·표를 맞출 폭. onLink(url, cx): 마크다운 링크·그림 링크를 눌렀을 때.
-export function previewBody(s, t, W, onLink) {
+//   z: 배율(뷰어 창의 −/+). 글자 크기와 그림 표시 크기에 곱한다. 1보다 크면 그림이 W를 넘으니 가로로도 스크롤한다.
+export function previewBody(s, t, W, onLink, z = 1) {
   const v = s.view;
   if (!v) return v_flex().flex_1().items_center().justify_center().text_color(t.muted).child("미리보기를 만드는 중");
   if (v.kind === "code") return s.code ? Editor.new(s.code).flex_1().min_h(0) : div();
-  if (v.kind === "md") return v_flex().id("files-md").flex_1().min_h(0).overflow_y_scrollbar().px(24).py(16).gap(12).text_size(14).font_family(CODE_FONT)
-    .children(markdownView(s, v.blocks, W - 8, t, onLink));
-  if (v.kind === "pages") return v_flex().id("files-pages").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(16).items_center()
+  const wide = (el) => (z > 1 ? el.overflow_scrollbar().items_start() : el.overflow_y_scrollbar().items_center());
+  if (v.kind === "md") return v_flex().id("files-md").flex_1().min_h(0).overflow_y_scrollbar().px(24).py(16).gap(12 * z).text_size(14 * z).font_family(CODE_FONT)
+    .children(markdownView(s, v.blocks, W - 8, t, onLink, z));
+  if (v.kind === "pages") return wide(v_flex().id("files-pages").flex_1().min_h(0).p(20).gap(16))
     .children(v.pages.map((p, i) => {
-      const w = Math.min(W, p.w), h = Math.round((w * p.h) / Math.max(1, p.w));
-      return v_flex().gap(4).items_center()
+      const w = Math.round(Math.min(W, p.w) * z), h = Math.round((w * p.h) / Math.max(1, p.w));
+      return v_flex().when(z > 1, (x) => x.flex_none()).gap(4).items_center()
         .child(image(p.path).w(w).h(h).rounded(4).shadow_md())
         .when(v.pages.length > 1, (el) => el.child(div().text_size(11).text_color(t.dim).child(`${i + 1} / ${v.count}`)));
     }));
-  if (v.kind === "table") return tableView(s, v, t);
-  if (v.kind === "slides") return v_flex().id("files-slides").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(14)
-    .when(Boolean(v.thumb), (el) => el.child(image(v.thumb.path).w(Math.min(W, v.thumb.w)).h(Math.round(Math.min(W, v.thumb.w) * v.thumb.h / v.thumb.w)).rounded(4).shadow_md()))
+  if (v.kind === "table") return tableView(s, v, t, z);
+  if (v.kind === "slides") return v_flex().id("files-slides").flex_1().min_h(0).p(20).gap(14).when(z > 1, (el) => el.overflow_scrollbar()).when(z <= 1, (el) => el.overflow_y_scrollbar())
+    .when(Boolean(v.thumb), (el) => { const w = Math.round(Math.min(W, v.thumb.w) * z); return el.child(image(v.thumb.path).when(z > 1, (x) => x.flex_none()).w(w).h(Math.round(w * v.thumb.h / v.thumb.w)).rounded(4).shadow_md()); })
     .children(v.slides.map((sl) => v_flex().gap(3)
-      .child(div().text_size(11).font_semibold().text_color(t.muted).child(`슬라이드 ${sl.n}`))
-      .children(sl.texts.map((tx, i) => div().text_size(i === 0 ? 14 : 13).when(i === 0, (x) => x.font_semibold()).text_color(t.foreground).child(tx)))));
+      .child(div().text_size(11 * z).font_semibold().text_color(t.muted).child(`슬라이드 ${sl.n}`))
+      .children(sl.texts.map((tx, i) => div().text_size((i === 0 ? 14 : 13) * z).when(i === 0, (x) => x.font_semibold()).text_color(t.foreground).child(tx)))));
   return v_flex().flex_1().items_center().justify_center().gap(10).text_color(t.muted)
-    .child(div().text_size(13).child(v.message ?? "미리볼 수 없는 파일입니다"));
+    .child(div().text_size(13 * z).child(v.message ?? "미리볼 수 없는 파일입니다"));
 }
 
 // 마크다운 블록(markdown.js): 글은 TextView, 코드는 편집기, 알림은 왼쪽 선 + 이름, 그림은 image()
-function markdownView(s, blocks, W, t, onLink) {
+function markdownView(s, blocks, W, t, onLink, z = 1) {
   const md = (id, text) => TextView.markdown(id, text).on_link_click((url, cx) => onLink(url, cx));
   return blocks.map((b, i) => {
     const id = `files-md-${i}`;
-    if (b.kind === "text") return b.notes ? div().text_size(12).text_color(t.muted).child(md(id, b.text)) : md(id, b.text);
+    if (b.kind === "text") return b.notes ? div().text_size(12 * z).text_color(t.muted).child(md(id, b.text)) : md(id, b.text);
     if (b.kind === "code") {
       const st = s.mdCode?.[i];
       if (!st) return md(id, "```" + (b.lang ?? "") + "\n" + b.text + "\n```");
       const lines = b.text.split("\n").length;
       return v_flex().rounded(4).bg(t.surface).border_1().border_color(t.border).px(12).py(10).gap(4)
-        .when(Boolean(b.lang), (el) => el.child(div().text_size(11).text_color(t.dim).child(b.lang)))
-        .child(Editor.new(st).w_full().h(lines * MD_LINE + 6));
+        .when(Boolean(b.lang), (el) => el.child(div().text_size(11 * z).text_color(t.dim).child(b.lang)))
+        .child(Editor.new(st).w_full().h(Math.ceil(lines * MD_LINE * z) + 6));
     }
     if (b.kind === "alert") {
       const [label, color] = ALERT[b.type] ?? ALERT.note;
       return v_flex().pl(12).gap(4).border_l_2().border_color(t[color])
-        .child(div().text_size(13).font_semibold().text_color(t[color]).child(label))
+        .child(div().text_size(13 * z).font_semibold().text_color(t[color]).child(label))
         .child(md(id, b.text));
     }
     if (b.kind === "images") return h_flex().flex_wrap().gap(6).items_end().when(Boolean(b.center), (el) => el.justify_center()).children(b.items.map((it, j) => {
       // 받는 중(pending)인 원격 그림은 대체 글을 더 흐리게, 못 가져온 그림은 대체 글로
-      if (!it.path) return div().text_size(12).text_color(t.dim).when(Boolean(it.pending), (el) => el.opacity(0.45)).child(`[그림${it.alt ? `: ${it.alt}` : ""}]`);
-      const w = Math.min(W, it.width ?? it.w), h = Math.round((w * it.h) / Math.max(1, it.w));
+      if (!it.path) return div().text_size(12 * z).text_color(t.dim).when(Boolean(it.pending), (el) => el.opacity(0.45)).child(`[그림${it.alt ? `: ${it.alt}` : ""}]`);
+      // 배율을 곱하되 본문 폭(W)은 넘지 않는다: 글은 W에서 줄바꿈하므로 마크다운은 가로 스크롤을 두지 않는다
+      const w = Math.round(Math.min(W, (it.width ?? it.w) * z)), h = Math.round((w * it.h) / Math.max(1, it.w));
       const img = image(it.path).w(w).h(h);
       return it.link ? div().id(`${id}-${j}`).cursor_pointer().on_click((_e, cx) => onLink(it.link, cx)).child(img) : img;
     }));
@@ -612,13 +617,13 @@ function markdownView(s, blocks, W, t, onLink) {
 }
 
 // 표(CSV·엑셀): 시트 탭 + 머리 행 고정 느낌의 격자. 칸은 같은 폭, 넘치면 가로로 스크롤. 고른 시트는 s.sheet.
-function tableView(s, v, t) {
+function tableView(s, v, t, z = 1) {
   const sh = v.sheets[Math.min(s.sheet ?? 0, v.sheets.length - 1)] ?? { rows: [] };
   const cols = Math.min(60, Math.max(0, ...sh.rows.map((r) => r.length)));
-  const CW = 132, RW = 44;
-  const cell = (text, head, i) => div().w(i === -1 ? RW : CW).h(26).flex_none().px(6).flex().items_center().border_r_1().border_b_1().border_color(t.border)
+  const CW = Math.round(132 * z), RW = Math.round(44 * z);
+  const cell = (text, head, i) => div().w(i === -1 ? RW : CW).h(Math.round(26 * z)).flex_none().px(6).flex().items_center().border_r_1().border_b_1().border_color(t.border)
     .when(head, (x) => x.bg(t.raised).font_semibold()).when(i === -1, (x) => x.justify_end().text_color(t.dim).bg(t.raised))
-    .text_size(12).child(div().truncate().child(String(text ?? "")));
+    .text_size(12 * z).child(div().truncate().child(String(text ?? "")));
   const colName = (i) => { let c = "", n = i + 1; while (n > 0) { const m = (n - 1) % 26; c = String.fromCharCode(65 + m) + c; n = Math.floor((n - 1) / 26); } return c; };
   return v_flex().flex_1().min_h(0)
     .when(v.sheets.length > 1, (el) => el.child(h_flex().id("files-sheets").flex_none().px(10).py(6).gap(4).overflow_x_scrollbar().border_b_1().border_color(t.border)
@@ -633,25 +638,38 @@ function tableView(s, v, t) {
 }
 
 // ── 뷰어 창: 에이전트 활동의 파일 줄을 누르면 뜨는 떠 있는 창(오버레이 kind "window", 역할 viewer) ──
-//   props { role: "viewer", file: 절대 경로, on?: 원격 머신 이름 }
-//   머리줄(아이콘 · 이름 · 흐린 경로 · 기본 앱으로 열기 · Finder에서 보기 · ✕)을 잡고 끌어 옮긴다.
-//   본문과 버튼은 누름을 멈춰(stop_propagation) 글 고르기·스크롤이 창 끌기가 되지 않게 한다.
+//   props { role: "viewer", file: 절대 경로, on?: 원격 머신 이름, w, h: 연 크기(px) }
+//   머리줄(아이콘 · 이름 · 흐린 경로 · 배율 −/100%/+ · 크기 ⤢ · 기본 앱으로 열기 · Finder에서 보기 · ✕)의 빈 곳을 잡고 끌어 옮긴다.
+//   버튼·본문·모서리 손잡이는 누름을 멈춰(stop_propagation) 글 고르기·스크롤·크기 끌기가 창 끌기가 되지 않게 한다.
 //   원격 파일은 preview가 글로만 읽고, 기본 앱·Finder 버튼은 이 기기 파일일 때만 보인다.
-export const VIEWER_W = 1120, VIEWER_H = 820;   // 문서를 읽을 만한 크기(사무실 오버뷰 office/main.js openViewer도 같은 값)
-// 여는 함수. key가 같으면(같은 머신의 같은 파일) Herdr가 열린 창을 그 자리에서 바꿔 띄운다: 같은 파일 창이 둘로 늘지 않는다.
-//   office 모드는 다른 모드라 이 함수를 import할 수 없어 같은 openOverlay를 직접 부른다(office/main.js openViewer).
-export function openViewer(file, on = null) {
+//   위치: key가 하나(VIEWER_KEY)라 Herdr가 놓은 자리를 기억하고, 다른 파일을 열면 같은 창이 그 자리에서 내용만 바뀐다.
+//   크기: Herdr 창에는 가장자리 끌기가 없어 ⤢(작게·보통·크게·화면 가득 순환)와 오른쪽 아래 손잡이로 고른 크기로
+//     같은 key를 다시 연다(그 자리에서 크기만 바뀐다). 크기·배율은 공유 상태 + localStorage에 남기고,
+//     사무실 오버뷰(office/main.js openViewer)는 공유 상태 VIEWER_SIZE를 읽어 같은 크기로 연다.
+export const VIEWER_KEY = "office-apps.viewer", VIEWER_SIZE = "office-apps.viewer.size", VIEWER_ZOOM = "office-apps.viewer.scale";
+export const VIEWER_W = DEFAULT_SIZE.w, VIEWER_H = DEFAULT_SIZE.h;   // 처음 크기(office/main.js openViewer도 같은 값)
+const viewport = () => { try { return globalThis.window?.viewport_size?.() ?? null; } catch { return null; } };
+const stored = (k) => { try { return JSON.parse(localStorage.getItem(k) ?? "null"); } catch { return null; } };
+const remember = (k, v) => { setShared(k, v); try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 공유 상태에는 남았다 */ } };
+export const viewerSize = () => clampSize(pickSize(shared(VIEWER_SIZE), stored(VIEWER_SIZE)), viewport());
+
+// 여는 함수. office 모드는 다른 모드라 이 함수를 import할 수 없어 같은 openOverlay를 직접 부른다(office/main.js openViewer).
+export function openViewer(file, on = null, size = viewerSize()) {
   if (!file || !file.startsWith("/")) return;
-  openOverlay({ mod: "office-apps", kind: "window", key: `office-apps.viewer:${on ?? ""}:${file}`,
-    width: VIEWER_W, height: VIEWER_H, props: { role: "viewer", file, on: on ?? null } });
+  openOverlay({ mod: "office-apps", kind: "window", key: VIEWER_KEY,
+    width: size.w, height: size.h, props: { role: "viewer", file, on: on ?? null, w: size.w, h: size.h } });
 }
 
 export class ViewerWindow {
   init(_p, cx) {
     const p = props() ?? {};
     this.on = p.on ?? null;
+    this.size = pickSize({ w: p.w, h: p.h }, shared(VIEWER_SIZE), stored(VIEWER_SIZE));
+    this.zoom = pickZoom(shared(VIEWER_ZOOM), stored(VIEWER_ZOOM));
+    this.drag = null;       // 모서리 끌기 중: { from, start, to }
+    this.origin = null;     // 창 왼쪽 위(앱 창 좌표): 포인터가 창 위를 지날 때 잰다
     this.h = cx.focus_handle();
-    this.h.focus();   // Esc로 닫을 수 있게(창은 처음에 키보드를 갖지 않는다)
+    this.h.focus();   // Esc·⌘−/⌘=/⌘0을 받을 수 있게(창은 처음에 키보드를 갖지 않는다)
     this.open(p.file, cx);
   }
 
@@ -667,7 +685,7 @@ export class ViewerWindow {
       try { v = await preview(abs, ext, this.on); } catch (e) { v = { kind: "error", message: `미리보기를 만들지 못했습니다: ${String(e?.message ?? e).slice(0, 80)}` }; }
       if (!latest()) return;
       releaseEditors(this);
-      makeEditors(this, v);
+      makeEditors(this, v, this.zoom);
       this.view = v;
       cx.notify();
       if (v.kind === "md" && v.pendingRemote) {
@@ -692,7 +710,66 @@ export class ViewerWindow {
     cx.notify();
   }
 
+  // 배율: dir +1 키우기, -1 줄이기, 0 100%로. 편집기는 글자 크기를 못 바꿔 다시 만든다.
+  setZoom(dir, cx) {
+    const z = stepZoom(this.zoom, dir);
+    if (z === this.zoom) return;
+    this.zoom = z;
+    remember(VIEWER_ZOOM, z);
+    if (this.view) { releaseEditors(this); makeEditors(this, this.view, z); }
+    cx.notify();
+  }
+
+  // 창 왼쪽 위에서 앱 창 오른쪽·아래 끝까지 남은 칸(키운 창이 앱 창 밖으로 나가지 않게)
+  room() {
+    const v = viewport();
+    if (!v || !this.origin) return null;
+    return { width: v.width - this.origin.x - 8, height: v.height - this.origin.y - 8 };
+  }
+
+  // 새 크기로 같은 key를 다시 연다: Herdr가 열린 창을 그 자리에서 바꾼다(이 뷰는 새로 만들어진다).
+  //   지금 보는 파일(this.abs: 마크다운 링크로 옮겨 갔을 수 있다)을 넘긴다. openOverlay는 마지막에.
+  resize(size, cx) {
+    const s = clampSize(size, viewport(), this.room());
+    if (s.w === this.size.w && s.h === this.size.h) { cx.notify(); return; }
+    remember(VIEWER_SIZE, s);
+    releaseEditors(this);
+    openViewer(this.abs, this.on, s);
+  }
+
+  // 모서리 끌기. 포인터가 창 밖으로 나가면 이 뷰에 move·up이 오지 않으므로, 누른 동안 앱 창의 포인터 위치를
+  //   타이머로 읽어 테두리 미리보기만 그린다. 창 안에서 놓으면(on_mouse_up) 확정. 창 밖에서는 놓은 것을 알 길이 없어
+  //   포인터가 창 밖에서 0.3초 멈추면 놓은 것으로 보고 확정한다(그 전에 누름이 오면 그때 확정). Esc는 취소.
+  startDrag(e, cx) {
+    cx.stop_propagation();
+    const W = globalThis.window;
+    const from = W?.mouse_position?.() ?? e.position;
+    this.drag = { from, start: { ...this.size }, to: { ...this.size } };
+    this.dragTask?.cancel();
+    this.dragTask = cx.timer.every(16, (acx) => {
+      if (!this.drag) return;
+      let p;
+      try { p = W.mouse_position(); } catch { return; }
+      const g = this.drag, to = dragSize(g.start, g.from, p, viewport(), this.room());
+      if (to.w !== g.to.w || to.h !== g.to.h) { g.to = to; acx.notify(); }
+      const o = this.origin, outside = o && (p.x < o.x || p.y < o.y || p.x > o.x + (this.dw ?? g.start.w) || p.y > o.y + (this.dh ?? g.start.h));
+      g.still = outside && g.last && g.last.x === p.x && g.last.y === p.y ? (g.still ?? 0) + 1 : 0;
+      g.last = p;
+      if (g.still >= 18) this.endDrag(acx);
+    });
+    cx.notify();
+  }
+
+  endDrag(cx, commit = true) {
+    if (!this.drag) return false;
+    const to = this.drag.to;
+    this.dragTask?.cancel(); this.dragTask = null; this.drag = null;
+    if (commit) this.resize(to, cx); else cx.notify();
+    return true;
+  }
+
   dismiss() {
+    this.dragTask?.cancel();
     releaseEditors(this);
     closeOverlay(props().overlay);
   }
@@ -700,25 +777,57 @@ export class ViewerWindow {
   render() {
     const t = theme(), abs = this.abs ?? "", name = abs.split("/").pop(), icon = iconFor(name, false, false), local = !this.on;
     const where = (this.on ? `${this.on}:` : "") + (abs.startsWith(home() + "/") ? `~${abs.slice(home().length)}` : abs);
-    const W = Math.max(200, (this.dw ?? VIEWER_W) - 40);
-    const stop = (_e, cx) => cx.stop_propagation();   // 컨트롤·본문의 누름이 창 끌기로 가지 않게
+    const W = Math.max(200, (this.dw ?? this.size.w) - 40);
+    // 컨트롤·본문의 누름이 창 끌기로 가지 않게. 창 밖에서 놓은 모서리 끌기는 이 누름에서 확정한다.
+    const stop = (_e, cx) => { cx.stop_propagation(); this.endDrag(cx); };
     const btn = (id, text, fn) => div().id(id).flex_none().px(10).py(4).rounded(6).border_1().border_color(t.border).text_size(12)
       .text_color(t.foreground).cursor_pointer().hover((s) => s.bg(t.hover)).on_mouse_down("left", stop).on_click(fn).child(text);
-    return v_flex().id("viewer").track_focus(this.h).size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
-      .on_size_change((size, cx) => { if (Math.abs((this.dw ?? 0) - size.width) > 4) { this.dw = size.width; cx.notify(); } })
-      .on_key_down((e, cx) => { if (e.key === "escape") { cx.stop_propagation(); this.dismiss(); } })
-      // 머리줄: 여기를 잡고 끈다
+    // 흐린 작은 버튼(배율·크기·닫기)
+    const quiet = (id, text, fn, off = false) => div().id(id).flex_none().px(6).py(2).rounded(4).text_size(12)
+      .text_color(off ? t.dim : t.muted).when(!off, (x) => x.cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)))
+      .on_mouse_down("left", stop).when(!off, (x) => x.on_click((_e, cx) => fn(cx))).child(text);
+    const z = this.zoom, d = this.drag, dh = this.dh ?? this.size.h;
+    // 본문을 누르면 창이 키보드를 갖게(배율 단축키). 편집기는 스스로 포커스를 가지므로 빼 둔다(글 고르기·복사).
+    const editors = this.view?.kind === "code" || (this.mdCode ?? []).some(Boolean);
+    return v_flex().id("viewer").track_focus(this.h).relative().size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
+      .on_size_change((size, cx) => {
+        if (Math.abs((this.dw ?? 0) - size.width) > 4 || Math.abs((this.dh ?? 0) - size.height) > 4) { this.dw = size.width; this.dh = size.height; cx.notify(); }
+      })
+      .on_mouse_move((e) => { this.origin = { x: e.position.x - e.local_position.x, y: e.position.y - e.local_position.y }; })
+      .on_mouse_up("left", (_e, cx) => { this.endDrag(cx); })
+      .on_mouse_down("left", (_e, cx) => { if (this.endDrag(cx)) cx.stop_propagation(); })
+      .on_mouse_down_out((_e, cx) => { this.endDrag(cx); })
+      .on_key_down((e, cx) => {
+        const k = e.keystroke;
+        if (k === "escape") { cx.stop_propagation(); if (!this.endDrag(cx, false)) this.dismiss(); return; }
+        const dir = k === "cmd--" || k === "cmd-_" ? -1 : k === "cmd-=" || k === "cmd-+" || k === "cmd-shift-=" ? 1 : k === "cmd-0" ? 0 : null;
+        if (dir !== null) { cx.stop_propagation(); this.setZoom(dir, cx); }
+      })
+      // 머리줄: 빈 곳을 잡고 끈다(누르면 창이 키보드도 갖는다)
       .child(h_flex().h(40).flex_none().px(14).gap(8).items_center().bg(t.chrome).border_b_1().border_color(t.border)
+        .on_mouse_down("left", () => this.h.focus())
         .when(Boolean(icon), (el) => el.child(image(icon).size(16).flex_none()))
         .child(div().flex_none().max_w(260).truncate().text_size(14).font_semibold().text_color(t.foreground).child(name))
-        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(this.view?.note ?? where))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(d ? `${d.to.w} × ${d.to.h}` : this.view?.note ?? where))
+        .child(h_flex().flex_none().items_center()
+          .child(quiet("viewer-zoom-out", "−", (cx) => this.setZoom(-1, cx), z <= ZOOM_MIN))
+          .child(quiet("viewer-zoom", `${Math.round(z * 100)}%`, (cx) => this.setZoom(0, cx)))
+          .child(quiet("viewer-zoom-in", "+", (cx) => this.setZoom(1, cx), z >= ZOOM_MAX))
+          .child(quiet("viewer-size", "⤢", (cx) => this.resize(nextPreset(this.size, viewport(), this.room()), cx))))
         .when(local, (el) => el
           .child(btn("viewer-open-ext", "기본 앱으로 열기", () => exec("open", [abs])))
           .child(btn("viewer-reveal", "Finder에서 보기", () => exec("open", ["-R", abs]))))
-        .child(div().id("viewer-close").flex_none().px(6).rounded(4).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover))
-          .on_mouse_down("left", stop).on_click(() => this.dismiss()).child("✕")))
-      .child(v_flex().id("viewer-body").flex_1().min_h(0).on_mouse_down("left", stop)
-        .child(previewBody(this, t, W, (url, cx) => this.link(url, cx))));
+        .child(quiet("viewer-close", "✕", () => this.dismiss())))
+      .child(v_flex().id("viewer-body").flex_1().min_h(0)
+        .on_mouse_down("left", (e, cx) => { stop(e, cx); if (!editors) this.h.focus(); })
+        .child(previewBody(this, t, W, (url, cx) => this.link(url, cx), z)))
+      // 오른쪽 아래 손잡이: 누르고 끌면 크기 미리보기, 놓으면 그 크기로 다시 연다
+      .child(div().id("viewer-grip").absolute().right(0).bottom(0).size(14).cursor_nwse_resize()
+        .border_r_2().border_b_2().border_color(t.dim).opacity(0.5).hover((s) => s.opacity(1))
+        .on_mouse_down("left", (e, cx) => this.startDrag(e, cx)))
+      // 끄는 동안 테두리 미리보기(창 안에만 그려진다: 키울 때는 머리줄 숫자로 크기를 본다)
+      .when(Boolean(d), (el) => el.child(div().absolute().left(0).top(0)
+        .w(Math.min(d.to.w, this.dw ?? d.to.w)).h(Math.min(d.to.h, dh)).border_2().border_color(t.accent)));
   }
 }
 
