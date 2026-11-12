@@ -83,6 +83,20 @@ function closeTerm() {
   run("layout.hide", { id: TERM });
   setShared(OPEN, null);
 }
+// 머리줄 "답 필요 n"을 누르면: 가장 오래 기다린 에이전트의 테이블을 연다(이미 열려 있어도 닫지 않는다) + 그 터미널로.
+//   오래 기다린 순서는 알림함(office-apps/inbox/model.js)과 같다: 탭 changed_at 이른 것(없으면 뒤) → seq 작은 것.
+function oldestBlocked(list) {
+  const tabAt = new Map(spaces().flatMap((s) => s.tabs.map((x) => [x.id, x.changed_at ?? null])));
+  const since = (a) => tabAt.get(a.tab) ?? null;
+  return list.filter((a) => a.status === "blocked")
+    .sort((x, y) => (since(x) == null) - (since(y) == null) || (since(x) ?? 0) - (since(y) ?? 0) || (x.seq ?? 0) - (y.seq ?? 0));
+}
+function openAgentTable(a) {
+  run("space.select", { id: a.space });
+  run("layout.show", { id: TERM });
+  if (shared(OPEN) !== a.space) setShared(OPEN, a.space);
+  run("agent.focus", { terminal: a.address });
+}
 
 // 이름에서 고정된 색 하나: 서브에이전트 색이 따로 없을 때 쓴다.
 function hashColor(s) {
@@ -227,6 +241,7 @@ class Floor {
     // 터미널 칸이 열려 있으면 위는 장면, 아래는 고른 워크트리의 오버뷰.
     const sel = open ? spaces().find((x) => x.id === open) : null;
     const sceneH = sel ? Math.max(180, Math.round(box.height * 0.4)) : box.height;
+    const waiting = oldestBlocked(ags);
 
     return div().id("office-floor").relative().size_full().bg(t.surface).text_size(12).overflow_hidden()
       .on_size_change((size, cx) => { this.box = size; cx.notify(); })
@@ -238,6 +253,11 @@ class Floor {
       .child(h_flex().absolute().top(0).left(0).w(box.width).h(36).px(14).gap(8).items_center().bg(`${t.surface}e6`)
         .child(div().text_size(14).font_semibold().text_color(t.foreground).child("OFFICE"))
         .child(div().text_color(t.dim).child(`${ags.length}명 근무 중`))
+        // 답 필요: 모든 방을 센다. 누르면 가장 오래 기다린 에이전트의 테이블로.
+        .when(waiting.length > 0, (el) => el.child(div().id("office-blocked").text_size(12).font_semibold().text_color(t.blocked)
+          .cursor_pointer().hover((st) => st.underline()).tooltip("가장 오래 기다린 에이전트로")
+          .on_click((_e, cx) => { cx.stop_propagation(); openAgentTable(waiting[0]); })
+          .child(`· ${STATUS_WORD.blocked} ${waiting.length}`)))
         .when(!open, (el) => el.child(div().flex_1()).child(div().id("office-add").px(8).py(2).rounded(5).border_1().border_color(t.border)
           .text_size(12).text_color(t.foreground).cursor_pointer().hover((st) => st.bg(t.hover))
           .on_click((_e, cx) => {
