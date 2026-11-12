@@ -321,8 +321,10 @@ class Panel {
   row(t, r) {
     const icon = programIcon(r.program, 16, t);
     const showCpu = r.cpu != null && r.cpu >= CPU_MIN;
-    return h_flex().id(`res-x-${r.address}`).h(r.sub ? 40 : 30).pl(26).pr(14).flex_none().items_center().gap(10).cursor_pointer()
+    const hot = this.hot === r.address;
+    return h_flex().id(`res-x-${r.address}`).h(r.sub ? 40 : 30).pl(26).pr(8).flex_none().items_center().gap(10).cursor_pointer()
       .hover((s) => s.bg(t.hover))
+      .on_hover((h, cx) => { if (h) this.hot = r.address; else if (this.hot === r.address) this.hot = null; cx.notify(); })
       .on_click(() => this.goTo(r.sp, r.tab, r.address))
       .child(div().w(16).flex_none().flex().justify_center().when(!!icon, (el) => el.child(icon)))
       .child(v_flex().flex_1().min_w(0)
@@ -330,7 +332,19 @@ class Panel {
         .when(!!r.sub, (el) => el.child(div().truncate().text_size(11).text_color(t.dim).child(r.sub))))
       .child(v_flex().flex_none().items_end()
         .child(div().font_family(NUM_FONT).text_size(12).text_color(t.muted).child(fmtMem(r.mem)))
-        .when(showCpu, (el) => el.child(div().font_family(NUM_FONT).text_size(11).text_color(t.dim).child(`CPU ${fmtCpu(r.cpu)}`))));
+        .when(showCpu, (el) => el.child(div().font_family(NUM_FONT).text_size(11).text_color(t.dim).child(`CPU ${fmtCpu(r.cpu)}`))))
+      // 닫기: 줄에 마우스를 올렸을 때만 보인다(자리는 늘 잡아 둬 숫자가 밀리지 않게). 확인 창을 거친다.
+      .child(div().id(`res-close-${r.address}`).w(18).h(18).flex_none().flex().items_center().justify_center().rounded(4)
+        .text_size(11).text_color(hot ? t.muted : "#00000000")
+        .when(hot, (x) => x.cursor_pointer().hover((st) => st.bg(t.border).text_color(t.foreground))
+          .on_click((_e, cx) => { cx.stop_propagation(); this.askClose(r); }))
+        .child("✕"));
+  }
+
+  askClose(r) {
+    const pane = panes().find((p) => p.terminal === r.address)?.pane ?? null;
+    openOverlay({ mod: ID, kind: "dialog", width: 400, height: 170,
+      props: { role: "close-term", pane, terminal: r.address, name: r.name, space: spaceLabel(r.sp.name), shell: !!r.program?.shell || !r.program?.name } });
   }
 
   restRow(t, key, rest, open) {
@@ -377,6 +391,35 @@ class Tabs {
   }
 }
 
+// 터미널 닫기 확인 창(role "close-term"). 칸이 있으면 pane.close(칸을 닫고 터미널을 끝냄), 없으면 terminal.kill.
+class CloseTerm {
+  init(_p, cx) { this.h = cx.focus_handle(); this.h.focus(); }
+  yes() {
+    const p = props();
+    closeOverlay(p.overlay);
+    if (p.pane) run("pane.close", { pane: p.pane });
+    else run("terminal.kill", { terminal: p.terminal });
+  }
+  render() {
+    const t = theme(), p = props();
+    const button = (id, text, primary, action) => h_flex().id(id).h(30).px(14).items_center().rounded(7).cursor_pointer().text_size(12.5)
+      .border_1().border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
+      .text_color(primary ? t.solid_foreground : t.foreground).hover((st) => st.opacity(0.88)).on_click(action).child(text);
+    return v_flex().id("res-close-term").track_focus(this.h).size_full().p(18).gap(10).bg(t.popover).text_size(13)
+      .on_key_down((e, cx) => {
+        if (e.key === "enter") this.yes();
+        else if (e.key === "escape") closeOverlay(p.overlay);
+        else return;
+        cx.stop_propagation();
+      })
+      .child(div().text_size(15).font_semibold().text_color(t.foreground).child(p.shell ? "셸을 닫을까요?" : "터미널을 닫을까요?"))
+      .child(div().flex_1().text_color(t.muted).child(`${p.space}의 ${p.name} 터미널을 닫습니다. 그 안에서 돌던 프로그램도 끝납니다.`))
+      .child(h_flex().gap(8).justify_end()
+        .child(button("rc-no", "취소", false, () => closeOverlay(p.overlay)))
+        .child(button("rc-yes", "닫기", true, () => this.yes())));
+  }
+}
+
 class Tip {
   init() {}
   render() {
@@ -389,7 +432,7 @@ class Tip {
 export default class Resources extends View {
   init(p, cx) {
     const role = (props() ?? p ?? {}).role;
-    this.role = role === "tip" ? new Tip() : role === "tabs" ? new Tabs() : new Panel();
+    this.role = role === "tip" ? new Tip() : role === "tabs" ? new Tabs() : role === "close-term" ? new CloseTerm() : new Panel();
     this.role.init(p, cx);
   }
 
