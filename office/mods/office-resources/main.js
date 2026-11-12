@@ -1,10 +1,10 @@
-// 리소스 관리자: Herdr 터미널들이 쓰는 CPU·메모리를 보여 준다.
+// 리소스 관리자: Herdr 터미널들이 쓰는 메모리·CPU를 보여 준다.
 //   레이아웃에서 사용량과 같은 탭 묶음(stack "office-side")에 들어가 있고, 탭 머리줄은 role "tabs"가 그린다.
-//   칸 높이가 FULL 이상이면 전체 표(스페이스 → 탭 → 터미널), 모자라면 메모리 한 줄(칩). 칩을 누르면 팝업으로 전체 표.
+//   칸 높이가 FULL 이상이면 요약 + 터미널 목록(메모리 큰 순), 모자라면 메모리 한 줄(칩). 칩을 누르면 팝업으로 같은 목록.
 // 데이터: 터미널마다 hc get으로 셸(뿌리) pid를 한 번 얻어 두고, 3초마다 ps 한 번으로 그 자손 트리 합을 낸다.
-//   탭 = 소속 터미널 합, 스페이스 = 탭 합, 요약 = 이 컴퓨터 터미널 전체 합. 다른 기기는 exec on으로 같은 계산을 시도한다.
+//   요약 = 이 컴퓨터 터미널 전체 합. 다른 기기는 exec on으로 같은 계산을 시도한다.
 
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { theme, exec, hc, run, props, spaces, panes, terminals, machines, window, layout,
   setShared, openOverlay, closeOverlay } from "herdr";
@@ -13,32 +13,47 @@ import { SCRIPT, parseAll, treeSum, fmtMem, fmtCpu } from "./calc.js";
 const ID = "office-resources";   // 레이아웃 블록 id이자 모드 이름
 const STACK = "office-side";     // 사용량·리소스 탭 묶음 id
 const TABS = [{ id: "office-usage", label: "사용량" }, { id: ID, label: "리소스" }];
-const FULL = 220;                // 이 높이부터 전체 표
+const FULL = 220;                // 이 높이부터 목록
 const CHIP = 28;                 // 한 줄 칩 높이 (칸이 더 커도 맨 위에 붙인다)
 const EVERY = 3000;              // 갱신 주기(ms)
-const SPARK = 30;                // 탭 스파크라인 표본 수
-const NUM_FONT = "D2Coding";     // 숫자 칸: 고정폭 글꼴로 자릿수를 맞춘다
-const W_CPU = 48, W_MEM = 64;    // 숫자 칸 폭
+const TOP = 6;                   // 기기마다 처음 보이는 줄 수. 나머지는 한 줄로 접는다
+const CPU_MIN = 1;               // 이 % 이상일 때만 줄에 CPU를 쓴다
+const NUM_FONT = "D2Coding";     // 숫자: 고정폭 글꼴로 자릿수를 맞춘다
 const TOOL = { refresh: "#7fbbb3", fold: "#9da9a0" };   // 사용량 패널 툴바 색과 같게
-const OK = "#a7c080";            // 상태를 보고하지 않는 터미널의 점 (사용량 패널의 정상 색)
+
+// 브랜드 로고로 바꿔 보여 줄 프로그램(office 모드와 같게): Herdr 기본 아이콘은 작게 그리면 잘 안 보인다.
+const BRAND = [
+  [/claude/i, `mods/${ID}/icons/claude.svg`, "#d97757"],
+  [/codex|openai/i, `mods/${ID}/icons/openai.svg`, null],   // null = 글자색
+];
 
 const machineOf = (address) => (String(address).includes("/") ? String(address).split("/")[0] : null);
+const spaceLabel = (name) => (name === "~" ? "홈" : name);
+// 이름으로 쓸 만한 탭 이름인가: 숫자뿐("1"), 커밋 해시("show 93e8…"), 셸 이름은 아니다.
+const meaningful = (name) => {
+  const s = String(name ?? "").trim();
+  return !!s && !/^\d+$/.test(s) && !/^show\s+[0-9a-f]{7,}$/i.test(s) && !/^(zsh|bash|fish|sh)$/i.test(s);
+};
+
+function programIcon(p, size, t) {
+  const id = `${p?.key ?? ""} ${p?.name ?? ""}`;
+  const brand = BRAND.find(([re]) => re.test(id));
+  if (brand) return svg(brand[1]).size(size).flex_none().text_color(brand[2] ?? t.foreground);
+  if (p?.icon) return p.tint ? svg(p.icon).size(size).flex_none().text_color(p.color || t.muted) : image(p.icon).size(size).flex_none();
+  return null;
+}
 
 class Panel {
   init(_p, cx) {
-    this.popup = props()?.role === "popup";   // 팝업 복사본: 늘 전체 표, 접기 대신 닫기
+    this.popup = props()?.role === "popup";   // 팝업 복사본: 늘 목록, 접기 대신 닫기
     this.size = null;
     this.roots = new Map();     // 주소 → { pid, tab } (hc get 한 번; 셸 pid는 터미널이 살아 있는 동안 같다)
     this.asking = new Set();    // hc get 중인 주소
     this.usage = new Map();     // 주소 → { cpu(기기 대비 %), mem(바이트) }
     this.sys = {};              // 기기 이름("" = 이 컴퓨터) → { ncpu, total, used, cpu }
     this.down = new Set();      // 리소스를 못 읽은 기기 이름
-    this.hist = {};             // 탭 id → 최근 CPU 표본들
     this.busy = false;
-    this.last = 0;
-    const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k) ?? "null") ?? d; } catch { return d; } };
-    this.folded = load("folded", {});     // 스페이스 id → 접힘
-    this.details = load("details", false); // 지표 세부 정보 펼침
+    try { this.more = JSON.parse(localStorage.getItem("more") ?? "null") ?? {}; } catch { this.more = {}; }  // 기기 → 나머지 펼침
     this.tick(cx);
     cx.timer.every(EVERY, (cx) => this.tick(cx));
   }
@@ -65,7 +80,6 @@ class Panel {
         await this.read();
       } finally {
         this.busy = false;
-        this.last = Date.now();
         cx.notify();
       }
     });
@@ -111,19 +125,10 @@ class Panel {
       }
     }));
     this.usage = usage;
-    // 탭 스파크라인 표본
-    const model = this.model();
-    const seen = new Set();
-    for (const sp of model) for (const tb of sp.tabs) {
-      seen.add(tb.id);
-      const h = (this.hist[tb.id] ??= []);
-      h.push(tb.cpu ?? 0);
-      if (h.length > SPARK) h.splice(0, h.length - SPARK);
-    }
-    for (const id of Object.keys(this.hist)) if (!seen.has(id)) delete this.hist[id];
   }
 
-  // 스페이스 → 탭 → 터미널 트리와 합계. 터미널의 탭: 패인 → hc get 라벨 → (서브에이전트면) 부모의 탭.
+  // 터미널 한 줄씩, 메모리 큰 순. 터미널의 탭: 패인 → hc get 라벨 → (서브에이전트면) 부모의 탭.
+  // Herdr 탭에 속하지 않은 터미널(다른 앱의 것)은 빠진다.
   model() {
     const terms = terminals() ?? [];
     const byAddr = new Map(terms.map((t) => [t.address, t]));
@@ -136,25 +141,24 @@ class Panel {
       const parent = byAddr.get(a)?.parent;
       return parent ? tabOf(parent, depth + 1) : null;
     };
-    const inTab = new Map();
+    const where = new Map();
+    for (const sp of spaces()) for (const tb of sp.tabs) where.set(tb.id, { sp, tb });
+    const rows = [];
     for (const t of terms) {
-      const tab = tabOf(t.address);
-      if (!tab) continue;
-      if (!inTab.has(tab)) inTab.set(tab, []);
-      inTab.get(tab).push(t);
+      if (t.state != null && t.state !== "live") continue;
+      const w = where.get(tabOf(t.address));
+      if (!w) continue;
+      const u = this.usage.get(t.address);
+      const p = t.program;
+      // 이름: 셸이면 의미 있는 탭 이름, 아니면 "셸". 그 밖의 프로그램(에이전트, Git 등)은 프로그램 이름.
+      const tabOk = meaningful(w.tb.name);
+      const name = p?.shell || !p?.name ? (tabOk ? w.tb.name : "셸") : p.name;
+      const extra = tabOk && name !== w.tb.name ? w.tb.name : null;
+      rows.push({ address: t.address, program: p, name, sub: extra ? `${spaceLabel(w.sp.name)} · ${extra}` : spaceLabel(w.sp.name),
+        sp: w.sp, tab: w.tb.id, machine: w.sp.machine ?? "", cpu: u?.cpu ?? null, mem: u?.mem ?? null });
     }
-    const add = (a, b) => (a == null ? b : b == null ? a : a + b);
-    return spaces().map((sp) => {
-      const tabs = sp.tabs.map((tb) => {
-        const list = (inTab.get(tb.id) ?? []).map((t) => ({ t, u: this.usage.get(t.address) }));
-        let cpu = null, mem = null;
-        for (const x of list) { cpu = add(cpu, x.u?.cpu); mem = add(mem, x.u?.mem); }
-        return { id: tb.id, name: tb.name, active: tb.active, terms: list, cpu, mem };
-      });
-      let cpu = null, mem = null;
-      for (const tb of tabs) { cpu = add(cpu, tb.cpu); mem = add(mem, tb.mem); }
-      return { sp, tabs, cpu, mem };
-    });
+    rows.sort((a, b) => (b.mem ?? -1) - (a.mem ?? -1));
+    return rows;
   }
 
   // 이동: 그 터미널로. office 레이아웃이면 터미널 칸을 열고 office 모드에 고른 스페이스를 알린다(에이전트 앱 goTo와 같게).
@@ -171,7 +175,7 @@ class Panel {
     if (this.popup) closeOverlay(props().overlay);
   }
 
-  // 한 줄에서 누르면: 같은 표를 팝업으로(칩 오른쪽 끝에 맞춰 위쪽으로 띄운다).
+  // 한 줄에서 누르면: 같은 목록을 팝업으로(칩 오른쪽 끝에 맞춰 위쪽으로 띄운다).
   openPopup(e) {
     const b = e?.bounds, w = 300, h = 420;
     openOverlay({ mod: ID, kind: "popup", width: w, height: h, props: { role: "popup" },
@@ -183,18 +187,19 @@ class Panel {
     const full = this.popup || (this.size?.height ?? 0) >= FULL;
     return div().id("res-root").size_full()
       .on_size_change((size, cx) => { this.size = size; cx.notify(); })
-      .child(full ? this.full(t, cx) : this.chip(t));
+      .child(full ? this.full(t) : this.chip(t));
   }
 
-  // 이 컴퓨터 스페이스들의 합(= 표의 스페이스 줄 합). Herdr 탭에 속하지 않은 터미널(다른 앱의 것)은 빠진다.
-  total(model = this.model()) {
-    let cpu = null, mem = null;
-    for (const m of model) {
-      if (m.sp.machine) continue;
-      if (m.cpu != null) cpu = (cpu ?? 0) + m.cpu;
-      if (m.mem != null) mem = (mem ?? 0) + m.mem;
+  // 이 컴퓨터 터미널들의 합
+  total(rows = this.model()) {
+    let cpu = null, mem = null, n = 0;
+    for (const r of rows) {
+      if (r.machine || r.mem == null) continue;
+      cpu = (cpu ?? 0) + (r.cpu ?? 0);
+      mem = (mem ?? 0) + r.mem;
+      n++;
     }
-    return { cpu, mem };
+    return { cpu, mem, n };
   }
 
   // 한 줄: 메모리 칩 아이콘 + 메모리 합, 흐린 글자. 사용량 카드 밑에 붙어 보이게 테두리 없이.
@@ -231,118 +236,87 @@ class Panel {
     this.tipId = null; this.tipFor = null;
   }
 
-  num(t, text, w, color) {
-    return div().w(w).flex_none().flex().justify_end().font_family(NUM_FONT).text_size(12)
-      .text_color(color ?? t.muted).child(text);
-  }
-
-  full(t, cx) {
-    const model = this.model();
-    const { cpu, mem } = this.total(model);
+  full(t) {
+    const rows = this.model();
+    const { cpu, mem, n } = this.total(rows);
     const sys = this.sys[""];
     const card = v_flex().size_full().bg(t.chrome).text_size(13);
     const inTabs = findNode(layout(), STACK)?.type === "stack";   // 탭 묶음이 테두리·제목을 대신한다
     const framed = this.popup || inTabs ? card : card.rounded(10).border_1().border_color(t.border).overflow_hidden();
+    const here = window()?.platform === "macos" ? "이 Mac" : "이 컴퓨터";
+    const share = sys?.total && mem != null ? mem / sys.total * 100 : null;
     return framed
       // 머리줄: 사용량 패널과 같은 40px, 제목 14 semibold (탭 안에서는 탭 이름이 제목이라 뺀다)
       .when(!inTabs, (el) => el.child(h_flex().h(40).pl(14).pr(8).flex_none().items_center().gap(2).border_b_1().border_color(t.border)
         .child(div().flex_1().text_size(14).font_semibold().text_color(t.foreground).child("리소스 관리자"))
         .child(this.btn(t, "refresh", "refresh", TOOL.refresh, this.busy ? "읽는 중" : "지금 새로 고침", (cx) => this.tick(cx, true), this.busy))
         .when(this.popup, (el) => el.child(this.btn(t, "close", "close", TOOL.fold, "닫기", () => closeOverlay(props().overlay))))))
-      // 요약: 이 컴퓨터 터미널 합
-      .child(h_flex().px(14).pt(10).pb(4).flex_none().items_baseline().gap(6)
-        .child(div().text_size(16).font_semibold().font_family(NUM_FONT).text_color(t.foreground).child(fmtCpu(cpu)))
-        .child(div().text_size(12).text_color(t.dim).child("CPU"))
-        .child(div().w(8))
-        .child(div().text_size(16).font_semibold().font_family(NUM_FONT).text_color(t.foreground).child(fmtMem(mem)))
-        .child(div().text_size(12).text_color(t.dim).child("메모리")))
-      // 지표 세부 정보: 기기 전체 두 줄
-      .child(h_flex().id("res-details").px(14).py(4).flex_none().gap(4).items_center().cursor_pointer()
-        .text_size(12).text_color(t.dim).hover((s) => s.text_color(t.foreground))
-        .on_click((_e, cx) => { this.details = !this.details; this.save("details", this.details); cx.notify(); })
-        .child(svg(`mods/${ID}/chevron-${this.details ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim))
-        .child("지표 세부 정보"))
-      .when(this.details, (el) => el.child(v_flex().px(14).pl(30).pb(6).flex_none().gap(2).text_size(12).text_color(t.muted)
-        .child(h_flex().justify_between()
-          .child("이 컴퓨터 CPU")
-          .child(div().font_family(NUM_FONT).child(sys ? `${fmtCpu(sys.cpu)} · ${sys.ncpu}코어` : "—")))
-        .child(h_flex().justify_between()
-          .child("이 컴퓨터 메모리")
-          .child(div().font_family(NUM_FONT).child(sys?.total ? `${fmtMem(sys.used)} / ${fmtMem(sys.total)}` : "—")))))
-      // 표 머리
-      .child(h_flex().h(24).px(14).mt(4).flex_none().items_center().gap(6).border_b_1().border_color(t.border)
-        .text_size(12).text_color(t.dim)
-        .child(div().flex_1().child("이름"))
-        .child(div().w(W_CPU).flex_none().flex().justify_end().child("CPU"))
-        .child(div().w(W_MEM).flex_none().flex().justify_end().child("메모리")))
-      .child(v_flex().id("res-list").flex_1().min_h(0).overflow_y_scrollbar().py(2).children(this.rows(t, model)));
+      // 요약: 이 컴퓨터 터미널이 쓰는 메모리 합, 무엇의 합인지와 기기 대비 비율
+      .child(v_flex().px(14).pt(12).pb(10).flex_none().gap(2).border_b_1().border_color(t.border)
+        .child(div().text_size(20).font_semibold().font_family(NUM_FONT).text_color(t.foreground).child(fmtMem(mem)))
+        .child(div().text_size(12).text_color(t.dim).truncate()
+          .child(mem == null ? "읽는 중" : `터미널 ${n}개가 쓰는 메모리 · CPU ${fmtCpu(cpu)}`))
+        .when(share != null, (el) => el.child(div().text_size(12).text_color(t.dim).truncate()
+          .child(`${here} 메모리 ${Math.round(sys.total / 1024 ** 3)} GB 중 ${share < 1 ? "1% 미만" : `${Math.round(share)}%`}`))))
+      .child(v_flex().id("res-list").flex_1().min_h(0).overflow_y_scrollbar().py(4).children(this.rows(t, rows)));
   }
 
-  rows(t, model) {
+  rows(t, rows) {
     const out = [];
-    let machine;
-    for (const m of model) {
-      const key = m.sp.machine ?? "";
-      if (m.sp.machine && this.down.has(key)) {
-        // 연결 안 된 기기: 스페이스 대신 한 줄
-        if (machine !== key) out.push(div().px(14).py(8).text_size(12).text_color(t.dim).whitespace_normal()
-          .child(`${m.sp.machine}에 연결할 수 없어 리소스를 알 수 없습니다.`));
-        machine = key;
+    const groups = new Map([["", []]]);
+    for (const sp of spaces()) if (sp.machine && !groups.has(sp.machine)) groups.set(sp.machine, []);
+    for (const r of rows) groups.get(r.machine)?.push(r);
+    for (const [key, list] of groups) {
+      if (key) {
+        out.push(div().px(14).pt(12).pb(2).text_size(11).text_color(t.dim).truncate().child(key));
+        if (this.down.has(key)) {
+          out.push(div().px(14).py(6).text_size(12).text_color(t.dim).whitespace_normal()
+            .child(`${key}에 연결할 수 없어 리소스를 알 수 없습니다.`));
+          continue;
+        }
+      }
+      if (!list.length) {
+        if (!key) out.push(div().px(14).py(8).text_size(12).text_color(t.dim).child("터미널이 없습니다"));
         continue;
       }
-      machine = key;
-      out.push(this.spaceRow(t, m));
-      if (this.folded[m.sp.id]) continue;
-      for (const tb of m.tabs) {
-        out.push(this.tabRow(t, m, tb));
-        for (const x of tb.terms) out.push(this.termRow(t, m, tb, x));
-      }
+      // 한 줄만 남으면 접지 않는다
+      const fold = list.length > TOP + 1;
+      const open = !fold || !!this.more[key];
+      const head = fold ? list.slice(0, TOP) : list;
+      for (const r of head) out.push(this.row(t, r));
+      if (!fold) continue;
+      const rest = list.slice(TOP);
+      out.push(this.restRow(t, key, rest, open));
+      if (open) for (const r of rest) out.push(this.row(t, r));
     }
-    if (!out.length) out.push(div().px(14).py(8).text_size(12).text_color(t.dim).child("스페이스가 없습니다"));
     return out;
   }
 
-  spaceRow(t, m) {
-    const folded = !!this.folded[m.sp.id];
-    const name = m.sp.machine ? `${m.sp.machine} · ${m.sp.name}` : m.sp.name;
-    return h_flex().id(`res-s-${m.sp.id}`).h(28).pl(10).pr(14).flex_none().items_center().gap(6).cursor_pointer()
+  // 한 줄: 아이콘 | 이름 / 스페이스(흐리게) | 메모리 / CPU(1% 이상일 때만). 누르면 그 터미널로.
+  row(t, r) {
+    const icon = programIcon(r.program, 16, t);
+    const showCpu = r.cpu != null && r.cpu >= CPU_MIN;
+    return h_flex().id(`res-x-${r.address}`).h(40).px(14).flex_none().items_center().gap(10).cursor_pointer()
       .hover((s) => s.bg(t.hover))
-      .on_click((_e, cx) => { this.folded = { ...this.folded, [m.sp.id]: !folded }; this.save("folded", this.folded); cx.notify(); })
-      .child(svg(`mods/${ID}/chevron-${folded ? "right" : "down"}.svg`).size(12).flex_none().text_color(t.dim))
-      .child(div().flex_1().min_w(0).truncate().text_size(12).font_semibold().text_color(t.foreground).child(name.toUpperCase()))
-      .child(this.num(t, fmtCpu(m.cpu), W_CPU, t.foreground))
-      .child(this.num(t, fmtMem(m.mem), W_MEM, t.foreground));
+      .on_click(() => this.goTo(r.sp, r.tab, r.address))
+      .child(div().w(16).flex_none().flex().justify_center().when(!!icon, (el) => el.child(icon)))
+      .child(v_flex().flex_1().min_w(0)
+        .child(div().truncate().text_size(13).text_color(t.foreground).child(r.name))
+        .child(div().truncate().text_size(11).text_color(t.dim).child(r.sub)))
+      .child(v_flex().flex_none().items_end()
+        .child(div().font_family(NUM_FONT).text_size(12).text_color(t.muted).child(fmtMem(r.mem)))
+        .when(showCpu, (el) => el.child(div().font_family(NUM_FONT).text_size(11).text_color(t.dim).child(`CPU ${fmtCpu(r.cpu)}`))));
   }
 
-  tabRow(t, m, tb) {
-    return h_flex().id(`res-t-${tb.id}`).h(26).pl(28).pr(14).flex_none().items_center().gap(6)
-      .hover((s) => s.bg(t.hover))
-      .child(div().flex_1().min_w(0).truncate().text_color(tb.active && m.sp.active ? t.foreground : t.muted).child(tb.name))
-      .child(this.spark(t, this.hist[tb.id] ?? []))
-      .child(this.num(t, fmtCpu(tb.cpu), W_CPU))
-      .child(this.num(t, fmtMem(tb.mem), W_MEM));
-  }
-
-  termRow(t, m, tb, { t: term, u }) {
-    const dot = term.status && t[term.status] ? t[term.status] : OK;
-    const name = term.program?.name || term.agent || term.address;
-    return h_flex().id(`res-x-${term.address}`).h(24).pl(40).pr(14).flex_none().items_center().gap(6).cursor_pointer()
-      .hover((s) => s.bg(t.hover))
-      .on_click(() => this.goTo(m.sp, tb.id, term.address))
-      .child(div().size(6).rounded(3).flex_none().bg(dot))
-      .child(h_flex().flex_1().min_w(0).gap(6).items_center()
-        .child(div().min_w(0).truncate().text_size(12).text_color(t.muted).child(name))
-        .child(div().flex_none().text_size(11).text_color(t.dim).child(term.address)))
-      .child(this.num(t, fmtCpu(u?.cpu), W_CPU, t.dim))
-      .child(this.num(t, fmtMem(u?.mem), W_MEM, t.dim));
-  }
-
-  // 최근 30표본 막대(1px + 간격 0.5px). 높이는 그 탭의 최대값 기준(최소 1%로 잡아 잔잡음이 커 보이지 않게).
-  spark(t, h) {
-    const H = 12, top = Math.max(1, ...h);
-    const pad = Array(Math.max(0, SPARK - h.length)).fill(null);
-    return h_flex().w(45).h(H).flex_none().items_end().gap(0.5).children([...pad, ...h].map((v) =>
-      div().w(1).h(v == null ? 0 : Math.max(1, (v / top) * H)).bg(v ? t.muted : t.border)));
+  restRow(t, key, rest, open) {
+    const sum = rest.reduce((s, r) => s + (r.mem ?? 0), 0);
+    return h_flex().id(`res-more-${key || "here"}`).h(32).px(14).flex_none().items_center().gap(10).cursor_pointer()
+      .text_size(12).text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_click((_e, cx) => { this.more = { ...this.more, [key]: !open }; this.save("more", this.more); cx.notify(); })
+      .child(div().w(16).flex_none().flex().justify_center()
+        .child(svg(`mods/${ID}/chevron-${open ? "down" : "right"}.svg`).size(12).text_color(t.dim)))
+      .child(div().flex_1().min_w(0).truncate().child(`나머지 ${rest.length}개`))
+      .child(div().flex_none().font_family(NUM_FONT).child(fmtMem(sum)));
   }
 }
 

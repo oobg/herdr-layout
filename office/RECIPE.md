@@ -203,9 +203,11 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 
 ## 리소스 관리자 (`mods/office-resources`)
 
-- 사용량과 같은 탭 묶음(stack `office-side`)에 들어 있다. Herdr에는 stack용 내장 탭 줄이 없어서(`header`는 mod를 받는 구조체) 이 모드의 `role: tabs`가 탭 줄을 그리고, 누르면 `layout.select {stack, child}`로 바꾼다. 보이는 탭은 `layout()`의 stack `active`로 읽는다. 탭 안에서는 탭 이름이 제목이라 자체 테두리·머리줄을 그리지 않고, 리소스 탭이 보일 때만 읽는다. 칸 높이가 220px 이상이면(`on_size_change`) 전체 표, 미만이면 28px 한 줄(메모리 합)이고 누르면 같은 표를 팝업(300×420)으로 띄운다.
-- 전체 표: 머리줄(새로 고침, 팝업이면 닫기) / 요약 CPU·메모리 / ▶ 지표 세부 정보(이 컴퓨터 CPU·코어 수, 사용 중/전체 메모리) / 이름 | CPU | 메모리. 스페이스(대문자, 접기) → 탭(최근 30표본 CPU 막대) → 터미널(상태 점, 누르면 그 터미널로 이동). 숫자는 D2Coding으로 오른쪽 정렬.
-- 계산(`calc.js`, herdr 없이 node로 돌려 볼 수 있음): 터미널마다 `hc get`의 뿌리(셸) pid를 한 번 얻어 두고, 3초마다 기기당 `ps -A -o pid=,ppid=,pcpu=,rss=` 한 번으로 자손 트리 합을 낸다. CPU는 코어 수로 나눠 기기 전체 대비 %. 터미널의 탭은 패인 → `herdr.tab` 라벨 → 서브에이전트면 부모의 탭. 다른 기기는 같은 스크립트를 `exec on`으로 돌리고, 실패하거나 연결이 없으면 "<기기>에 연결할 수 없어 리소스를 알 수 없습니다." 한 줄.
+- 사용량과 같은 탭 묶음(stack `office-side`)에 들어 있다. Herdr에는 stack용 내장 탭 줄이 없어서(`header`는 mod를 받는 구조체) 이 모드의 `role: tabs`가 탭 줄을 그리고, 누르면 `layout.select {stack, child}`로 바꾼다. 보이는 탭은 `layout()`의 stack `active`로 읽는다. 탭 안에서는 탭 이름이 제목이라 자체 테두리·머리줄을 그리지 않고, 리소스 탭이 보일 때만 읽는다. 칸 높이가 220px 이상이면(`on_size_change`) 요약 + 목록, 미만이면 28px 한 줄(메모리 합)이고 누르면 같은 화면을 팝업(300×420, 머리줄에 새로 고침·닫기)으로 띄운다.
+- 요약: 이 컴퓨터 터미널 메모리 합(20 semibold) / "터미널 N개가 쓰는 메모리 · CPU x%" / "이 Mac 메모리 32 GB 중 3%"(흐린 12). 기기 전체 수치는 이 비율로만 보인다.
+- 목록: 스페이스·탭 계층 없이 터미널 한 줄씩, 메모리 큰 순. 줄 = 프로그램 아이콘(Claude·Codex는 브랜드 로고 `icons/`, 그 밖은 `program.icon`, 없으면 빈칸) / 이름(셸이면 의미 있는 탭 이름, 탭 이름이 숫자·`show <해시>`·셸 이름이면 "셸", 그 밖은 `program.name` — "Claude Code", "Codex", "Git") / 둘째 줄 흐린 11: 스페이스 이름(원래 대소문자, `~`는 "홈"), 이름에 안 쓴 의미 있는 탭 이름은 " · 탭"으로 덧붙임 / 오른쪽 메모리, CPU는 1% 이상일 때만 그 아래. 터미널 주소는 보이지 않는다. 줄을 누르면 그 터미널로 이동.
+- 기기마다 위 6줄만 보이고 나머지는 "▶ 나머지 N개 · 합"으로 접는다(7줄이면 접지 않음). 펼침은 `localStorage` `more`에 기기별로. 다른 기기는 기기 이름 작은 머리줄 아래 같은 형식이다.
+- 계산(`calc.js`, herdr 없이 node로 돌려 볼 수 있음): 터미널마다 `hc get`의 뿌리(셸) pid를 한 번 얻어 두고, 3초마다 기기당 `ps -A -o pid=,ppid=,pcpu=,rss=` 한 번으로 자손 트리 합을 낸다. CPU는 코어 수로 나눠 기기 전체 대비 %. 터미널의 탭은 패인 → `herdr.tab` 라벨 → 서브에이전트면 부모의 탭. 다른 기기는 같은 스크립트를 `exec on`으로 돌리고, 실패하거나 연결이 없으면 기기 머리줄 아래 "<기기>에 연결할 수 없어 리소스를 알 수 없습니다." 한 줄.
 - 갱신은 앱 창이 앞에 있고 칸이 숨겨지지 않았을 때만(Herdr는 숨은 복사본의 타이머도 돌리므로 틱에서 거른다).
 
 ## `mods/office-git` (레이아웃에서 쓰지 않음)
@@ -218,7 +220,7 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 - `mods/office/`: 사무실과 터미널 막대(`main.js`), 오버뷰 활동 읽기(`activity.js`), 스프라이트(`sprites/`), 로고·활동 아이콘(`icons/`), 패널 글꼴(`fonts/`, OFL)
 - `mods/office-apps/`: 런처(`main.js`), 앱(`files.js`, `branch.js`, `commit.js`, `pr.js`, `agent.js`, `server.js`와 같은 이름 폴더), 파일 우클릭 메뉴·확인 창·`ACTIONS`(`menu.js`), 뷰어(`viewers.js`, `markdown.js`, `viewers/`), 앱 아이콘(`apps/`), 파일 아이콘(`icons/`, `icons.json`, MIT 라이선스)
 - `mods/office-usage/`: 사용량(`main.js`), Grok 토큰 갱신(`grok_refresh.py`), 로고(`icons/`)
-- `mods/office-resources/`: 리소스 관리자(`main.js`), ps 합계 계산(`calc.js`)
+- `mods/office-resources/`: 리소스 관리자(`main.js`), ps 합계 계산(`calc.js`), 로고(`icons/`)
 - `mods/office-git/`: 쓰지 않는 예전 모드(브랜치 앱의 이식 원본)
 - `../tools/render-office.py`: 사무실 스프라이트 렌더(Blender)
 - `../tools/build-icons.py`: Material Icon Theme 패키지에서 파일 아이콘과 `icons.json` 생성
