@@ -16,7 +16,7 @@ const TABS = [{ id: "office-usage", label: "사용량" }, { id: ID, label: "리�
 const FULL = 220;                // 이 높이부터 목록
 const CHIP = 28;                 // 한 줄 칩 높이 (칸이 더 커도 맨 위에 붙인다)
 const EVERY = 3000;              // 갱신 주기(ms)
-const TOP = 6;                   // 기기마다 처음 보이는 줄 수. 나머지는 한 줄로 접는다
+const TOP = 3;                   // 스페이스마다 처음 보이는 줄 수. 나머지는 한 줄로 접는다
 const CPU_MIN = 1;               // 이 % 이상일 때만 줄에 CPU를 쓴다
 const NUM_FONT = "D2Coding";     // 숫자: 고정폭 글꼴로 자릿수를 맞춘다
 const TOOL = { refresh: "#7fbbb3", fold: "#9da9a0" };   // 사용량 패널 툴바 색과 같게
@@ -53,7 +53,8 @@ class Panel {
     this.sys = {};              // 기기 이름("" = 이 컴퓨터) → { ncpu, total, used, cpu }
     this.down = new Set();      // 리소스를 못 읽은 기기 이름
     this.busy = false;
-    try { this.more = JSON.parse(localStorage.getItem("more") ?? "null") ?? {}; } catch { this.more = {}; }  // 기기 → 나머지 펼침
+    try { this.more = JSON.parse(localStorage.getItem("more") ?? "null") ?? {}; } catch { this.more = {}; }  // 스페이스 → 나머지 펼침
+    try { this.shut = JSON.parse(localStorage.getItem("shut") ?? "null") ?? {}; } catch { this.shut = {}; }  // 스페이스 → 접힘
     this.tick(cx);
     cx.timer.every(EVERY, (cx) => this.tick(cx));
   }
@@ -154,7 +155,7 @@ class Panel {
       const tabOk = meaningful(w.tb.name);
       const name = p?.shell || !p?.name ? (tabOk ? w.tb.name : "셸") : p.name;
       const extra = tabOk && name !== w.tb.name ? w.tb.name : null;
-      rows.push({ address: t.address, program: p, name, sub: extra ? `${spaceLabel(w.sp.name)} · ${extra}` : spaceLabel(w.sp.name),
+      rows.push({ address: t.address, program: p, name, sub: extra,
         sp: w.sp, tab: w.tb.id, machine: w.sp.machine ?? "", cpu: u?.cpu ?? null, mem: u?.mem ?? null });
     }
     rows.sort((a, b) => (b.mem ?? -1) - (a.mem ?? -1));
@@ -279,38 +280,62 @@ class Panel {
         if (!key) out.push(div().px(14).py(8).text_size(12).text_color(t.dim).child("터미널이 없습니다"));
         continue;
       }
-      // 한 줄만 남으면 접지 않는다
-      const fold = list.length > TOP + 1;
-      const open = !fold || !!this.more[key];
-      const head = fold ? list.slice(0, TOP) : list;
-      for (const r of head) out.push(this.row(t, r));
-      if (!fold) continue;
-      const rest = list.slice(TOP);
-      out.push(this.restRow(t, key, rest, open));
-      if (open) for (const r of rest) out.push(this.row(t, r));
+      // 스페이스별로 묶는다: 메모리 합이 큰 스페이스부터, 그 안은 메모리 큰 순(rows가 이미 정렬돼 있다).
+      const bySp = new Map();
+      for (const r of list) {
+        if (!bySp.has(r.sp.id)) bySp.set(r.sp.id, { sp: r.sp, list: [], mem: 0, cpu: 0 });
+        const g = bySp.get(r.sp.id);
+        g.list.push(r); g.mem += r.mem ?? 0; g.cpu += r.cpu ?? 0; if (r.mem != null) g.known = true;
+      }
+      for (const g of [...bySp.values()].sort((a, b) => b.mem - a.mem)) {
+        const fk = `${key}|${g.sp.id}`;
+        const shut = !!this.shut[fk];
+        out.push(this.spaceRow(t, fk, g, shut));
+        if (shut) continue;
+        // 한 줄만 남으면 접지 않는다
+        const fold = g.list.length > TOP + 1;
+        const open = !fold || !!this.more[fk];
+        for (const r of fold ? g.list.slice(0, TOP) : g.list) out.push(this.row(t, r));
+        if (!fold) continue;
+        const rest = g.list.slice(TOP);
+        out.push(this.restRow(t, fk, rest, open));
+        if (open) for (const r of rest) out.push(this.row(t, r));
+      }
     }
     return out;
   }
 
-  // 한 줄: 아이콘 | 이름 / 스페이스(흐리게) | 메모리 / CPU(1% 이상일 때만). 누르면 그 터미널로.
+  // 스페이스 머리줄: chevron | 이름 | 메모리 합(CPU는 1% 이상일 때만). 누르면 접고 펼친다.
+  spaceRow(t, fk, g, shut) {
+    return h_flex().id(`res-sp-${fk}`).h(30).px(14).mt(4).flex_none().items_center().gap(10).cursor_pointer()
+      .hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { this.shut = { ...this.shut, [fk]: !shut }; this.save("shut", this.shut); cx.notify(); })
+      .child(div().w(16).flex_none().flex().justify_center()
+        .child(svg(`mods/${ID}/chevron-${shut ? "right" : "down"}.svg`).size(12).text_color(t.muted)))
+      .child(div().flex_1().min_w(0).truncate().text_size(12).font_semibold().text_color(t.foreground).child(spaceLabel(g.sp.name)))
+      .when(g.cpu >= CPU_MIN, (el) => el.child(div().flex_none().font_family(NUM_FONT).text_size(11).text_color(t.dim).child(`CPU ${fmtCpu(g.cpu)}`)))
+      .child(div().flex_none().font_family(NUM_FONT).text_size(12).font_semibold().text_color(t.foreground).child(g.known ? fmtMem(g.mem) : "—"));
+  }
+
+  // 한 줄: 아이콘 | 이름 / 탭 이름(있으면, 흐리게) | 메모리 / CPU(1% 이상일 때만). 누르면 그 터미널로.
   row(t, r) {
     const icon = programIcon(r.program, 16, t);
     const showCpu = r.cpu != null && r.cpu >= CPU_MIN;
-    return h_flex().id(`res-x-${r.address}`).h(40).px(14).flex_none().items_center().gap(10).cursor_pointer()
+    return h_flex().id(`res-x-${r.address}`).h(r.sub ? 40 : 30).pl(26).pr(14).flex_none().items_center().gap(10).cursor_pointer()
       .hover((s) => s.bg(t.hover))
       .on_click(() => this.goTo(r.sp, r.tab, r.address))
       .child(div().w(16).flex_none().flex().justify_center().when(!!icon, (el) => el.child(icon)))
       .child(v_flex().flex_1().min_w(0)
         .child(div().truncate().text_size(13).text_color(t.foreground).child(r.name))
-        .child(div().truncate().text_size(11).text_color(t.dim).child(r.sub)))
+        .when(!!r.sub, (el) => el.child(div().truncate().text_size(11).text_color(t.dim).child(r.sub))))
       .child(v_flex().flex_none().items_end()
         .child(div().font_family(NUM_FONT).text_size(12).text_color(t.muted).child(fmtMem(r.mem)))
         .when(showCpu, (el) => el.child(div().font_family(NUM_FONT).text_size(11).text_color(t.dim).child(`CPU ${fmtCpu(r.cpu)}`))));
   }
 
   restRow(t, key, rest, open) {
-    const sum = rest.reduce((s, r) => s + (r.mem ?? 0), 0);
-    return h_flex().id(`res-more-${key || "here"}`).h(32).px(14).flex_none().items_center().gap(10).cursor_pointer()
+    const sum = rest.some((r) => r.mem != null) ? rest.reduce((s, r) => s + (r.mem ?? 0), 0) : null;
+    return h_flex().id(`res-more-${key || "here"}`).h(30).pl(26).pr(14).flex_none().items_center().gap(10).cursor_pointer()
       .text_size(12).text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
       .on_click((_e, cx) => { this.more = { ...this.more, [key]: !open }; this.save("more", this.more); cx.notify(); })
       .child(div().w(16).flex_none().flex().justify_center()
