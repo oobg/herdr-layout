@@ -2,6 +2,7 @@
 //   왼쪽: 맨 위 "정리" 한 줄, 그 아래 스페이스 › 탭 트리(탭은 들여쓴다). 스페이스는 화살표를 눌러 접는다(localStorage).
 //         스페이스 줄 = 이름 · 기기(원격일 때) · 탭 수, 보이는 스페이스는 "지금". 탭 줄 = 이름 · 칸 수 · 상태 낱말
 //         (답 필요·작업 중·완료, 접어 둔 탭은 흐린 "접어 둠").
+//         Enter·더블클릭 = 그 탭으로 가기, 잠든 탭이면 깨우기(셸만 보러 가기는 상세의 "이 탭으로 가기").
 //   오른쪽: 스페이스 = 폴더·브랜치·기기, 탭 요약, 가기·이름 바꾸기·닫기.
 //           탭 = 칸 목록(누르면 그 칸으로), 가기·이름 바꾸기·접어 두기/펼치기·닫기.
 //           정리 = 닫아도 될 만한 탭(workspace/tidy.js review)을 이유와 함께, 체크한 것만 한 번에 닫는다.
@@ -282,12 +283,16 @@ export class WorkspaceApp {
     this.select(this.rows[j].key, cx);
   }
 
-  // Enter: 고른 스페이스·탭으로 간다(정리 줄은 하는 일 없음)
-  // 잠든 탭이면 깨운다(깨운 뒤 그 칸으로 간다)
+  // Enter·더블클릭: 고른 스페이스·탭으로 간다(정리 줄은 하는 일 없음)
+  // 잠든 탭이면 깨운다(깨운 뒤 그 칸으로 간다). 셸만 보러 가려면 상세의 "이 탭으로 가기".
   activate(cx) {
     const r = this.current();
     if (r?.kind === "space") this.leave(() => goSpace(r.space.id));
-    else if (r?.kind === "tab" && !this.wakeTab(r.tab.id, cx)) this.leave(() => goTab(r.space.id, r.tab.id));
+    else if (r?.kind === "tab") this.openTab(r.space.id, r.tab.id, cx);
+  }
+
+  openTab(space, tab, cx) {
+    if (!this.wakeTab(tab, cx)) this.leave(() => goTab(space, tab));
   }
 
   emptyState() {
@@ -336,7 +341,7 @@ export class WorkspaceApp {
     }
     const tab = r.tab, slept = this.zTabs.has(tab.id), w = word(tab, t, slept), shown = this.viewed.has(tab.id);
     return base(h_flex().id(`ws-${r.key}`).h(24).flex_none().pl(26).pr(8).gap(6).items_center().cursor_pointer()
-      .on_click((e, cx) => { this.select(r.key, cx); if (e.click_count >= 2) this.leave(() => goTab(r.space.id, tab.id)); }))
+      .on_click((e, cx) => { this.select(r.key, cx); if (e.click_count >= 2) this.openTab(r.space.id, tab.id, cx); }))
       .child(div().flex_1().min_w(0).truncate().text_size(12.5)
         .text_color(w && wordOf(tab, slept)[1] === "dim" ? t.dim : shown ? t.foreground : t.muted).child(tab.name))
       .child(div().flex_none().text_size(11).text_color(t.dim).child(`칸 ${tab.panes}`))
