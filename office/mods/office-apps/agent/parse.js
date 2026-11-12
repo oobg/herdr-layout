@@ -126,3 +126,50 @@ export function parse(text, { cut = true, sidechain = false } = {}) {
     edited: edited.slice(0, 15), moreEdited: Math.max(0, edited.length - 15),
     flow, hidden };
 }
+
+// UTF-8 바이트 수(기록의 바이트 위치를 셈하는 데 쓴다)
+export function utf8(s) {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c < 0xdc00 && i + 1 < s.length) { n += 4; i++; }
+    else n += 3;
+  }
+  return n;
+}
+
+// 기록 끝 TAIL바이트를 줄 단위로 들고 있다가, 새로 붙은 부분만 받아 이어 붙인다.
+//   buf: 지난번 { lines, offs, pos } (lines: 온전한 줄, offs: 각 줄의 시작 바이트, pos: 마지막 온전한 줄의 끝 = 다음에 읽을 곳).
+//        null이면 chunk는 [st, z)인 끝부분이다(st > 0이면 첫 줄은 잘린 줄).
+//   chunk: buf가 있으면 [buf.pos, z), 없으면 [st, z).
+//   반환 text는 tail -c TAIL을 cut으로 읽은 것과 같은 줄들이다: 시작 바이트가 z - TAIL보다 뒤인 줄 + 끝의 쓰는 중인 줄.
+//   쓰는 중인 줄(줄바꿈 전)은 text에만 넣고 들고 있지 않는다(다음에 pos부터 다시 읽는다).
+//   바이트 위치를 확실히 모르면(깨진 글자) buf: null — 다음에는 끝부분을 통째로 다시 읽는다.
+export function follow(buf, st, z, chunk, tail) {
+  const k = chunk.lastIndexOf("\n");
+  const done = k < 0 ? "" : chunk.slice(0, k), partial = chunk.slice(k + 1);
+  let lines = [], offs = [], pos = null;
+  if (buf) {
+    lines = buf.lines.slice(); offs = buf.offs.slice(); pos = buf.pos;
+    if (k >= 0) for (const l of done.split("\n")) { lines.push(l); offs.push(pos); pos += utf8(l) + 1; }
+  } else if (k >= 0) {
+    const got = done.split("\n");
+    if (st > 0) got.shift();   // 잘린 첫 줄: z - TAIL 바이트가 든 줄이라 tail -c를 cut으로 읽어도 버려진다
+    // 끝에서부터 바이트 위치를 셈한다(앞쪽 잘린 줄은 글자가 깨졌을 수 있다)
+    if (!partial.includes("�")) {
+      pos = z - utf8(partial);
+      let at = pos;
+      offs = new Array(got.length);
+      for (let j = got.length - 1; j >= 0; j--) { at -= utf8(got[j]) + 1; offs[j] = at; }
+    }
+    lines = got;
+  }
+  // 끝 TAIL 밖으로 밀려난 줄을 버린다
+  let drop = 0;
+  if (pos !== null) while (drop < lines.length && offs[drop] <= z - tail) drop++;
+  if (drop) { lines = lines.slice(drop); offs = offs.slice(drop); }
+  const text = lines.length ? `${lines.join("\n")}\n${partial}` : partial;
+  return { text, buf: pos === null ? null : { lines, offs, pos } };
+}

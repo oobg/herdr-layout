@@ -297,14 +297,14 @@ export class AgentApp {
       const i = this.info[sel.address] ?? {}, on = machineOf(sel.address);
       const sess = await sessionOf(i.pid, i.cwd ?? sel.cwd ?? sel.top?.cwd, on).catch(() => null);
       const prev = this.act[sel.key];
-      const v = sess ? await readLog(sess, sel.sub ?? null, prev?.size, on).catch(() => null) : null;
+      const v = sess ? await readLog(sess, sel.sub ?? null, prev, on).catch(() => null) : null;
       if (!v) { if (!prev?.empty) { this.act[sel.key] = { empty: true }; changed = true; } }
       else if (!v.same) { this.act[sel.key] = v; changed = true; }
       // 고른 줄이 안의 서브에이전트면 부모 기록도 읽는다: 그 줄의 상태(끝남·실패)는 부모 기록의 완료 알림에서 온다.
       //   크기가 그대로면 readLog가 건너뛰므로 읽는 양은 늘지 않는다.
       if (sess && sel.kind === "rec") {
         const pv = this.act[sel.address];
-        const w = await readLog(sess, null, pv?.size, on).catch(() => null);
+        const w = await readLog(sess, null, pv, on).catch(() => null);
         if (w && !w.same) { this.act[sel.address] = w; changed = true; }
       }
     }

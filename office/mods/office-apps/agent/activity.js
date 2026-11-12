@@ -2,9 +2,9 @@
 //   원본은 "그 폴더의 가장 최근 jsonl"을 읽어서, 같은 폴더에 에이전트가 둘이면 엉뚱한 기록을 읽었다.
 //   여기서는 터미널의 앞쪽 프로세스(claude) pid → ~/.claude/sessions/<pid>.json의 sessionId로 정확한 기록을 찾고,
 //   못 찾을 때만 가장 최근 jsonl로 물러선다(guessed: 다른 에이전트의 기록일 수 있다). 해석은 parse.js가 한다.
-//   크기가 지난번과 같으면 tail을 건너뛴다(바뀐 게 없으면 다시 읽지도 그리지도 않는다).
+//   크기가 지난번과 같으면 읽지 않고(바뀐 게 없으면 다시 그리지도 않는다), 커졌으면 새로 붙은 부분만 읽는다.
 import { exec, hc } from "herdr";
-import { parse } from "./parse.js";
+import { parse, follow } from "./parse.js";
 
 const TAIL = 2000000;   // 이미지를 읽은 결과는 기록에 수백 KB로 들어가서, 턴 하나를 담으려면 넉넉히 읽는다
 
@@ -37,33 +37,41 @@ export async function sessionOf(pid, cwd, on) {
 }
 
 // 기록 파일을 찾아 끝을 읽는다. sub: 서브에이전트 agentId(그 세션의 subagents/agent-<id>.jsonl).
-// size: 지난번 크기. 같으면 { same: true }만 돌려준다.
+// prev: 지난번 결과. 같은 파일이고 크기가 같으면 { same: true }만 돌려준다.
+//   지난번에 어디까지 읽었는지(buf.pos) 알면 그 뒤에 새로 붙은 부분만 dd로 읽어 이어 붙인다(parse.js follow가 줄 단위로 맞춘다).
+//   처음이거나, 다른 파일이거나, 파일이 줄었거나, 새로 붙은 양이 TAIL보다 많으면 끝 TAIL만 읽는다.
+//   tail -c 대신 dd(64KB 칸)로 읽고 앞뒤를 잘라 낸다: macOS tail -c는 바이트마다 읽어 느리다(office 모드와 같은 이유).
 // guessed: 세션 기록을 못 찾아 그 폴더의 가장 최근 기록을 읽었다(같은 폴더의 다른 에이전트 것일 수 있다).
-export async function readLog(sess, sub, size, on) {
+export async function readLog(sess, sub, prev, on) {
   const script = [
-    'p=$(eval echo "$1"); s=$2; sub=$3; known=$4; n=$5; f=""; g=0',
+    'p=$(eval echo "$1"); s=$2; sub=$3; known=$4; n=$5; from=$6; kf=$7; f=""; g=0',
     'if [ -n "$sub" ]; then f="$p/$s/subagents/agent-$sub.jsonl"; [ -f "$f" ] || exit 3',
     'else [ -n "$s" ] && [ -f "$p/$s.jsonl" ] && f="$p/$s.jsonl"; [ -n "$f" ] || { f=$(ls -t "$p"/*.jsonl 2>/dev/null | head -1); g=1; }; fi',
     '[ -n "$f" ] || exit 3',
     'z=$(wc -c < "$f" | tr -d " ")',
     'printf "%s\\n%s %s\\n" "$f" "$z" "$g"',
-    '[ "$z" = "$known" ] && exit 0',
+    '[ "$z" = "$known" ] && [ "$f" = "$kf" ] && exit 0',
+    // 이어 읽기(i): 같은 파일이고 지난번 위치가 지금 크기 안이며 새로 붙은 양이 n 이하일 때. 아니면 끝 n(w).
+    'if [ -n "$from" ] && [ "$f" = "$kf" ] && [ "$from" -le "$z" ] && [ $((z - from)) -le "$n" ]; then m=i; st=$from',
+    'else m=w; st=$(( z > n ? z - n : 0 )); fi',
+    'printf "%s %s\\n" "$m" "$st"',
     // 서브에이전트 기록이 길면 첫 줄(맡은 일)을 따로 붙인다
     '[ -n "$sub" ] && [ "$z" -gt "$n" ] && head -n 1 "$f"',
-    'tail -c "$n" "$f"',
+    // [st, z)만: 64KB 칸으로 읽고 앞(칸 안의 자리)과 뒤(그새 붙은 부분)를 자른다
+    'dd if="$f" bs=65536 skip=$((st / 65536)) 2>/dev/null | tail -c +$((st % 65536 + 1)) | head -c $((z - st))',
   ].join("\n");
-  const r = await exec("sh", ["-c", script, "log", sess.project, sess.session ?? "", sub ?? "", String(size ?? ""), String(TAIL)], { on });
+  const r = await exec("sh", ["-c", script, "log", sess.project, sess.session ?? "", sub ?? "", String(prev?.size ?? ""), String(TAIL),
+    String(prev?.buf?.pos ?? ""), prev?.file ?? ""], { on });
   if (r.code !== 0) return null;
-  const a = r.stdout.indexOf("\n"), b = r.stdout.indexOf("\n", a + 1);
-  const file = r.stdout.slice(0, a), [z, g] = r.stdout.slice(a + 1, b).split(" "), bytes = Number(z), guessed = g === "1";
-  if (String(bytes) === String(size)) return { file, size: bytes, same: true };
-  let text = r.stdout.slice(b + 1), cut = bytes > TAIL;
-  if (sub && cut) {
-    // 첫 줄 + (잘린 줄을 버린) 끝부분
-    const head = text.slice(0, text.indexOf("\n")), rest = text.slice(head.length + 1);
-    text = `${head}\n${rest.slice(rest.indexOf("\n") + 1)}`;
-    cut = false;
-  }
-  const v = parse(text, { cut, sidechain: Boolean(sub) });
-  return { ...v, file, size: bytes, cwd: sess.cwd, guessed, at: Date.now() };
+  const out = r.stdout;
+  let i = 0;
+  const line = () => { const j = out.indexOf("\n", i); const x = out.slice(i, j < 0 ? out.length : j); i = j < 0 ? out.length : j + 1; return x; };
+  const file = line(), [z, g] = line().split(" "), bytes = Number(z), guessed = g === "1";
+  if (bytes === prev?.size && file === prev?.file) return { file, size: bytes, same: true };
+  const [mode, st] = line().split(" ");
+  const head = sub && bytes > TAIL ? line() : null;
+  const w = follow(mode === "i" ? prev?.buf : null, Number(st), bytes, out.slice(i), TAIL);
+  // 서브에이전트: 첫 줄(맡은 일) + 끝부분
+  const v = parse(head !== null ? `${head}\n${w.text}` : w.text, { cut: false, sidechain: Boolean(sub) });
+  return { ...v, file, size: bytes, cwd: sess.cwd, guessed, buf: w.buf, at: Date.now() };
 }
