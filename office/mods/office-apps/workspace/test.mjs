@@ -2,7 +2,7 @@
 //   고정 사례는 실제 `hc ls --json` + `hc get`(앞 프로그램)을 옮긴 것: git show 탭 7개가 git(pager 대기)을 앞에 둔 채 남아 있었다.
 import assert from "node:assert/strict";
 import { review, judge, recheckTidy, recheckClose, riskOf, skipSummary, gitLeftover } from "./tidy.js";
-import { sleepable, confirmed, sleepSkips, probeWhy } from "./sleep.js";
+import { sleepable, confirmed, sleepSkips, probeWhy, lockWake, unlockWake, wakingNow, WAKE_LOCK } from "./sleep.js";
 
 const NOW = 1_800_000_000_000;
 const ZSH = { key: "shell", name: "zsh", shell: true, agent: false };
@@ -139,6 +139,22 @@ assert.equal(recheckTidy(ids, snap, gone, ps, { now: NOW, viewed }).dropped[0].w
   assert.ok(!sk.some((x) => x.address === "t1" || x.address === "t9" || x.address === "t10"));
   assert.equal(probeWhy(undefined), "기록 확인 중");
   assert.deepEqual(skipSummary(sk).slice(0, 1), [["지금 보는 탭", 1]]);
+}
+
+// ── 깨우기 잠금: 두 번 눌러도 한 번만 ──
+{
+  const rs = [{ address: "a", session: "x" }, { address: "b" }];
+  const one = lockWake(rs, "a", NOW);
+  assert.equal(one.got, true);
+  assert.equal(one.next.find((r) => r.address === "a").waking, NOW);
+  const two = lockWake(one.next, "a", NOW + 1000);
+  assert.deepEqual([two.got, two.missing], [false, false]);            // 깨우는 중: 다시 보내지 않는다
+  assert.equal(lockWake(one.next, "a", NOW + WAKE_LOCK + 1).got, true); // 오래된 잠금은 풀린 것으로
+  assert.equal(lockWake(rs, "zz", NOW).missing, true);                  // 이미 깨웠거나 지운 기록
+  const un = unlockWake(one.next, "a");
+  assert.equal("waking" in un.find((r) => r.address === "a"), false);
+  assert.equal(wakingNow(un[0], NOW), false);
+  assert.equal(lockWake(un, "a", NOW + 1).got, true);                    // 실패 뒤 다시 깨울 수 있다
 }
 
 console.log("workspace/tidy ok");

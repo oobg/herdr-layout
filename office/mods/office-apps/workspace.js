@@ -24,7 +24,7 @@ import { spaces, panes, agents, focused, layout, home, run, shared, setShared, o
 import { ACTIONS } from "./menu.js";
 import { ROLES } from "./files.js";
 import { viewedTabs, panesOf, hasWorking, tabWord, review, skipSummary, riskOf, recheckTidy, recheckClose, treeRows, agentCount, tilde, WORD } from "./workspace/tidy.js";
-import { sleepable, confirmed, sleepSkips, pruneSleeping, paneState, sleepingTabs, savedLine, SLEPT } from "./workspace/sleep.js";
+import { sleepable, confirmed, sleepSkips, pruneSleeping, paneState, sleepingTabs, savedLine, wakingNow, SLEPT } from "./workspace/sleep.js";
 import { readSleeping, updateSleeping, probe, sleepAgents, wake, forget } from "./workspace/sleeper.js";
 
 const PROBE_AGAIN = 60000;   // 재울 만한 칸의 기록을 다시 확인하는 간격
@@ -175,6 +175,7 @@ export class WorkspaceApp {
     this.sleeping = [];                         // data/office-apps/sleeping.json
     this.probes = {};                           // 주소 → 기록 확인 결과(workspace/sleeper.js probe)
     this.wakeWhy = {};                          // 주소 → 깨우지 못한 이유(행에 흐리게, 다시 깨우면 지운다)
+    this.waking = new Set();                    // 이 복사본이 깨우는 중인 주소(파일의 waking 잠금과 함께 본다)
     this.timer = null; this.busy = false; this.rendered = 0; this.notified = 0;
   }
 
@@ -225,9 +226,12 @@ export class WorkspaceApp {
   // 잠든 기록 하나를 깨우고, 칸이 Claude Code가 된 것을 보면 그리로 간다(last: 마지막 하나면 대화 창도 닫는다 — 중간에 닫으면 남은 깨우기가 끊긴다).
   // 기록을 지운 경우(성공, 다른 프로그램이 돎)에만 행을 지운다. 실패면 행을 두고 이유(this.wakeWhy)를 그 행에 보인다.
   async wakeOne(rec, cx, last = true) {
+    if (this.isWaking(rec)) return false;
+    this.waking.add(rec.address);
     delete this.wakeWhy[rec.address];
     cx?.notify?.();
     const r = await wake(rec).catch(() => ({ ok: false, why: "깨우지 못했습니다" }));
+    this.waking.delete(rec.address);
     if (r.ok || r.removed) this.sleeping = this.sleeping.filter((x) => x.address !== rec.address);
     if (r.why && r.removed) notify({ title: `'${rec.tabName}' 탭을 깨우지 않았습니다`, body: r.why, level: "info" });
     else if (r.why) this.wakeWhy[rec.address] = r.why;
@@ -235,6 +239,9 @@ export class WorkspaceApp {
     cx?.notify?.();
     return r.ok;
   }
+
+  // 깨우는 중: 이 복사본이 깨우는 중이거나 다른 쪽(다른 대화 창·세션 앱)이 잠금을 잡았다
+  isWaking(rec) { return this.waking.has(rec.address) || wakingNow(rec); }
 
   wakeTab(tabId, cx) {
     const recs = this.zTabs?.get(tabId) ?? [];
@@ -442,7 +449,8 @@ export class WorkspaceApp {
     const sub = [s.name, shown ? "지금 보는 탭" : "", tab.settled ? "접어 둠" : "", slept.length ? SLEPT : ""].filter(Boolean).join(" · ");
     return v_flex().size_full().min_h(0)
       .child(this.head(tab.name, sub, [
-        ...(slept.length ? [this.btn("ws-wake", "깨우기", (_e, cx) => this.wakeTab(tab.id, cx), t)] : []),
+        ...(slept.length ? [slept.some((r) => this.isWaking(r)) ? this.btn("ws-wake", "깨우는 중", null, t)
+          : this.btn("ws-wake", "깨우기", (_e, cx) => this.wakeTab(tab.id, cx), t)] : []),
         this.btn("ws-go", "이 탭으로 가기", () => this.leave(() => goTab(s.id, tab.id)), t),
         this.btn("ws-rename", "이름 바꾸기", () => ask("tab", tab.id, "탭 이름 바꾸기", tab.named ? tab.name : ""), t),
         tab.settled
@@ -567,7 +575,8 @@ export class WorkspaceApp {
             .child(div().truncate().text_size(12.5).text_color(t.foreground).child(r.tabName || r.address))
             .child(div().truncate().text_size(11).text_color(t.dim).child(`${where(r.cwd, r.machine)}${r.machine ? ` · ${r.machine}` : ""} · 깨우면 새 탭에서 이어 갑니다`))
             .when(Boolean(this.wakeWhy[r.address]), (el) => el.child(div().truncate().text_size(11).text_color(t.muted).child(this.wakeWhy[r.address]))))
-          .child(this.btn(`ws-o-wake-${r.address}`, "깨우기", (_e, cx) => cx.spawn(async (cx) => this.wakeOne(r, cx)), t))
+          .child(this.isWaking(r) ? this.btn(`ws-o-wake-${r.address}`, "깨우는 중", null, t)
+            : this.btn(`ws-o-wake-${r.address}`, "깨우기", (_e, cx) => cx.spawn(async (cx) => this.wakeOne(r, cx)), t))
           .child(this.btn(`ws-o-forget-${r.address}`, "기록 지우기", (_e, cx) => cx.spawn(async (cx) => {
             await forget(r); this.sleeping = this.sleeping.filter((x) => x.address !== r.address); cx.notify();
           }), t)))));

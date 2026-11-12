@@ -6,7 +6,7 @@ import { exec, hc, appHome, readTextFile, writeTextFile, panes, spaces, focused,
 import * as fs from "fs/promises";
 import { sessionOf, readLog, machineOf } from "../agent/activity.js";
 import { viewedTabs, panesOf, hasWorking } from "./tidy.js";
-import { isClaude, isShellPane, confirmed, openBackground, recordsWorking, treeRss, upsert, without, paneState, resumeLine, UUID } from "./sleep.js";
+import { isClaude, isShellPane, confirmed, openBackground, recordsWorking, treeRss, upsert, without, paneState, resumeLine, lockWake, unlockWake, UUID } from "./sleep.js";
 
 const DIR = () => `${appHome()}/data/office-apps`;
 const FILE = () => `${DIR()}/sleeping.json`;
@@ -134,13 +134,37 @@ async function waitFor(fn) {
 }
 const claudeUp = (p) => Boolean(p && isClaude(p.program, p.app) && !isShellPane(p));
 
+// 잠금(sleep.js lockWake)을 잡고 깨운다. 다른 쪽이 깨우는 중이면 { ok: false, busy: true }, 기록이 이미 없으면 { removed: true }.
+//   실패면 잠금을 풀어 다시 깨울 수 있게 한다(성공·지운 경우는 기록째 없어진다).
 export async function wake(rec) {
+  let got = false, missing = false;
+  const res = await updateSleeping((rs) => { const l = lockWake(rs, rec.address); got = l.got; missing = l.missing; return l.next; });
+  if (missing) return { ok: false, removed: true };
+  if (!res || !got) return { ok: false, busy: true };
+  const r = await wakeLocked(rec).catch(() => ({ ok: false, why: "깨우지 못했습니다" }));
+  if (!r.ok && !r.removed) await updateSleeping((rs) => unlockWake(rs, rec.address));
+  return r;
+}
+
+// 칸 앞에 셸 말고 다른 프로세스가 있는지(hc get). Claude가 뜨는 중이어도 칸은 잠깐 셸로 보여, 프로그램 표 대신 앞 프로세스를 본다.
+async function foregroundBusy(address) {
+  const g = await hc(["get", address, "--json"]).catch(() => null);
+  if (g?.code !== 0) return "칸 상태를 읽지 못했습니다";
+  try {
+    const d = JSON.parse(g.stdout), pid = d.foreground?.pid ?? null;
+    return pid && pid !== d.pid ? "그 칸에서 이미 다른 프로세스가 돌고 있습니다" : null;
+  } catch { return "칸 상태를 읽지 못했습니다"; }
+}
+
+async function wakeLocked(rec) {
   const ps = panes() ?? [], st = paneState(rec, ps);
   const drop = () => updateSleeping((rs) => without(rs, rec.address));
   if (!UUID.test(rec.session ?? "")) { await drop(); return { ok: false, removed: true, why: "세션 id가 잘못된 기록이라 지웠습니다" }; }
   if (st === "busy") { await drop(); return { ok: false, removed: true, why: "이미 다른 프로그램이 돌고 있어 잠든 기록만 지웠습니다" }; }
   if (st === "shell") {
     const p = ps.find((x) => x.terminal === rec.address && x.pane === rec.pane);
+    const fg = await foregroundBusy(rec.address);
+    if (fg) return { ok: false, why: fg };
     const r = await hc(["send", rec.address, resumeLine(rec)]).catch(() => null);
     if (r?.code !== 0) return { ok: false, why: `재개 명령을 보내지 못했습니다 ${(r?.stderr || r?.stdout || "").trim().slice(0, 120)}`.trim() };
     const up = await waitFor((now) => claudeUp(now.find((x) => x.terminal === rec.address && x.pane === rec.pane)));

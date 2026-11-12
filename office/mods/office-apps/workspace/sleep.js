@@ -178,3 +178,19 @@ export function savedLine(records) {
 // 기록 하나 바꾸기(같은 주소는 새 것으로) · 지우기
 export const upsert = (records, r) => [...records.filter((x) => x.address !== r.address), r];
 export const without = (records, address) => records.filter((x) => x.address !== address);
+
+// ── 깨우기 잠금 ──────────────────────────────────────────
+// 깨우는 동안 같은 기록을 다시 깨우지 않게 기록에 waking(시각)을 적는다. 작업 공간 앱·세션 앱·대화 창 복사본이 모두
+//   같은 파일을 보므로 여기 둔다(세션 앱 이어하기 잠금과 같은 방식: 시각을 적고 WAKE_LOCK이 지나면 풀린 것으로).
+export const WAKE_LOCK = 25000;   // 깨운 뒤 확인(15초)보다 길게
+export const wakingNow = (r, now = Date.now()) => Boolean(r?.waking && now - r.waking < WAKE_LOCK);
+
+// 잠그기: { next, got, missing }. 기록이 없으면 missing(이미 깨웠거나 지웠다), 다른 쪽이 깨우는 중이면 got: false.
+export function lockWake(records, address, now = Date.now()) {
+  const r = records.find((x) => x.address === address);
+  if (!r) return { next: records, got: false, missing: true };
+  if (wakingNow(r, now)) return { next: records, got: false, missing: false };
+  return { next: upsert(records, { ...r, waking: now }), got: true, missing: false };
+}
+export const unlockWake = (records, address) =>
+  records.map((x) => (x.address === address && x.waking ? (({ waking, ...rest }) => rest)(x) : x));
