@@ -73,6 +73,22 @@ const BRAND = [
 ];
 
 // onLight: 흰 바탕(말풍선 안)에 그릴 때. OpenAI 로고는 바탕에 따라 검정/글자색.
+// agents()는 상태를 보고(OSC 7501)하는 터미널만 준다. Codex처럼 보고 훅이 없는 에이전트는
+// 실행 중이어도 빠지므로, 칸에서 에이전트 프로그램이 돌고 있으면 상태 없이(null) 덧붙인다.
+const SILENT_AGENT = /claude|codex|grok|antigravity|gemini|cursor|opencode|\bamp\b|\bpi\b/i;
+function withSilent(list, ps) {
+  const have = new Set(list.map((a) => a.address));
+  const spaceOf = new Map(spaces().flatMap((s) => s.tabs.map((x) => [x.id, s])));
+  const extra = ps.filter((p) => p.terminal && !p.status && !have.has(p.terminal) && spaceOf.has(p.tab)
+      && (p.program?.agent || SILENT_AGENT.test(p.program?.key ?? "")))
+    .map((p) => {
+      const s = spaceOf.get(p.tab), tab = s.tabs.find((x) => x.id === p.tab);
+      return { address: p.terminal, pane: p.pane, space: s.id, space_name: s.name, tab: p.tab, tab_index: tab?.index ?? 0,
+        tab_name: tab?.name ?? "", status: null, app: null, program: p.program, title: p.title ?? "", seq: 0, pinned: false, focused: p.focused };
+    });
+  return extra.length ? [...list, ...extra] : list;
+}
+
 function programIcon(p, size, t, onLight = false) {
   const id = `${p?.key ?? ""} ${p?.name ?? ""}`;
   const brand = BRAND.find(([re]) => re.test(id));
@@ -160,7 +176,7 @@ class Floor {
   render(cx) {
     this.loadSprites(cx);
     this.due = Infinity;   // 이번 렌더에서 activityFor·subFor가 다음에 다시 읽을 때를 다시 정한다
-    const t = theme(), ps = panes(), ags = this.withDone(agents()), terms = terminals();
+    const t = theme(), ps = panes(), ags = this.withDone(withSilent(agents(), ps)), terms = terminals();
     const groups = new Map();
     // 홈 폴더(~) 스페이스는 늘 있는 "사장님방"(임원용 책상), 레포는 레포 이름 방, 나머지는 "기타".
     groups.set("~boss", { name: "사장님방", boss: true, spaces: [] });
@@ -248,7 +264,7 @@ class Floor {
         .child("+"));
     // 에이전트 줄: 1행 상태·이름·경과, 2행 하는 일(창 제목). 상태 단어에만 색.
     const agentRow = (a, sub) => {
-      const [label, color] = STATUS[a.status] ?? ["", t.muted];
+      const [label, color] = STATUS[a.status] ?? [a.status == null ? "상태 모름" : "", t.dim];
       const m = a.status === "working" ? mins(tabOf(a)?.working_since) : null;
       // 지금 보고 있는(포커스된) 에이전트 줄은 선택 표시. 누르면 그 터미널로 전환(탭 역할).
       const here = Boolean(a.focused) || focused()?.terminal === a.address;
