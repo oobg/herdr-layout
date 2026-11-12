@@ -7,6 +7,7 @@
 // 두 가지를 낸다.
 //   parse(text)      기록 끝부분 → 이번 턴의 도구 흐름, 마지막 말, 완료 알림(task-id → 상태·도구 수·걸린 시간)
 //   scanLines(lines) 셸의 grep 결과 → 세션 전체의 파일 도구와 완료 알림(끝부분만으로는 세션 앞쪽을 모른다)
+//   scanArtifacts(lines) 셸이 ARTIFACT로 고른 줄 → 세션이 게시한 Claude 아티팩트(URL별 하나)
 
 // 도구 → [종류, 대상]. 종류는 흐름 줄에서 같은 것끼리 묶는 데 쓴다.
 export function describe(name, input) {
@@ -51,6 +52,61 @@ export function scanLines(lines, files, ended) {
       if (id && st) ended[id] = st;
     }
   }
+}
+
+// 아티팩트: Artifact 도구 호출 줄과 그 결과 줄만 셸이 고른다(grep -E, 줄 전체). 줄은 JSON이라 글 속 따옴표는 \"로 적혀
+//   대화 글이나 다른 도구 입력에 같은 글자가 있어도 이 모양으로는 걸리지 않는다.
+//   결과 글: "Published <파일> at <URL> (Version n …)", "Created a new Artifact at <URL> …", "Updated the Artifact at <URL> …"
+export const ARTIFACT = '"type":"tool_use","id":"[^"]+","name":"Artifact","input"'
+  + '|"type":"tool_result","content":("|\\[\\{"type":"text","text":")(Published |Created a new Artifact at |Updated the Artifact at )';
+const ART_URL = /^(?:Published |Created a new Artifact at |Updated the Artifact at )[^\n]*?(https:\/\/claude\.ai\/artifact\/[A-Za-z0-9_-]+)/;
+
+// 셸이 고른 줄을 세션 누적 상태에 더한다. arts: { uses: { tool_use id → 입력 일부 }, seen: Set(결과 id), list: Map(URL → 항목) }
+//   항목: { url, at(마지막 게시 시각), title, page(.html 파일), file, desc }. 같은 URL을 다시 게시하면 뒤로 간다(최근 것이 마지막).
+//   제목 재료는 그 URL의 모든 호출에서 모은다(만들 때만 title이 있고, 고칠 때는 데이터 파일만 보내기도 한다).
+//   호출 줄과 결과 줄이 서로 다른 증분에 올 수 있어 uses를 남겨 둔다. 겹쳐 읽은 결과는 seen으로 한 번만.
+export function scanArtifacts(lines, arts) {
+  for (const l of lines) {
+    let d;
+    try { d = JSON.parse(l); } catch { continue; }
+    if (d.isSidechain || (d.type !== "user" && d.type !== "assistant")) continue;
+    const content = d.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const it of content) {
+      if (it.type === "tool_use" && it.name === "Artifact") {
+        const x = it.input ?? {};
+        arts.uses[it.id] = { title: x.title, file: x.file_path, desc: x.description };
+      } else if (it.type === "tool_result" && arts.uses[it.tool_use_id] && !arts.seen.has(it.tool_use_id)) {
+        const url = ART_URL.exec(textOf(it.content).trimStart())?.[1];
+        if (!url) continue;
+        arts.seen.add(it.tool_use_id);
+        const u = arts.uses[it.tool_use_id], e = arts.list.get(url) ?? { url };
+        arts.list.delete(url);
+        const str = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
+        e.at = Date.parse(d.timestamp) || e.at || 0;
+        e.title = str(u.title) ?? e.title ?? null;
+        e.desc = str(u.desc) ?? e.desc ?? null;
+        if (str(u.file)) { e.file = u.file; if (/\.html?$/i.test(u.file)) e.page = u.file; }
+        arts.list.set(url, e);
+      }
+    }
+  }
+}
+
+// 보일 제목: title → .html 파일의 <title>(htmlTitle, activity.js가 URL당 한 번 읽는다) → description 첫 부분 → 파일 이름
+export function artifactTitle(e) {
+  const first = e.desc ? clip(e.desc.split(/(?<=[.!?。])\s|\n/)[0], 80) : null;
+  const name = (e.page ?? e.file ?? "").split("/").pop();
+  return e.title || e.htmlTitle || first || name || e.url.split("/").pop();
+}
+
+// <title> 글: 앞 8KB에서 찾는다. 흔한 엔티티만 푼다.
+export function titleOfHtml(html) {
+  const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(String(html ?? ""));
+  if (!m) return null;
+  const t = m[1].replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ").trim();
+  return t || null;
 }
 
 // text: 기록 끝부분. cut: 앞이 잘렸는지(잘렸으면 첫 줄은 깨진 줄). sidechain: 서브에이전트 기록인지.

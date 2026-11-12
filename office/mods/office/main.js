@@ -7,7 +7,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import * as fs from "fs/promises";
 import { readActivity, readSub } from "./activity.js";
-import { placeOf, summary } from "./parse.js";
+import { placeOf, summary, artifactTitle } from "./parse.js";
 import { v_flex, h_flex } from "gpui-base";
 import {
   props, spaces, agents, panes, terminals, theme, run, exec,
@@ -609,17 +609,21 @@ class Floor {
     // 구역 하나: 펼치면 전부(길면 최근 cap개와 "이전 n개"), 접으면 마지막 한 줄.
     //   keep: 잘라 낼 때도, 접었을 때도 남길 항목(아직 도는 서브에이전트는 숨기지 않는다).
     //   "이전 n개"를 누르면 cap을 풀어 다 보이고(접힘과 같이 localStorage에 기억), 맨 위 "최근 cap개만"으로 되돌린다.
-    const section = (key, text, items, def, row, cap, keep = () => false) => {
+    //   front: 최근 것이 맨 앞인 목록(앞쪽 cap개·접으면 첫 줄을 남기고, 더 보기는 아래에 "나머지 n개").
+    const section = (key, text, items, def, row, cap, keep = () => false, front = false) => {
       if (!items.length) return [];
       const base = `${a.address}|${sub ?? ""}|${key}`;
       const open = this.isOpen(base, def), all = this.isOpen(`${base}|all`, false);
       const idx = items.map((_, i) => i);
-      const pick = open ? idx.filter((i) => all || i >= items.length - cap || keep(items[i]))
-        : idx.filter((i) => i === items.length - 1 || keep(items[i]));
+      const pick = open ? idx.filter((i) => all || (front ? i < cap : i >= items.length - cap) || keep(items[i]))
+        : idx.filter((i) => i === (front ? 0 : items.length - 1) || keep(items[i]));
       const hidden = items.length - pick.length;
       const more = (label) => div().id(`ov-more-${id}-${key}`).pl(14).text_size(11).text_color(t.dim).cursor_pointer()
         .hover((st) => st.text_color(t.foreground))
         .on_click((_e, cx) => { cx.stop_propagation(); this.toggle(`${base}|all`, false, cx); }).child(label);
+      if (front) return [head(key, text, open, def), ...pick.map((i) => row(items[i], i)),
+        ...(open && hidden > 0 ? [more(`나머지 ${hidden}개`)] : []),
+        ...(open && all && items.length > cap ? [more(`최근 ${cap}개만`)] : [])];
       return [head(key, text, open, def),
         ...(open && hidden > 0 ? [more(`이전 ${hidden}개`)] : []),
         ...(open && all && items.length > cap ? [more(`최근 ${cap}개만`)] : []),
@@ -656,6 +660,19 @@ class Floor {
       return v_flex().gap(3).child(line)
         .when(inner.length > 0, (x) => x.child(v_flex().ml(5).pl(10).gap(3).border_l_1().border_color(t.border).children(inner)));
     }, 10, (g) => g.running));
+    // 아티팩트: 이 세션이 게시한 Claude 아티팩트(URL별 하나, 최근 게시가 맨 위: 접으면 가장 최근 것이 남는다).
+    //   누르면 이 Mac의 기본 브라우저로 연다(원격 에이전트여도 open은 이 기기에서). 부모 에이전트 기록에만 있다.
+    const arts = sub ? [] : [...(v.arts?.list?.values() ?? [])].sort((x, y) => (y.at || 0) - (x.at || 0));
+    const ago = (ms) => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 1 ? "방금" : m < 60 ? `${m}분 전` : m < 1440 ? `${Math.floor(m / 60)}시간 전` : `${Math.floor(m / 1440)}일 전`; };
+    out.push(...section("artifacts", `아티팩트 ${arts.length}`, arts, true, (e, i) => h_flex().id(`ov-art-${id}-${i}`).gap(6).items_center().min_h(18)
+      .cursor_pointer().hover((st) => st.underline()).tooltip(e.url)
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        if (/^https:\/\/claude\.ai\/artifact\/[\w-]+$/.test(e.url)) cx.spawn(async () => { await exec("open", [e.url]); });
+      })
+      .child(svg("mods/office/icons/artifact.svg").size(13).flex_none().text_color(t.muted))
+      .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(artifactTitle(e)))
+      .when(Boolean(e.at), (x) => x.child(div().flex_none().text_size(11).text_color(t.muted).child(ago(e.at)))), 10, () => false, true));
     // 파일: 이번 세션에 읽거나 고친 파일(지워진 것은 빠진다). 최근 것이 마지막. 절대 경로면 누르면 뷰어 창.
     const files = [...(v.files ?? new Map())].map(([path, kind]) => ({ path, kind }));
     out.push(...section("files", `파일 ${files.length}`, files, false, (f, i) => {
