@@ -13,7 +13,7 @@
 //   · openCommit(해시|"WORKTREE") · openRange(base, head)
 
 import { div, svg } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, ScrollHandle } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, home, props, run, openOverlay, closeOverlay, notify, shared, setShared, settings } from "herdr";
 import { Menu, ACTIONS, TICK, popupAt } from "./menu.js";
 import { ROLES } from "./files.js";
@@ -30,6 +30,7 @@ const I = (n) => `${ME}/${n}.svg`;
 const CODE_FONT = "D2Coding";
 const WT = "@worktree";       // "커밋 안 된 변경"의 선택 키
 const RANGE = "@range";       // "base...head 비교"의 선택 키
+const FOOT_KEY = "@foot";     // 목록 끝 안내·"더 불러오기" 줄의 가상 목록 키
 const ROW = 26;               // 목록 한 줄 높이(파일 앱과 같은 한 줄)
 const FOOT = 40;              // 목록 아래 안내·"더 불러오기" 줄 높이
 const FILE_ROW = 24;          // 바뀐 파일 한 줄 높이
@@ -162,7 +163,7 @@ export class CommitApp {
     this.state = "loading";          // loading | nofolder | norepo | nocommit | ok | error — 빈 상태 안내용
     this.filesOpen = true;           // 바뀐 파일 목록 펼침
     this.tick = shared(TICK); this.onlyAt = shared(ONLY)?.at ?? 0;
-    this.scroll = ScrollHandle.new();
+    this.scroll = VirtualListScrollHandle.new();
     this.search = InputState.new({ placeholder: "제목·작성자·해시" });
     this.search.on("change", (_e, cx) => {
       const q = this.search.value().trim();
@@ -339,7 +340,7 @@ printf '%s\n%s' "$c" "$f"`;
 
   // ── 셸 계약: 키보드(왼쪽 칸 ↑↓ · Enter)와 빈 상태 ──
 
-  // 목록에 보이는 순서: "커밋 안 된 변경"(보일 때) + 커밋들. 스크롤 핸들 인덱스도 이 순서(목록의 직계 자식)다.
+  // 목록에 보이는 순서: "커밋 안 된 변경"(보일 때) + 커밋들. 가상 목록의 인덱스도 이 순서다(끝에 안내 줄이 붙을 수 있다).
   keys() {
     const wt = Boolean(this.dirty) && !this.query;
     return [...(wt ? [WT] : []), ...(this.commits ?? []).map((c) => c.hash)];
@@ -596,41 +597,58 @@ printf '%s\n%s' "$c" "$f"`;
         .child(this.tipped(div().id("commit-refresh").p(4).rounded(4).flex_none().cursor_pointer().hover((s) => s.bg(t.hover)), "refresh", "다시 읽기")
           .on_click((_e, cx) => { this.hideTip(); this.head = undefined; this.refresh(cx); })
           .child(svg(I("refresh")).size(16).text_color("#7fbbb3"))))
-      // 행마다 클릭·우클릭이 있어 가상 목록(렌더러 안 핸들러 금지) 대신 files.js처럼 그냥 스크롤 목록으로 그린다.
-      // 직계 자식 순서가 keys()와 같아야 한다(키보드 이동 때 scroll_to_item).
-      .child(v_flex().id("commit-log").flex_1().min_h(0).overflow_y_scrollbar().py(4)
+      .child(this.logList(t, wt, commits, footer, authors));
+  }
+
+  // 커밋 목록(가상 목록): "커밋 안 된 변경"(wt) + 커밋들 + 끝 안내 줄(footer). 인덱스가 keys()와 같아
+  // 키보드 이동 때 scroll_to_item(i)이 맞는 줄을 보인다. 렌더러 안에는 핸들러를 둘 수 없어
+  // 클릭·우클릭은 목록의 on_item_click / on_item_secondary_click이 키(해시 · WT · FOOT_KEY)로 받는다.
+  logList(t, wt, commits, footer, authors) {
+    const keys = [...(wt ? [WT] : []), ...commits.map((c) => c.hash), ...(footer ? [FOOT_KEY] : [])];
+    const sizes = keys.map((k) => (k === FOOT_KEY ? FOOT : ROW));
+    const off = wt ? 1 : 0;
+    const render = (range) => keys.slice(range.start, range.end).map((k, j) => k === WT ? this.wtRow(t)
+      : k === FOOT_KEY ? this.footer(t) : this.commitRow(commits[range.start + j - off], t, authors));
+    return div().flex_1().min_h(0).relative()
+      .child(v_virtual_list("commit-log", keys.length, sizes, (i) => keys[i], render).size_full()
         .when(Boolean(this.scroll), (el) => el.track_scroll(this.scroll))
-        .when(wt, (el) => el.child(this.wtRow(t)))
-        .children(commits.map((c) => this.commitRow(c, t, authors)))
-        .when(Boolean(footer), (el) => el.child(this.footer(t))));
+        .on_item_click((k, cx) => {
+          if (k === FOOT_KEY) { this.loadMore(cx); cx.notify(); return; }
+          this.closed = false; this.choose(k, cx); cx.notify();
+        })
+        .on_item_secondary_click((k, _e, cx) => {
+          const c = commits.find((x) => x.hash === k);
+          if (!c) return;
+          cx.stop_propagation(); this.hideTip(); openMenu(this.commitCtx(c));
+        }))
+      .child(Scrollbar.vertical("commit-log").viewport_from_layout().absolute().inset_0());
   }
 
   // 한 줄: 제목 · (작성자) · 짧은 상대 시각
+  // 가상 목록 렌더러 안에서 그리므로 핸들러를 달지 않는다(logList가 받는다). 바깥 줄이 목록 폭·높이를 채우고 안쪽이 둥근 칸.
   commitRow(c, t, authors) {
-    return h_flex().id(`commit-row-${c.hash}`).h(ROW).flex_none().px(10).gap(8).items_center().rounded(4).mx(4)
+    return div().w_full().h(ROW).px(4).child(h_flex().id(`commit-row-${c.hash}`).size_full().px(10).gap(8).items_center().rounded(4)
       .cursor_pointer().hover((s) => s.bg(t.hover)).when(this.sel === c.hash, (el) => el.bg(t.selected))
-      .on_click((_e, cx) => { this.closed = false; this.choose(c.hash, cx); cx.notify(); })
-      .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.hideTip(); openMenu(this.commitCtx(c)); })
       .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child(c.subject || "(제목 없음)"))
       .when(authors, (el) => el.child(div().flex_none().max_w(72).truncate().text_size(11).text_color(t.dim).child(c.author)))
-      .child(div().flex_none().text_size(11).text_color(t.dim).child(agoShort(c.at)));
+      .child(div().flex_none().text_size(11).text_color(t.dim).child(agoShort(c.at))));
   }
 
   wtRow(t) {
-    return h_flex().id("commit-row-worktree").h(ROW).flex_none().px(10).gap(8).items_center().rounded(4).mx(4)
+    return div().w_full().h(ROW).px(4).child(h_flex().id("commit-row-worktree").size_full().px(10).gap(8).items_center().rounded(4)
       .cursor_pointer().hover((s) => s.bg(t.hover)).when(this.sel === WT, (el) => el.bg(t.selected))
-      .on_click((_e, cx) => { this.closed = false; this.choose(WT, cx); cx.notify(); })
       .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child("커밋 안 된 변경"))
-      .child(div().flex_none().text_size(11).text_color(t.dim).child(`${this.dirty}개`));
+      .child(div().flex_none().text_size(11).text_color(t.dim).child(`${this.dirty}개`)));
   }
 
   footer(t) {
     const text = this.logError ?? (this.loading ? "읽는 중" : this.error ?? (!this.commits?.length
       ? (this.query ? "맞는 커밋이 없습니다" : this.root ? "커밋이 없습니다" : this.context?.cwd ? "읽는 중" : "폴더가 없습니다") : null));
-    if (text || !this.more) return h_flex().h(FOOT).flex_none().px(14).items_center().text_size(12).text_color(t.dim).child(text ?? "");
-    return h_flex().h(FOOT).flex_none().px(10).items_center()
+    if (text || !this.more) return h_flex().w_full().h(FOOT).px(14).items_center().text_size(12).text_color(t.dim).child(text ?? "");
+    // 누르는 일은 logList의 on_item_click(FOOT_KEY)이 받는다(렌더러 안 핸들러 금지).
+    return h_flex().w_full().h(FOOT).px(10).items_center()
       .child(div().id("commit-more").px(10).py(4).rounded(6).border_1().border_color(t.border).text_size(12).text_color(t.foreground)
-        .cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.loadMore(cx))
+        .cursor_pointer().hover((s) => s.bg(t.hover))
         .child(`${PAGE}개 더 불러오기`));
   }
 
