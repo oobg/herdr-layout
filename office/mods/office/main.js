@@ -7,6 +7,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import * as fs from "fs/promises";
 import { readActivity, readSub } from "./activity.js";
+import { placeOf } from "./parse.js";
 import { v_flex, h_flex } from "gpui-base";
 import {
   props, spaces, agents, panes, terminals, theme, run, exec,
@@ -575,16 +576,7 @@ class Floor {
     const icon = (k) => svg(`mods/office/icons/act_${kindOf(k)[0]}.svg`).size(13).flex_none().text_color(kindOf(k)[1]);
     const FILE = ["읽음", "수정", "작성"];
     // 파일 경로를 위치 칩 + 짧은 경로로
-    const place = (p) => {
-      const h = home();
-      if (main.cwd && p.startsWith(main.cwd + "/")) return ["프로젝트", p.slice(main.cwd.length + 1)];
-      const tmp = /^\/(private\/)?tmp\/claude-[^/]+\/[^/]+\/[^/]+\/(scratchpad\/)?(.*)$/.exec(p);
-      if (tmp) return ["클로드 임시", tmp[3]];
-      if (p.startsWith(`${h}/.claude/`)) return ["클로드", p.slice(h.length + 9)];
-      if (p.startsWith(`${h}/.config/herdr-app/`)) return ["Herdr", p.slice(h.length + 20)];
-      if (p.startsWith(h + "/")) return ["홈", `~/${p.slice(h.length + 1)}`];
-      return [null, p];
-    };
+    const place = (p) => placeOf(p, home(), main.cwd);
     // 위치 칩 색: 프로젝트는 초록, 클로드 쪽은 Claude 주황, Herdr는 파랑, 홈은 회색
     const PLACE = { 프로젝트: "#a7c080", "클로드 임시": "#d97757", 클로드: "#d97757", Herdr: "#7aa2f7", 홈: "#9da9a0" };
     const chip = (text) => { const c = PLACE[text] ?? t.muted; return div().flex_none().px(5).rounded(4).bg(`${c}26`).border_1().border_color(`${c}66`).text_size(11).text_color(c).child(text); };

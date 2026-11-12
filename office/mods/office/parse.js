@@ -135,3 +135,14 @@ export function parse(text, { cut = true, sidechain = false } = {}) {
   flow.splice(0, Math.max(0, flow.length - 24));
   return { flow, tools: steps.length, askAt, running, ended, agents };
 }
+
+// 파일 경로 → [위치 칩, 짧은 경로]. h: 홈 폴더, cwd: 에이전트가 일하는 폴더. 잘라 낼 앞부분은 문자열 길이로 센다.
+export function placeOf(p, h, cwd) {
+  if (cwd && p.startsWith(cwd + "/")) return ["프로젝트", p.slice(cwd.length + 1)];
+  const tmp = /^\/(private\/)?tmp\/claude-[^/]+\/[^/]+\/[^/]+\/(scratchpad\/)?(.*)$/.exec(p);
+  if (tmp) return ["클로드 임시", tmp[3]];
+  for (const [chip, dir] of [["클로드", "/.claude/"], ["Herdr", "/.config/herdr-app/"]])
+    if (p.startsWith(h + dir)) return [chip, p.slice((h + dir).length)];
+  if (p.startsWith(h + "/")) return ["홈", `~/${p.slice(h.length + 1)}`];
+  return [null, p];
+}
