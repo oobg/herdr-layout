@@ -51,6 +51,8 @@ async function copy(text, what) {
   notify({ title: `${what}를 복사했습니다`, body: text, level: "info" });
 }
 
+const RENAME = '[ "$1" = "$2" ] && exit 0; if [ "$1" -ef "$2" ]; then t="$(dirname "$1")/.rename-$$"; mv "$1" "$t" && { mv "$t" "$2" || { mv "$t" "$1"; exit 1; }; }; elif [ -e "$2" ]; then echo "이미 있습니다" >&2; exit 1; else mv "$1" "$2"; fi';
+
 // 이 Mac의 앱(open·qlmanage·에디터·ditto)을 쓰는 동작은 원격 기기(ctx.on) 파일에는 쓰지 않는다. 메뉴에서도 뺀다.
 const local = (ctx) => !ctx.on;
 
@@ -63,7 +65,12 @@ export const ACTIONS = {
   terminal: (ctx) => { run("tab.new", { folder: ctx.dir ? ctx.abs : parent(ctx.abs) }); run("layout.show", { id: "office-term" }); },
   file: (ctx, name) => sh(ctx, 'mkdir -p "$(dirname "$1/$2")" && { [ -e "$1/$2" ] && echo "이미 있습니다" >&2 && exit 1 || : > "$1/$2"; }', ctx.dir ? ctx.abs : parent(ctx.abs), name),
   folder: (ctx, name) => sh(ctx, 'mkdir -p "$1/$2"', ctx.dir ? ctx.abs : parent(ctx.abs), name),
-  rename: (ctx, name) => sh(ctx, '[ -e "$2" ] && echo "이미 있습니다" >&2 && exit 1 || mv "$1" "$2"', ctx.abs, `${parent(ctx.abs)}/${name}`),
+  // 대소문자만 바꾸는 경우(readme.md → README.md): 대소문자를 가리지 않는 디스크(APFS 기본)에선 새 이름이 원래 파일로 잡히므로
+  // 같은 파일(-ef)이면 임시 이름을 거쳐 두 번 옮긴다. 실패하면 입력 창을 같은 값으로 다시 연다.
+  rename: async (ctx, name) => {
+    if (await sh(ctx, RENAME, ctx.abs, `${parent(ctx.abs)}/${name}`)) return;
+    ask(ctx, "rename", "이름 바꾸기", `'${ctx.abs.split("/").pop()}'의 새 이름`, name);
+  },
   duplicate: (ctx) => sh(ctx, 'n="$1 copy"; i=2; while [ -e "$n" ]; do n="$1 copy $i"; i=$((i+1)); done; cp -R "$1" "$n"', ctx.abs),
   trash: async (ctx) => {
     // macOS 15+의 trash 명령, 없으면 Finder로. 둘 다 휴지통으로 보낸다.
