@@ -1,5 +1,7 @@
 // office 아래 칸: 앱 런처. 기본 화면은 Spotlight처럼 검색창 + 앱 아이콘 격자, 앱을 누르면 들어간다.
-//   런처 키: 검색창에서 ↑↓ = 칸 고르기(selected 바탕), Enter = 고른 칸 열기 후 왼쪽 칸에 포커스. 앱 화면에서 Esc = 격자로.
+//   런처 키: 검색창에서 ↑↓ = 격자의 위·아래 줄로 칸 고르기(같은 열, 짧은 줄이면 끝 칸, selected 바탕),
+//     ←→ = 검색창이 비었으면 옆 칸, 글자가 있으면 검색창 커서,
+//     Enter = 고른 칸 열기 후 왼쪽 칸에 포커스. 앱 화면에서 Esc = 격자로. 줄 계산은 launcher/favorites.js gridStep(node 시험).
 //   앱 화면: 위 막대(‹ 앱 · 아이콘 · 이름 · 부제) / 왼쪽 좁은 칸(툴바 + 관리 목록) / 오른쪽 넓은 칸(고른 항목, 없으면 "선택 내용이 없습니다")
 //     틀과 키 처리는 launcher/screen.js(AppScreen): 아래 칸 앱 화면과 앱 대화 창(app-modal)이 같이 쓴다.
 //   대화 창 앱(APPS의 modal): 명령·작업 공간은 아래 칸을 바꾸지 않고 대화 창(오버레이 역할 app-modal)으로 뜬다.
@@ -58,7 +60,7 @@ import { WatchApp } from "./watch.js";
 import { ReviewApp } from "./review.js";
 import { NotesApp } from "./notes.js";
 import { ActionsApp } from "./actions.js";
-import { cleanFavs, toggleFav, moveFav, homeRows } from "./launcher/favorites.js";
+import { cleanFavs, toggleFav, moveFav, homeRows, gridCols, gridStep, gridSide } from "./launcher/favorites.js";
 import { AppScreen } from "./launcher/screen.js";
 
 const ME = "mods/office-apps";
@@ -127,10 +129,11 @@ function openManage() {
 }
 
 // 대화 창 앱 열기(APPS의 modal). 런처가 마지막으로 연 대화 창(prev)은 닫고 새로 연다(키를 두 번 눌러도 하나만). 새 id를 돌려준다.
-function openAppModal(def, prev) {
+//   fav: 지금 즐겨찾기인지(대화 창은 런처 상태를 나누지 않으니 props로 넘겨 위 막대 별을 그린다).
+function openAppModal(def, prev, fav = false) {
   if (prev) { try { closeOverlay(prev); } catch { /* 이미 닫힘 */ } }
   const m = def.modal;
-  return openOverlay({ mod: "office-apps", kind: "dialog", width: m.width, height: m.height, props: { role: "app-modal", app: def.id } });
+  return openOverlay({ mod: "office-apps", kind: "dialog", width: m.width, height: m.height, props: { role: "app-modal", app: def.id, fav } });
 }
 
 class Launcher {
@@ -259,7 +262,7 @@ class Launcher {
   //   대화 창 앱(modal)은 아래 칸을 바꾸지 않고 창만 띄운다(꺼져 있으면 아무것도 하지 않는다).
   go(id, cx) {
     const a = APPS.find((x) => x.id === id);
-    if (a?.modal) { if (!this.disabled()[id]) this.modal = openAppModal(a, this.modal); return; }
+    if (a?.modal) { if (!this.disabled()[id]) this.modal = openAppModal(a, this.modal, this.favs.includes(id)); return; }
     if (a?.action && !this.disabled()[id]) { a.action(); return; }
     this.app = id && !this.disabled()[id] ? id : null;
     this.screen?.reset();
@@ -341,19 +344,22 @@ class Launcher {
         .child(div().text_size(13).text_color(t.foreground).child(a.name));
     };
     return v_flex().size_full().min_h(0)
-      // 검색창의 ↑↓(입력 상자에서 올라온 키): 격자의 고른 칸을 앞뒤로 옮긴다. ←→는 입력 상자 커서에 둔다.
+      // 검색창의 ↑↓(입력 상자에서 올라온 키): 격자의 위·아래 줄로 옮긴다(보이는 열 수는 격자 폭에서).
       .on_key_down((e, cx) => {
         const m = e.modifiers;
         if (m.shift || m.alt || m.control || m.platform || !list.length) return;
-        if (e.key === "up") this.sel = (this.sel - 1 + list.length) % list.length;
-        else if (e.key === "down") this.sel = (this.sel + 1) % list.length;
+        // 검색창이 비었으면 ←→ = 옆 칸(입력 상자에 옮길 커서가 없다). 글자가 있으면 ←→는 입력 상자 커서.
+        if ((e.key === "left" || e.key === "right") && !this.search.value()) this.sel = gridSide(list.length, this.sel, e.key === "left" ? -1 : 1);
+        else if (e.key === "up" || e.key === "down") this.sel = gridStep(rows.map((r) => r.apps.length), gridCols(this.gridW), this.sel, e.key === "up" ? -1 : 1);
         else return;
         cx.stop_propagation(); cx.notify();
       })
       .child(h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b_1().border_color(t.border)
         .child(svg(`${ME}/search.svg`).size(16).flex_none().text_color(t.muted))
         .child(div().flex_1().min_w(0).child(Input.new(this.search).h(30).text_size(15).text_color(t.foreground))))
+      // 격자 폭: 안쪽 여백(20×2)을 뺀 줄 폭으로 ↑↓의 열 수를 정한다
       .child(v_flex().id("apps-grid").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(18)
+        .on_size_change((size, cx) => { const w = size.width - 40; if (w !== this.gridW) { this.gridW = w; cx.notify(); } })
         .children(rows.map((g) => v_flex().gap(6)
           .child(div().px(4).child(groupTitle(g.title, t)))
           .child(h_flex().flex_wrap().gap(18).children(g.apps.map((a, i) => icon(a, g.fav, i, g.apps.length))))))
@@ -373,6 +379,8 @@ class Launcher {
     return this.screen.view({
       a: APPS.find((x) => x.id === id), app: this.instance(id), cx, t, tile,
       lead: [this.back(t), div().w(1).h(18).bg(t.border)],
+      // 이름 옆 별: 우클릭 메뉴의 "즐겨찾기에 추가/빼기"와 같은 동작
+      star: APPS.some((x) => x.id === id) ? { on: this.favs.includes(id), toggle: () => this.toggleFavorite(id) } : null,
       onEscape: (cx) => { this.go(null, cx); this.search.focus(); },
     });
   }
@@ -513,6 +521,7 @@ class AppModal {
   init(_p, cx) {
     const p = props() ?? {};
     this.overlay = p.overlay;
+    this.fav = Boolean(p.fav);   // 별 표시: 누르면 명령(favorite:<id>)으로 런처에 맡기고 여기서는 뒤집어 그린다
     this.def = APPS.find((a) => a.id === p.app && a.modal) ?? null;
     this.screen = new AppScreen(cx);
     this.app = null;
@@ -545,7 +554,8 @@ class AppModal {
         .child(h_flex().items_center().child(div().flex_1().text_color(t.muted).child(a ? `${a.name} 앱이 꺼져 있습니다` : "열 수 없는 앱입니다")).child(x));
     }
     return v_flex().id("app-modal").size_full().min_h(0).bg(t.chrome).text_color(t.foreground).text_size(13)
-      .child(this.screen.view({ a, app: this.app, cx, t, tile, trail: [x], left: a.modal.left, onEscape: () => this.close() }));
+      .child(this.screen.view({ a, app: this.app, cx, t, tile, trail: [x], left: a.modal.left, onEscape: () => this.close(),
+        star: { on: this.fav, toggle: () => { this.fav = !this.fav; run(`office-apps.favorite:${a.id}`); } } }));
   }
 }
 

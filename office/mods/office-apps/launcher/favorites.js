@@ -43,3 +43,35 @@ export function homeRows({ apps, groups, favs, query }) {
   }
   return rows;
 }
+
+// 격자 한 줄에 들어가는 칸 수: 줄 폭(width, 안쪽 여백 뺀 값) · 칸 폭(cell) · 칸 사이(gap). 폭을 모르면 null.
+export function gridCols(width, cell = 92, gap = 18) {
+  if (!(typeof width === "number" && width > 0)) return null;
+  return Math.max(1, Math.floor((width + gap) / (cell + gap)));
+}
+
+// 격자 ↑(-1)↓(+1): 보이는 줄 단위로 옮긴다. lens = 묶음(즐겨찾기·앱·에이전트·설정)마다 칸 수,
+//   cols = 한 줄 칸 수(null이면 예전처럼 순번 ±1). 묶음마다 flex_wrap이라 줄은 묶음 안에서 cols개씩 끊긴다.
+//   같은 열로 가되 그 줄이 짧으면 마지막 칸. 맨 위·맨 아래에서는 멈춘다.
+export function gridStep(lens, cols, sel, d) {
+  const total = lens.reduce((a, b) => a + b, 0);
+  if (!total) return 0;
+  if (!cols) return Math.max(0, Math.min(total - 1, sel + d));
+  const lines = [];   // [시작 순번, 칸 수]
+  let start = 0;
+  for (const n of lens) {
+    for (let i = 0; i < n; i += cols) lines.push([start + i, Math.min(cols, n - i)]);
+    start += n;
+  }
+  const L = Math.max(0, lines.findIndex(([s, n]) => sel >= s && sel < s + n));
+  const col = sel - lines[L][0], T = L + d;
+  if (T < 0 || T >= lines.length) return sel;
+  const [s, n] = lines[T];
+  return s + Math.min(col, n - 1);
+}
+
+// 격자 ←(-1)→(+1): 읽는 순서대로 한 칸(줄 끝에서 다음 줄 첫 칸으로), 처음·끝에서는 멈춘다. 검색창이 비었을 때만 쓴다.
+export function gridSide(total, sel, d) {
+  if (!total) return 0;
+  return Math.max(0, Math.min(total - 1, sel + d));
+}
