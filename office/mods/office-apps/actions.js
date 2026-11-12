@@ -1,10 +1,10 @@
 // office-apps의 배포 앱: 지금 고른 스페이스(포커스된 패인)의 저장소 GitHub Actions 실행을 gh CLI로 지켜본다.
 //   왼쪽: 필터(전체 · 지금 브랜치 · 실패만 · 진행 중, 조용한 글자 탭) + 최근 30개 실행 목록.
 //         줄 = 상태 기호·제목(커밋 메시지 첫 줄)·상대 시각 / 상태 낱말·워크플로·브랜치·걸린 시간.
-//   오른쪽: 고른 실행 하나. 머리줄(상태 · 워크플로 · 브라우저), 제목·브랜치·이벤트·커밋, 동작(다시 실행 · 취소 · 끝나면 알림 ·
+//   오른쪽: 고른 실행 하나. 머리줄(상태 · 워크플로 · 브라우저), 제목·브랜치·이벤트·커밋, 동작(다시 실행 · 실행 멈추기 · 끝나면 알림 ·
 //          에이전트에게 알리기), 잡 목록(도는·실패한 잡은 단계까지 펼침, 지금 도는 단계 강조), 실패 로그(끝 80줄), 배포 환경.
 // 순수 함수(상태 매핑·걸린 시간·로그 자르기·필터·핀)는 actions/run.js(node로 시험할 수 있다).
-// 다시 실행·취소는 menu.js의 확인 창(confirm)을 거친다. 확인 창은 ACTIONS[이름](ctx)만 부르므로
+// 다시 실행·실행 멈추기(gh run cancel)는 menu.js의 확인 창(confirm)을 거친다(창 닫기 "취소"와 헷갈리지 않게 "멈추기"로 쓴다). 확인 창은 ACTIONS[이름](ctx)만 부르므로
 // 이 모듈이 불릴 때 actions.* 동작을 더한다(pr.js와 같은 방식). 동작이 끝나면 TICK을 바꿔 앱이 다시 읽게 한다.
 // 에이전트에게 실패 알리기는 send.js(공용): 지금 스페이스의 에이전트 중 고른 하나에게, 상태 규칙·확인 창도 거기서.
 // 갱신: 이 앱이 그려지는 동안만(에이전트 앱과 같은 방식: 알렸는데 그려지지 않았으면 멈추고, 다시 그려지면 깨운다).
@@ -62,7 +62,7 @@ async function gh(ctx, args, done, failed) {
 }
 
 ACTIONS["actions.rerun"] = (ctx) => gh(ctx, ["run", "rerun", String(ctx.id), "--failed"], "실패한 잡을 다시 실행합니다", "다시 실행하지");
-ACTIONS["actions.cancel"] = (ctx) => gh(ctx, ["run", "cancel", String(ctx.id)], "실행을 취소했습니다", "취소하지");
+ACTIONS["actions.cancel"] = (ctx) => gh(ctx, ["run", "cancel", String(ctx.id)], "실행을 멈췄습니다", "멈추지");
 const confirm = (action, title, detail, ctx, opts = {}) =>
   openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", action, title, detail, ctx, ...opts } });
 
@@ -421,7 +421,7 @@ export class ActionsApp {
 
   // ── 오른쪽
 
-  // 런처 키 계약: 지난 그리기에서 모은 멈출 곳(다시 실행·끝나면 알림·취소·실패 알리기·보낼 곳).
+  // 런처 키 계약: 지난 그리기에서 모은 멈출 곳(다시 실행·끝나면 알림·실행 멈추기·실패 알리기·보낼 곳).
   focusables() { return this.stops ?? []; }
 
   detail(cx, t) {
@@ -479,8 +479,8 @@ export class ActionsApp {
     if (going) {
       out.push(btn("act-pin", this.pinned(base.databaseId) ? "✓ 끝나면 알림" : "끝나면 알림", this.pinned(base.databaseId) ? t.foreground : t.muted,
         () => this.togglePin(v ?? base), this.pinned(base.databaseId)));
-      out.push(btn("act-cancel", "취소", t.ansi1, () => confirm("actions.cancel", "실행 취소",
-        `${ctx.name}\n도는 잡을 멈춥니다. 다시 돌리려면 처음부터 다시 실행해야 합니다.`, ctx, { yes: "실행 취소", danger: true })));
+      out.push(btn("act-cancel", "실행 멈추기", t.ansi1, () => confirm("actions.cancel", "CI 실행 멈출까요?",
+        `${ctx.name}\n도는 잡을 멈춥니다. 다시 돌리려면 처음부터 다시 실행해야 합니다.`, ctx, { yes: "실행 멈추기", danger: true })));
     }
     let pick = null;
     if (!going && spot) {
