@@ -1,11 +1,13 @@
 // office-apps의 검토 앱: 에이전트가 일하는 작업 폴더별로 바뀐 것을 보고, 그 에이전트에게 피드백을 보낸다.
 //   왼쪽: 지금 에이전트가 있는 작업 폴더(git 루트: 레포·워크트리, 같은 머신·루트는 한 줄).
 //         줄 = 에이전트 아이콘 · 폴더 이름 · 변경 요약("파일 4 · +120 −30") / 상태 낱말 · 스페이스 › 탭.
-//         변경이 없는 곳은 흐리게 맨 아래. 레포가 아닌 폴더는 뺀다.
+//         커밋 안 된 변경이 없어도 기본 브랜치보다 앞선 커밋이 있으면 "커밋 2개 · 기본 브랜치 대비"로 위에 둔다(커밋까지 끝낸 일).
+//         둘 다 없는 곳은 흐리게 맨 아래. 레포가 아닌 폴더는 뺀다.
 //   오른쪽: 머리줄(폴더 · 브랜치 · 보기 전환 "커밋 안 된 변경 | 기본 브랜치 대비") / 바뀐 파일 / 고른 파일의 diff /
 //         피드백(보낼 에이전트 · 고른 줄 · 여러 줄 입력 · "에이전트에게 보내기").
 //   기본 브랜치 대비 = merge-base(기본 브랜치, HEAD)부터 지금 작업 트리까지 + 추적 안 된 파일(아직 커밋하지 않은 일도 보인다).
-//   기본 브랜치는 origin/HEAD → origin/main → origin/master → main → master 중 처음 있는 것.
+//   기본 브랜치는 origin/HEAD → origin/main → origin/master → main → master 중 처음 있는 것(묶음별로 기억, 다시 읽기에서 새로).
+//   보기: 이번 실행에서 그 폴더에서 사람이 고른 보기 → 커밋 안 된 변경 없이 앞선 커밋만 있으면 기본 브랜치 대비 → 마지막에 고른 보기.
 //   diff 줄 그리기·색·위아래/좌우는 commit/diffview.js(커밋·PR 앱과 같다). diff 줄을 누르면 "파일:줄"을 피드백에 붙인다
 //   (가상 목록의 on_item_click; 다시 누르면 풀린다).
 // 보내기: send.js(공용). 후보는 그 폴더에서 일하는 에이전트(스페이스가 달라도), 순서·표시·상태 규칙·확인 창·hc send는 거기서.
@@ -23,7 +25,7 @@ import {
   DIFF_LINE, NARROW, inlineRow, splitRow, inlineWidth, splitWidth, diffPalette, wordSpans, splitRows, isDark, diffMode, modeToggle,
 } from "./commit/diffview.js";
 import {
-  withSilent, workdirs, groupRoots, parseShortstat, summary, changed, sortGroups, pickLine, feedbackText, baseCandidates, pickBase,
+  withSilent, workdirs, groupRoots, parseShortstat, summary, changed, autoMode, sortGroups, pickLine, feedbackText, baseCandidates, pickBase,
 } from "./review/model.js";
 
 const APPS = "mods/office-apps";
@@ -54,7 +56,9 @@ const statusColor = (s, t) => ({ working: t.working, blocked: t.blocked, done: t
 export class ReviewApp {
   init(_p, _cx) {
     this.roots = {};          // 작업 폴더 key([머신, 폴더]) → git 루트 | null(레포 아님)
-    this.stats = {};          // 묶음 key([머신, 루트]) → { files, add, del, untracked, branch }
+    this.stats = {};          // 묶음 key([머신, 루트]) → { files, add, del, untracked, branch, ahead }
+    this.bases = {};          // 묶음 key → 기본 브랜치 ref | null(없음). 다시 읽기를 누르면 새로 찾는다
+    this.picked = {};         // 묶음 key → 이번 실행에서 그 폴더에서 사람이 고른 보기
     this.groups = [];
     this.sel = load("review.sel", null);
     this.mode = load("review.mode", "worktree") === "base" ? "base" : "worktree";
@@ -202,34 +206,52 @@ export class ReviewApp {
     this.groups = sortGroups(groupRoots(dirs, this.roots), this.stats);
     await Promise.all(this.groups.filter((g) => !g.pending).map(async (g) => {
       const git = (args) => exec("git", [...READ, ...args], { cwd: g.root, on: g.on, timeout: 20000 });
-      const [ss, un, br] = await Promise.all([
+      if (!(g.key in this.bases)) this.bases[g.key] = await this.baseRef(g).catch(() => null);
+      const ref = this.bases[g.key];
+      const [ss, un, br, ah] = await Promise.all([
         git(["diff", "--no-ext-diff", "--shortstat", "HEAD"]).catch(() => null),
         git(["ls-files", "-o", "--exclude-standard", "-z"]).catch(() => null),
         git(["branch", "--show-current"]).catch(() => null),
+        ref ? git(["rev-list", "--count", `${ref}..HEAD`]).catch(() => null) : null,
       ]);
       const st = parseShortstat(ss?.code === 0 ? ss.stdout : "");
-      this.stats[g.key] = { ...st, untracked: un?.code === 0 ? un.stdout.split("\0").filter(Boolean).length : 0, branch: br?.stdout?.trim() ?? "" };
+      this.stats[g.key] = { ...st, untracked: un?.code === 0 ? un.stdout.split("\0").filter(Boolean).length : 0, branch: br?.stdout?.trim() ?? "",
+        ahead: ah?.code === 0 ? Number(ah.stdout.trim()) || 0 : 0 };
     }));
     this.groups = sortGroups(this.groups, this.stats);
-    if (this.current()) await this.loadFiles(cx, true);
+    const cur = this.current();
+    // 요약이 바뀌어 보기가 달라졌으면(커밋까지 끝났다 등) 처음부터 다시 읽는다
+    if (cur && this.loaded && this.loaded !== this.view(cur)) this.resetFiles();
+    if (cur) await this.loadFiles(cx, Boolean(this.info));
   }
 
   // ── 고르기와 파일 목록 ─────────────────────────────────
   choose(key, cx) {
     if (key === this.sel && this.info) return;
     this.sel = key; save("review.sel", key);
-    this.files = []; this.info = null; this.filesError = null; this.filesOpen = true;
-    this.openFile(null);
-    this.loadGen = (this.loadGen ?? 0) + 1;
+    this.resetFiles(); this.filesOpen = true;
     if (cx) cx.spawn(async (cx) => { await this.loadFiles(cx, false); cx.notify(); });
   }
 
-  setMode(mode, cx) {
-    if (mode === this.mode) return;
-    this.mode = mode; save("review.mode", mode);
-    this.files = []; this.info = null; this.filesError = null;
+  resetFiles() {
+    this.files = []; this.info = null; this.filesError = null; this.loaded = null;
     this.openFile(null);
     this.loadGen = (this.loadGen ?? 0) + 1;
+  }
+
+  // 그 폴더의 보기: 이번 실행에서 사람이 고른 것 → 앞선 커밋만 있으면 기본 브랜치 대비 → 마지막에 고른 것.
+  //   저절로 고른 보기는 저장하지 않는다(review.mode는 사람이 고른 것만).
+  view(g = this.current()) {
+    if (!g) return this.mode;
+    return this.picked[g.key] ?? autoMode(this.stats[g.key]) ?? this.mode;
+  }
+
+  setMode(mode, cx) {
+    const g = this.current();
+    if (g) this.picked[g.key] = mode;
+    if (mode !== this.mode) { this.mode = mode; save("review.mode", mode); }
+    if (mode === this.loaded) return;
+    this.resetFiles();
     cx.spawn(async (cx) => { await this.loadFiles(cx, false); cx.notify(); });
   }
 
@@ -237,8 +259,8 @@ export class ReviewApp {
     return exec("git", [...READ, ...args], { cwd: g.root, on: g.on, timeout });
   }
 
-  // 기본 브랜치와 merge-base. 없으면 { ref: null }.
-  async baseOf(g) {
+  // 기본 브랜치 ref(없으면 null).
+  async baseRef(g) {
     const oh = await this.git(g, ["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]).catch(() => null);
     const cands = baseCandidates(oh?.code === 0 ? oh.stdout : "");
     const ok = {};
@@ -246,7 +268,13 @@ export class ReviewApp {
       const r = await this.git(g, ["rev-parse", "--verify", "-q", `${c}^{commit}`]).catch(() => null);
       ok[c] = r?.code === 0;
     }));
-    const ref = pickBase(cands, ok);
+    return pickBase(cands, ok);
+  }
+
+  // 기본 브랜치와 merge-base. 없으면 { ref: null }.
+  async baseOf(g) {
+    const ref = await this.baseRef(g);
+    this.bases[g.key] = ref;
     if (!ref) return { ref: null };
     const mb = await this.git(g, ["merge-base", ref, "HEAD"]).catch(() => null);
     return mb?.code === 0 ? { ref, mb: mb.stdout.trim() } : { ref, mb: null };
@@ -256,7 +284,7 @@ export class ReviewApp {
   async loadFiles(cx, again) {
     const g = this.current();
     if (!g || g.pending) return;
-    const gen = this.loadGen, mode = this.mode;
+    const gen = this.loadGen, mode = this.view(g);
     let info = null, files = [], error = null;
     try {
       if (mode === "base") {
@@ -280,9 +308,9 @@ export class ReviewApp {
         info.cut = names.length > files.length;
       }
     } catch (e) { error = firstLine(e?.message ?? e); }
-    if (gen !== this.loadGen || this.current()?.key !== g.key || mode !== this.mode) return;
+    if (gen !== this.loadGen || this.current()?.key !== g.key || mode !== this.view(g)) return;
     const was = this.file ? this.files.find((f) => f.path === this.file) : null;
-    this.info = info; this.files = files; this.filesError = error;
+    this.info = info; this.files = files; this.filesError = error; this.loaded = mode;
     if (!this.file || !files.some((f) => f.path === this.file)) {
       if (files[0]) this.openFile(files[0].path, cx); else this.openFile(null);
     } else if (again) {
@@ -433,6 +461,7 @@ printf '%s\n%s' "$c" "$f"`;
           .on_click((_e, cx) => {
             // 레포가 아니라고 기억한 폴더(끊긴 머신·시간 초과·나중에 git init)만 다시 확인한다. 찾은 루트는 둬서 선택이 유지된다.
             for (const k of Object.keys(this.roots)) if (this.roots[k] === null) delete this.roots[k];
+            this.bases = {};   // 기본 브랜치도 다시 찾는다(원격을 새로 받았을 수 있다)
             this.kick(cx); cx.notify();
           })
           .child(svg(I("refresh")).size(16).text_color(this.busy ? t.dim : "#7fbbb3"))))
@@ -467,11 +496,11 @@ printf '%s\n%s' "$c" "$f"`;
     const g = this.current();
     if (!g && this.sel && this.seen) return this.lostView(t);
     if (!g || g.pending) return null;
-    const st = this.stats[g.key];
+    const st = this.stats[g.key], view = this.view(g);
     const tab = (mode, label) => div().id(`review-view-${mode}`).px(8).py(3).rounded(4).text_size(12).cursor_pointer()
-      .text_color(this.mode === mode ? t.foreground : t.dim).when(this.mode === mode, (el) => el.bg(t.hover))
+      .text_color(view === mode ? t.foreground : t.dim).when(view === mode, (el) => el.bg(t.hover))
       .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.setMode(mode, cx); cx.notify(); }).child(label);
-    const baseLabel = this.mode === "base" && this.info?.base ? `${this.info.base} 대비` : "기본 브랜치 대비";
+    const baseLabel = view === "base" && this.info?.base ? `${this.info.base} 대비` : "기본 브랜치 대비";
     return v_flex().size_full().min_h(0)
       .child(h_flex().h(40).flex_none().px(14).gap(8).items_center().border_b_1().border_color(t.border)
         .child(div().flex_none().max_w(220).truncate().text_size(14).font_semibold().text_color(t.foreground).child(baseName(g.root)))
@@ -490,10 +519,11 @@ printf '%s\n%s' "$c" "$f"`;
 
   fileSection(t) {
     const line = (text, color) => div().flex_none().px(14).py(10).border_b_1().border_color(t.border).text_size(12).text_color(color).child(text);
-    if (this.filesError) return line(this.filesError, this.mode === "base" ? t.muted : t.ansi1);
+    const view = this.loaded ?? this.view();
+    if (this.filesError) return line(this.filesError, view === "base" ? t.muted : t.ansi1);
     if (!this.info) return line("읽는 중", t.dim);
     const files = this.files, n = files.length;
-    if (!n) return line(this.mode === "base" ? "기본 브랜치와 다른 파일이 없습니다" : "커밋 안 된 변경이 없습니다", t.dim);
+    if (!n) return line(view === "base" ? "기본 브랜치와 다른 파일이 없습니다" : "커밋 안 된 변경이 없습니다", t.dim);
     const add = files.reduce((s, f) => s + f.add, 0), del = files.reduce((s, f) => s + f.del, 0), open = this.filesOpen;
     const head = h_flex().h(30).flex_none().pr(10).gap(6).items_center()
       .child(h_flex().id("review-files-head").flex_1().min_w(0).h_full().pl(10).gap(6).items_center().cursor_pointer().hover((s) => s.bg(t.hover))

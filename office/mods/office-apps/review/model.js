@@ -2,7 +2,9 @@
 //   workdirs(ags, ps, sps)          에이전트마다 작업 폴더·머신을 찾는다 → [{ key, on, cwd, agents[] }] (같은 머신·폴더는 하나)
 //   groupRoots(dirs, roots)         git 루트(레포·워크트리)로 묶는다 → [{ key, on, root, agents[] }]
 //   parseShortstat(text)            git diff --shortstat 한 줄 → { files, add, del }
-//   summary(stat, untracked)        "파일 4 · +120 −30" (변경이 없으면 "변경 없음")
+//   summary(stat, untracked)        "파일 4 · +120 −30" (커밋 안 된 변경이 없고 앞선 커밋만 있으면 "커밋 2개 · 기본 브랜치 대비", 둘 다 없으면 "변경 없음")
+//   dirty(st) · changed(st)         커밋 안 된 변경이 있는지 · 그것이나 기본 브랜치보다 앞선 커밋(st.ahead)이 있는지
+//   autoMode(st)                    기본 보기: 커밋 안 된 변경 없이 앞선 커밋만 있으면 "base", 아니면 null(사람이 고른 보기)
 //   sortGroups(groups, stats)       변경 있는 곳 먼저(그 안에서는 상태 급한 순), 변경 없는 곳은 맨 아래
 //   pickLine(rows, pairs, key)      diff 가상 목록 키(i<n> | s<n>) → { line, side } | null
 //   feedbackText({ path, line, side, text })   에이전트에게 보낼 글
@@ -74,16 +76,19 @@ export function parseShortstat(text) {
 }
 
 // 추적 안 된 파일 수를 파일 수에 더한다(줄 수는 세지 않는다).
+// 커밋 안 된 변경이 없어도 기본 브랜치보다 앞선 커밋(stat.ahead)이 있으면 그것을 쓴다(커밋까지 끝낸 에이전트의 일).
 export function summary(stat, untracked = 0) {
   if (!stat) return "";
   const files = (stat.files ?? 0) + untracked;
-  if (!files) return "변경 없음";
+  if (!files) return stat.ahead > 0 ? `커밋 ${stat.ahead}개 · 기본 브랜치 대비` : "변경 없음";
   const parts = [`파일 ${files}`];
   if (stat.add || stat.del) parts.push(`+${stat.add} −${stat.del}`);
   return parts.join(" · ");
 }
 
-export const changed = (st) => Boolean(st && ((st.files ?? 0) + (st.untracked ?? 0)) > 0);
+export const dirty = (st) => Boolean(st && ((st.files ?? 0) + (st.untracked ?? 0)) > 0);
+export const changed = (st) => dirty(st) || Boolean(st?.ahead > 0);
+export const autoMode = (st) => (st && !dirty(st) && st.ahead > 0 ? "base" : null);
 
 // 변경 있는 곳 먼저(상태 급한 순, 같으면 원래 순서), 변경이 없거나 아직 모르는 곳은 맨 아래.
 export function sortGroups(groups, stats) {
