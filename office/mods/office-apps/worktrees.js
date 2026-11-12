@@ -5,6 +5,8 @@
 //         그 폴더에 터미널이 열린 에이전트(상태 무관)가 있으면 "지우기"를 잠그고 "먼저 끝내거나 재우세요"와 그 터미널로 가기. 실행 직전에도 다시 본다.
 //         "이슈에서 시작"을 누르면 오른쪽이 이슈 목록이 된다: 고르면 브랜치 이름을 묻고 워크트리를 만든 뒤
 //         그 폴더에서 Claude Code를 띄우고 이슈 본문을 첫 메시지(task)로 넘긴다.
+//         본문을 읽지 못하면(gh issue view 실패) 띄우지 않고 확인 창으로 묻는다: "제목만으로 띄우기"면 제목만 넘긴다
+//         (확인 창 동작은 복사본에서 돌아 공유 값 GO로 앱에게 알린다). 닫으면 워크트리만 남는다. 본문이 빈 이슈는 그대로 띄운다.
 // 에이전트 띄우기는 office 모드 AddAgent와 같은 명령: 그 폴더의 스페이스가 있으면 tab.new {name, space, folder, argv},
 // 없으면 space.new {folder, argv}. argv는 knownAgents의 Claude 항목 run + AddAgent와 같은 권한 건너뛰기 플래그(이슈에서 시작할 때는 빼서 권한 확인을 남긴다).
 // 확인 창·입력 창은 오버레이 복사본에서 돌므로 값만 넘기고, 만든 워크트리는 공유 값(MADE)으로 앱에게 알린다.
@@ -20,6 +22,7 @@ const ME = "mods/office-apps";
 const I = (n) => `${ME}/${n}.svg`;
 const W = (n) => `${ME}/worktrees/${n}.svg`;
 const MADE = "office-apps.worktrees.made";  // 입력 창(오버레이)이 만든 워크트리를 앱에게 알리는 공유 키
+const GO = "office-apps.worktrees.go";      // 확인 창이 "제목만으로 띄우기"를 앱에게 알리는 공유 키 { root, path, issue, at }
 const NOT_REPO = "git 저장소가 아닙니다";
 const STATUS = { working: "작업 중", blocked: "입력 대기", done: "끝남", idle: "대기 중" };
 const RANK = { blocked: 3, working: 2, done: 1, idle: 0 };
@@ -79,6 +82,8 @@ function liveIn(path, all, on) {
 // ctx: { root, on, base, path?, all?, branch?, dirty?, agents?, issue?: { number, title } }
 
 const changed = () => setShared(TICK, Date.now());
+// 이슈를 넘기는 첫 메시지. "이슈 #N"으로 시작해 첫 메시지가 옵션으로 읽힐 일이 없다.
+const issueTask = (issue, body) => `이슈 #${issue.number}: ${issue.title}${body ? `\n\n${body}` : ""}`;
 
 const ACT = {
   // git worktree add -b <이름> <레포 옆 폴더> <기본 브랜치>. 만들면 앱이 그 워크트리를 고르게 MADE로 알린다.
@@ -106,6 +111,11 @@ const ACT = {
     const r = await exec("git", ["worktree", "remove", ctx.path], { cwd: ctx.root, on: ctx.on, timeout: 60000 }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
     if (r.code !== 0) notify({ title: "워크트리를 지우지 못했습니다", body: (r.stderr || r.stdout || "").trim().slice(0, 400), level: "error" });
     else notify({ title: "워크트리를 지웠습니다", body: `${tilde(ctx.path)}${ctx.branch ? ` · 브랜치 ${ctx.branch}는 남아 있습니다` : ""}`, level: "info" });
+    changed();
+  },
+  // 이슈 본문을 못 읽었을 때 "제목만으로 띄우기": 앱이 GO를 받아 띄운다(복사본에는 앱 상태가 없다).
+  titleOnly: (ctx) => {
+    setShared(GO, { root: ctx.root, path: ctx.path, issue: ctx.issue, at: Date.now() });
     changed();
   },
 };
@@ -172,6 +182,7 @@ export class WorktreesApp {
     register();
     this.tick = shared(TICK);
     this.madeAt = shared(MADE)?.at ?? null;
+    this.goAt = shared(GO)?.at ?? null;   // 앱을 열기 전의 값으로 다시 띄우지 않게
     this.ctx = null;        // { key, cwd, on }
     this.data = null;       // { root, base, github, items: [{ ...worktree, files[], vs, error }] }
     this.loading = false; this.error = null;
@@ -270,6 +281,14 @@ export class WorktreesApp {
         if (m.issue) this.launchIssue(m.path, m.issue, cx);
       }
     }
+    const g = shared(GO);
+    if (g && g.at !== this.goAt) {
+      this.goAt = g.at;
+      if (g.root === this.data?.root && g.issue) {
+        this.sel = g.path; this.mode = "list";
+        cx.spawn(async (cx) => { await this.launch(g.path, issueTask(g.issue, ""), cx); cx.notify(); });
+      }
+    }
   }
 
   find(path = this.sel) { return this.data?.items.find((w) => w.path === path) ?? null; }
@@ -306,12 +325,24 @@ export class WorktreesApp {
     cx.timer.after(800, () => { const n = spaceFor(path, all.includes(path) ? all : [...all, path], on); if (n) showSpace(n.id); });
   }
 
+  // 본문을 읽어 첫 메시지로. 읽지 못하면 띄우지 않고 제목만으로 띄울지 묻는다(빈 본문은 실패가 아니다).
   launchIssue(path, issue, cx) {
+    const root = this.data?.root, on = this.ctx?.on ?? null;
     cx.spawn(async (cx) => {
-      const r = await exec("gh", ["issue", "view", String(issue.number), "--json", "body", "-q", ".body"], { cwd: this.data?.root, on: this.ctx?.on, timeout: 30000 }).catch(() => null);
-      const body = r?.code === 0 ? r.stdout.trim() : "";
-      // "이슈 #N"으로 시작해 첫 메시지가 옵션으로 읽힐 일이 없다.
-      await this.launch(path, `이슈 #${issue.number}: ${issue.title}${body ? `\n\n${body}` : ""}`, cx);
+      const r = await exec("gh", ["issue", "view", String(issue.number), "--json", "body", "-q", ".body"], { cwd: root, on, timeout: 30000 })
+        .catch((e) => ({ code: -1, stdout: "", stderr: String(e?.message ?? e) }));
+      if (r.code !== 0) {
+        register();
+        const why = (r.stderr || r.stdout || "").trim().split("\n")[0].slice(0, 200) || `gh 종료 코드 ${r.code}`;
+        openOverlay({ mod: "office-apps", kind: "dialog", width: 440, height: 230, props: {
+          role: "confirm", action: "worktrees.titleOnly", title: `이슈 #${issue.number} 본문을 읽지 못했습니다`, yes: "제목만으로 띄우기",
+          ctx: { root, path, issue: { number: issue.number, title: issue.title } },
+          detail: `${why}\n워크트리 ${tilde(path)}는 만들어 두었습니다. 제목만 넘겨 에이전트를 띄울까요? (권한 확인 있음)\n닫으면 띄우지 않습니다. 나중에 "여기서 에이전트 띄우기"로 띄울 수 있습니다.`,
+        } });
+        cx.notify();
+        return;
+      }
+      await this.launch(path, issueTask(issue, r.stdout.trim()), cx);
       cx.notify();
     });
   }
