@@ -9,6 +9,7 @@ import * as fs from "fs/promises";
 import { readActivity, readSub } from "./activity.js";
 import { placeOf, summary, artifactTitle } from "./parse.js";
 import * as md from "./md.js";
+import { STATUS_WORD, UNKNOWN_WORD, FINISHED, holdDone } from "./status.js";
 import { v_flex, h_flex } from "gpui-base";
 import {
   props, spaces, agents, panes, terminals, theme, run, exec,
@@ -123,6 +124,7 @@ class Floor {
     // 오버뷰의 활동 기록은 렌더할 때 오래됐으면 다시 읽는다(activityFor). 렌더는 Herdr 상태가 바뀔 때만 오므로,
     //   부모가 쉬는 동안 서브에이전트만 도는 때에도 제때 읽게 오버뷰가 열려 있으면 다시 읽을 때가 된 순간 다시 그린다.
     cx.timer.every(2500, (cx) => {
+      this.publishDone();
       if (shared(OPEN) && Date.now() >= (this.due ?? Infinity)) { this.due = Infinity; cx.notify(); }
     });
     cx.spawn(async (cx) => {
@@ -172,23 +174,26 @@ class Floor {
     });
   }
 
-  // 일을 마친 에이전트는 다음 일을 시작할 때까지 "완료"로 둔다.
+  // 일을 마친 에이전트는 다음 일을 시작할 때까지 "완료"로 둔다(규칙은 status.js holdDone).
   // Herdr는 완료를 한 번 보면 대기(idle)로 바꾸지만, 사무실에서는 끝났다는 표시가 남아 있는 편이 읽기 쉽다.
   // 끝난 시각도 기억해 "완료 n분 전"으로 보여 준다. 켜기 전에 이미 끝나 있었으면 탭이 마지막으로 바뀐 시각.
+  // 판단은 공유 상태 office.finished({ 주소: 끝난 시각 })로 내보내 알림함도 같은 때까지 "완료"로 둔다.
+  //   켤 때마다 새로 판단한다(지난 공유 값은 덮어쓴다: 터미널 주소가 다시 쓰일 수 있어서). 바뀔 때만, 렌더 밖(타이머)에서 내보낸다.
   withDone(list) {
     const fin = (this.finished ??= new Map()), seen = (this.lastStatus ??= {});
     const tabTime = (a) => spaces().flatMap((s) => s.tabs).find((x) => x.id === a.tab)?.changed_at;
-    const out = list.map((a) => {
-      const prev = seen[a.address];
-      seen[a.address] = a.status;
-      if (a.status === "working" || a.status === "blocked") { fin.delete(a.address); return a; }
-      if (a.status === "done" || (a.status === "idle" && (prev === "working" || prev === "done" || fin.has(a.address)))) {
-        if (!fin.has(a.address)) fin.set(a.address, prev === "working" || prev === "blocked" ? Date.now() : tabTime(a) ?? Date.now());
-        return { ...a, status: "done", doneAt: fin.get(a.address) };
-      }
-      return a;
-    });
+    const out = holdDone(list, fin, seen, tabTime);
+    const pub = Object.fromEntries(out.filter((a) => a.status === "done" && a.doneAt).map((a) => [a.address, a.doneAt]));
+    const json = JSON.stringify(pub);
+    if (json !== this.finJson) { this.finJson = json; this.finPub = pub; }
     return out;
+  }
+
+  // office.finished 내보내기: setShared는 모든 모드를 다시 그리므로 렌더 안에서 부르지 않고, 바뀐 값만 다음 타이머에서.
+  publishDone() {
+    if (this.finPub === undefined) return;
+    const pub = this.finPub; this.finPub = undefined;
+    if (JSON.stringify(shared(FINISHED) ?? null) !== JSON.stringify(pub)) setShared(FINISHED, pub);
   }
 
   render(cx) {
@@ -271,7 +276,8 @@ class Floor {
     const ago = (m) => (m == null ? "" : m < 1 ? "방금" : m < 60 ? `${m}분` : `${Math.floor(m / 60)}시간 ${m % 60}분`);
     const name = (a) => a.program?.name ?? a.app ?? "에이전트";
     const goto = (a) => () => run("agent.focus", { terminal: a.address });
-    const STATUS = { working: ["작업 중", t.working], blocked: ["입력 대기", t.blocked], done: ["완료", t.done], idle: ["대기", t.muted] };
+    // 상태 낱말은 status.js 표(다른 화면과 같은 말), 색만 여기서
+    const COLOR = { working: t.working, blocked: t.blocked, done: t.done, idle: t.muted };
 
     // "에이전트 N" 머리줄 + 오른쪽 "+": 구독이 있는 에이전트를 골라 이 스페이스에 새 탭으로 띄운다.
     const addHead = (text) => h_flex().pt(18).pb(6).items_center().gap(8)
@@ -283,7 +289,7 @@ class Floor {
         .child("+"));
     // 에이전트 줄: 1행 상태·이름·경과, 2행 하는 일(창 제목). 상태 단어에만 색.
     const agentRow = (a, sub) => {
-      const [label, color] = STATUS[a.status] ?? [a.status == null ? "상태 모름" : "", t.dim];
+      const label = a.status == null ? UNKNOWN_WORD : STATUS_WORD[a.status] ?? "", color = COLOR[a.status] ?? t.dim;
       const m = a.status === "working" ? mins(tabOf(a)?.working_since) : null;
       // 지금 보고 있는(포커스된) 에이전트 줄은 선택 표시. 누르면 그 터미널로 전환(탭 역할).
       const here = Boolean(a.focused) || focused()?.terminal === a.address;
@@ -517,7 +523,7 @@ class Floor {
             .child(tb.s ? (tb.s.branch || tb.s.name) : "비어 있음 · 눌러서 열기"))
           .when(tb.n > 0, (el) => el.child(div().text_size(12).text_color(sel ? t.accent_foreground : t.muted).child(`${tb.n}명`)))
           .when(tb.ask > 0, (el) => el.child(div().text_size(12).font_semibold().whitespace_nowrap()
-            .text_color(sel ? t.accent_foreground : t.blocked).child(`· 답 필요 ${tb.ask}`)))));
+            .text_color(sel ? t.accent_foreground : t.blocked).child(`· ${STATUS_WORD.blocked} ${tb.ask}`)))));
     }
     return div().id("office-scene").absolute().left(left).top(top).w(B.W * k).h(B.H * k)
       .transition("left", { duration: 380, easing: "ease-out" })
@@ -809,19 +815,18 @@ class Floor {
   // 말풍선: 흰 바탕에 에이전트 로고, 우상단에 상태 뱃지. 아래 꼬리로 머리를 가리킨다.
   // 머리 위 상태 표시. 상태가 먼저 읽히도록 색 알약에 상태 낱말을 쓰고, 로고는 작게.
   //   바탕은 테마의 상태 토큰(blocked·working·done·idle), 글자색은 inkOn으로 바탕 밝기에 맞춘다.
-  //   입력 대기: blocked "답 필요", 깜빡이며 살짝 튄다(가장 먼저 봐야 하므로)
-  //   작업 중: working "작업 중 4분"   완료: done "완료"   대기: idle "대기"
+  //   낱말은 status.js 표: 답 필요(blocked, 깜빡이며 살짝 튄다: 가장 먼저 봐야 하므로) · 작업 중 4분 · 완료 n분 전 · 대기 · 상태 모름(보고 없음)
   //   서브에이전트가 일하는 중이면 "+n"
   bubble(a, terms, t, tab) {
     const ago = (ms) => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 1 ? "방금" : m < 60 ? `${m}분 전` : m < 1440 ? `${Math.floor(m / 60)}시간 전` : `${Math.floor(m / 1440)}일 전`; };
 
     const m = a.status === "working" && tab?.working_since ? Math.max(0, Math.round((Date.now() - tab.working_since) / 60000)) : null;
     const [bg, text] = {
-      blocked: [t.blocked, "답 필요"],
-      working: [t.working, m == null ? "작업 중" : m < 1 ? "작업 중" : `작업 중 ${m < 60 ? `${m}분` : `${Math.floor(m / 60)}시간`}`],
-      done: [t.done, a.doneAt ? `완료 ${ago(a.doneAt)}` : "완료"],
-      idle: [t.idle, "대기"],
-    }[a.status] ?? [t.idle, ""];
+      blocked: [t.blocked, STATUS_WORD.blocked],
+      working: [t.working, m == null || m < 1 ? STATUS_WORD.working : `${STATUS_WORD.working} ${m < 60 ? `${m}분` : `${Math.floor(m / 60)}시간`}`],
+      done: [t.done, a.doneAt ? `${STATUS_WORD.done} ${ago(a.doneAt)}` : STATUS_WORD.done],
+      idle: [t.idle, STATUS_WORD.idle],
+    }[a.status] ?? [t.idle, a.status == null ? UNKNOWN_WORD : String(a.status)];
     const fg = inkOn(bg);   // 글자·아이콘색: 바탕 토큰의 밝기로 고른다
     const kids = terms.filter((x) => x.parent === a.address && x.status === "working").length;
     const icon = a.status === "working" ? svg(SPINNER).size(12).text_color(fg).spin(900)

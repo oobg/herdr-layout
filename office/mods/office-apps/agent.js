@@ -22,13 +22,14 @@ import { ROLES, openViewer } from "./files.js";
 import { termInfo, sessionOf, readLog, machineOf } from "./agent/activity.js";
 import { spans, phases, band, span, clock, phaseOf } from "./agent/timeline.js";
 import { sayView } from "./agent/say.js";
+import { STATUS_WORD, statusWord } from "./status.js";
 
 const ME = "mods/office-apps/agent";
 const APPS = "mods/office-apps";
 const SPINNER = "mods/workspace-chrome/spinner.svg";
 const FAST = 4000, SLOW = 15000, REST = 60000;
-// 상태 낱말: 서버 앱과 같은 말
-const STATUS = { working: "작업 중", blocked: "입력 대기", done: "끝남", idle: "대기 중" };
+// 상태 낱말: status.js 표(사무실·알림함과 같은 말). 키는 아는 상태인지 가르는 데도 쓴다(build).
+const STATUS = STATUS_WORD;
 // 도구 종류 → 아이콘 모양
 const KIND = { 읽음: "read", 수정: "edit", 작성: "write", 검색: "search", 찾기: "search", 실행: "run", 서브에이전트: "agent", 웹: "web", 스킬: "skill" };
 // 도구 종류 → 색(사무실 왼쪽 패널 office/main.js sections()의 KIND와 같은 값, 실행만 테마색)
@@ -350,7 +351,7 @@ export class AgentApp {
     return div().size(7).flex_none().rounded_full().bg(t[status] ?? t.idle);
   }
 
-  // 목록 오른쪽 글자: 작업 중이면 경과, 기다리면 "입력 대기", 끝났으면 "끝남", 쉬면 마지막 변화 시각
+  // 목록 오른쪽 글자: 작업 중이면 경과, 기다리면 "답 필요", 끝났으면 "완료", 쉬면 마지막 변화 시각
   right(r, t) {
     if (r.status === "working") return [r.since ? dur(Date.now() - r.since) : "", t.muted];
     if (r.status === "blocked") return [STATUS.blocked, t.blocked];
@@ -401,7 +402,7 @@ export class AgentApp {
       }));
   }
 
-  // 부제: 숫자는 최상위 에이전트 기준으로만. 사람이 볼 일(입력 대기)이 있을 때만 그 수를 더한다.
+  // 부제: 숫자는 최상위 에이전트 기준으로만. 사람이 볼 일(답 필요)이 있을 때만 그 수를 더한다.
   subtitle(t) {
     const tops = this.rows.filter((r) => r.depth === 0);
     const blocked = tops.filter((r) => r.status === "blocked").length;
@@ -462,7 +463,7 @@ export class AgentApp {
   //   아니면: 상태 점 + 상태 낱말 / 마지막 변화 시각.
   nowRow(r, v, ph, now, t) {
     if (r.status !== "working") {
-      const word = r.kind === "rec" && r.finished ? (r.finished.failed ? "실패" : STATUS.done) : STATUS[r.status] ?? "";
+      const word = r.kind === "rec" && r.finished ? (r.finished.failed ? "실패" : STATUS.done) : statusWord(r.status);
       return this.line("agent-now", "지금", h_flex().gap(8).items_center().min_h(20)
         .child(this.dot(r.status, t)).child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(word)),
       r.since ? ago(r.since) : "", t.muted, t);

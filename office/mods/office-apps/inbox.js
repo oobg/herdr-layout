@@ -1,7 +1,8 @@
 // office-apps의 알림함 앱: 여러 스페이스의 에이전트 중 "나를 기다리는 것"을 한 곳에 모아 처리한다.
 //   왼쪽: 묶음 머리줄 "답 필요 n" · "완료 n"(안 본 사이 끝남) · "작업 중 n"(기본 접힘) · "상태 모름 n"(기본 접힘).
-//         줄 = 프로그램 아이콘 · 스페이스 › 탭 · 경과("4분째 기다림", "12분 전 끝남"). 답 필요는 오래 기다린 순, 완료는 최근 순.
-//         빈 묶음은 머리줄째 숨긴다. 대기 중(idle)은 기다리는 게 아니라서 넣지 않는다. 묶음 펼침은 localStorage.
+//         줄 = 프로그램 아이콘 · 스페이스 › 탭 · 경과("4분째 기다림", "12분 전"). 답 필요는 오래 기다린 순, 완료는 최근 순.
+//         빈 묶음은 머리줄째 숨긴다. 대기(idle)는 기다리는 게 아니라서 넣지 않는다. 묶음 펼침은 localStorage.
+//         상태 낱말은 status.js 표(사무실과 같은 말). 완료는 사무실이 붙잡은 동안(공유 상태 office.finished) idle이어도 완료.
 //   오른쪽: 상태 한 줄 → 마지막 말(마크다운 앞 6줄, 넘치면 "더 보기": agent/say.js) → 요청 한 줄. Claude Code면 고른 줄 하나만 대화 기록(jsonl)에서 읽는다
 //         (agent/activity.js·agent/parse.js. 크기가 그대로면 다시 읽지 않는다).
 //         동작: 터미널로 가기(Enter·더블클릭과 같음) · 에이전트 앱에서 자세히(office-apps.agent:<주소>).
@@ -10,15 +11,14 @@
 //   알렸는데 그려지지 않았으면(다른 앱으로 갔거나 칸이 숨음) 멈추고, 다시 그려질 때 이어 간다(에이전트 앱과 같은 방식).
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, spaces, panes, layout, run, setShared, theme } from "herdr";
+import { agents, spaces, panes, layout, run, shared, setShared, theme } from "herdr";
 import { termInfo, sessionOf, readLog, machineOf } from "./agent/activity.js";
 import { sayView } from "./agent/say.js";
 import { GROUPS, withSilent, buildGroups, visibleRows, openState, pick, elapsed, firstLine, isClaude, ago } from "./inbox/model.js";
+import { statusWord, FINISHED } from "./status.js";
 
 const APPS = "mods/office-apps";
 const FAST = 4000, REST = 60000, INFO_TTL = 15000;
-// 상태 낱말: 에이전트 앱과 같은 말
-const STATUS = { working: "작업 중", blocked: "입력 대기", done: "끝남", idle: "대기 중" };
 // 작게 그리면 잘 안 보이는 기본 아이콘 대신 브랜드 로고(에이전트 앱의 그림을 쓴다)
 const BRAND = [[/claude/i, `${APPS}/agent/icons/claude.svg`, "#d97757"], [/codex|openai/i, `${APPS}/agent/icons/openai.svg`, null]];
 
@@ -59,7 +59,7 @@ export class InboxApp {
   // 셸은 detail → subtitle → list 순서로 부르므로 detail과 list 둘 다에서 부른다(가볍다).
   prepare(cx) {
     const sps = spaces();
-    this.groups = buildGroups(withSilent(agents(), panes() ?? [], sps), sps);
+    this.groups = buildGroups(withSilent(agents(), panes() ?? [], sps), sps, shared(FINISHED));
     this.rows = visibleRows(this.groups, this.open);
     const next = pick(this.rows, this.sel);
     // 고른 줄이 묶음을 떠났다(답해서 작업 중이 됨 등): 다음 줄의 기록을 기다리지 않고 바로 읽는다
@@ -236,7 +236,7 @@ export class InboxApp {
 
   // 상태 한 줄: 낱말 + 경과(색만으로 가르지 않게 낱말을 늘 쓴다)
   state(r, t) {
-    const word = r.status ? STATUS[r.status] ?? r.status : "상태 모름";
+    const word = statusWord(r.status);
     const since = elapsed(r);
     return h_flex().gap(8).items_center().min_h(24)
       .child(div().size(7).flex_none().rounded_full().bg(r.status ? t[r.status] ?? t.idle : t.idle))

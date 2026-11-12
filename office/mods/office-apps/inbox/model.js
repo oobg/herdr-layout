@@ -1,13 +1,16 @@
 // 알림함 앱의 목록 만들기(herdr를 import하지 않아 node로 시험할 수 있다).
 //   묶음: 답 필요(blocked) · 완료(done: 안 본 사이 끝남) · 작업 중(working) · 상태 모름(상태를 보고하지 않는 에이전트).
-//   대기 중(idle)은 나를 기다리는 게 아니라서 넣지 않는다.
+//   낱말은 ../status.js 표. 완료는 사무실과 같은 때까지 유지: idle이어도 사무실이 완료로 붙잡은 것(공유 상태 office.finished)은 완료.
+//   그 밖의 대기(idle)는 나를 기다리는 게 아니라서 넣지 않는다.
 //   시각은 탭 단위(changed_at · working_since)만 쓴다: 줄을 고를 때 글자·순서가 바뀌지 않게.
 
+import { STATUS_WORD, UNKNOWN_WORD, heldDone } from "../status.js";
+
 export const GROUPS = [
-  { id: "blocked", title: "답 필요", fold: false },
-  { id: "done", title: "완료", fold: false },
-  { id: "working", title: "작업 중", fold: true },
-  { id: "unknown", title: "상태 모름", fold: true },
+  { id: "blocked", title: STATUS_WORD.blocked, fold: false },
+  { id: "done", title: STATUS_WORD.done, fold: false },
+  { id: "working", title: STATUS_WORD.working, fold: true },
+  { id: "unknown", title: UNKNOWN_WORD, fold: true },
 ];
 
 // agents()는 상태를 보고(OSC 7501)하는 터미널만 준다. Codex처럼 보고 훅이 없는 에이전트도 보이게,
@@ -30,14 +33,16 @@ const groupOf = (status) => (status === "blocked" || status === "done" || status
 
 // 에이전트 → 묶음별 줄. 답 필요는 오래 기다린 순, 완료는 최근에 끝난 순, 작업 중은 오래 일한 순.
 //   시각이 없으면 뒤로, 같은 탭이라 시각이 같으면 seq(높을수록 최근에 바뀜)로 가른다.
-export function buildGroups(ags, sps) {
+//   finished: 공유 상태 office.finished({ 주소: 끝난 시각 }). 있으면 완료 시각도 그 값(사무실 알약의 "완료 n분 전"과 같게).
+export function buildGroups(ags, sps, finished = null) {
   const tabs = new Map(sps.flatMap((s) => s.tabs.map((x) => [x.id, x])));
   const out = { blocked: [], done: [], working: [], unknown: [] };
-  for (const a of ags) {
+  for (const a0 of ags) {
+    const a = heldDone(a0, finished);
     const g = groupOf(a.status);
     if (!g) continue;
     const tb = tabs.get(a.tab);
-    const since = g === "working" ? tb?.working_since ?? null : g === "unknown" ? null : tb?.changed_at ?? null;
+    const since = g === "working" ? tb?.working_since ?? null : g === "unknown" ? null : g === "done" && a.doneAt ? a.doneAt : tb?.changed_at ?? null;
     out[g].push({ key: a.address, address: a.address, group: g, status: a.status, space: a.space,
       where: `${a.space_name} › ${a.tab_name}`, title: a.title || a.program?.name || a.address,
       program: a.program ?? null, app: a.app ?? null, since, seq: a.seq ?? 0 });
@@ -75,12 +80,12 @@ export function ago(ms) {
   return m < 1 ? "방금" : m < 60 ? `${m}분 전` : m < 1440 ? `${Math.floor(m / 60)}시간 전` : `${Math.floor(m / 1440)}일 전`;
 }
 
-// 경과 글자: "4분째 기다림", "12분 전 끝남", "8분째 작업 중". 시각을 모르면 빈 글자.
+// 경과 글자: "4분째 기다림", "12분 전"(완료 묶음 안이라 낱말은 붙이지 않는다), "8분째 작업 중". 시각을 모르면 빈 글자.
 export function elapsed(r, now = Date.now()) {
   if (r.since == null) return "";
   const ms = now - r.since, fresh = mins(ms) < 1;
   if (r.group === "blocked") return fresh ? "방금부터 기다림" : `${dur(ms)}째 기다림`;
-  if (r.group === "done") return `${ago(ms)} 끝남`;
+  if (r.group === "done") return ago(ms);
   if (r.group === "working") return fresh ? "방금 시작" : `${dur(ms)}째 작업 중`;
   return "";
 }
