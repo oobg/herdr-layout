@@ -618,12 +618,12 @@ class Floor {
         .child(div().flex_none().text_color(f.running ? t.foreground : kindOf(f.kind)[1]).when(f.running, (x) => x.font_semibold())
           .child(`${f.kind}${f.n > 1 ? ` ×${f.n}` : ""}`))
         .when(Boolean(f.target), (x) => x.child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(short(f.kind, f.target)))), 24));
-    // 서브에이전트: 지금 도는 것만(끝나면 목록에서 사라진다). 띄운 순서라 마지막이 최근.
+    // 서브에이전트: 지금 도는 것과 중단된 것만(완료되면 목록에서 사라진다). 띄운 순서라 마지막이 최근.
     //   줄을 누르면 그 서브에이전트의 세 구역을 펼친다(도는 것은 펼침, 끝난 것은 접힘이 기본). 3단부터는 한 줄만.
     // 서브에이전트가 띄운 서브에이전트의 완료 알림은 그 서브에이전트 기록에 온다: 이 단계 기록(v.ended)으로도 끝난 것을 안다
     const kids = (main.agents ?? []).filter((g) => (g.parent ?? null) === sub)
       .map((g) => (g.running && v.ended?.[g.id] ? { ...g, running: false, failed: v.ended[g.id] !== "completed" } : g))
-      .filter((g) => g.running);   // 끝난(완료·중단) 서브에이전트는 목록에서 닫는다
+      .filter((g) => g.running || g.failed);   // 완료된 서브에이전트는 목록에서 닫고, 중단된 것은 남긴다
     out.push(...section("agents", `서브에이전트 ${kids.length}`, kids, true, (g) => {
       const canOpen = depth < 2;
       const rowKey = `${a.address}|${g.id}|row`;
