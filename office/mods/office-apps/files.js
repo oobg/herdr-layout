@@ -637,7 +637,7 @@ function tableView(s, v, t) {
 //   머리줄(아이콘 · 이름 · 흐린 경로 · 기본 앱으로 열기 · Finder에서 보기 · ✕)을 잡고 끌어 옮긴다.
 //   본문과 버튼은 누름을 멈춰(stop_propagation) 글 고르기·스크롤이 창 끌기가 되지 않게 한다.
 //   원격 파일은 preview가 글로만 읽고, 기본 앱·Finder 버튼은 이 기기 파일일 때만 보인다.
-export const VIEWER_W = 760, VIEWER_H = 560;
+export const VIEWER_W = 1120, VIEWER_H = 820;   // 문서를 읽을 만한 크기(사무실 오버뷰 office/main.js openViewer도 같은 값)
 // 여는 함수. key가 같으면(같은 머신의 같은 파일) Herdr가 열린 창을 그 자리에서 바꿔 띄운다: 같은 파일 창이 둘로 늘지 않는다.
 //   office 모드는 다른 모드라 이 함수를 import할 수 없어 같은 openOverlay를 직접 부른다(office/main.js openViewer).
 export function openViewer(file, on = null) {

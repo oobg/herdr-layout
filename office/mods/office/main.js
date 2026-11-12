@@ -26,7 +26,7 @@ function openViewer(file, address) {
   if (!file || !file.startsWith("/")) return;
   const on = String(address ?? "").includes("/") ? String(address).split("/")[0] : null;
   openOverlay({ mod: "office-apps", kind: "window", key: `office-apps.viewer:${on ?? ""}:${file}`,
-    width: 760, height: 560, props: { role: "viewer", file, on } });
+    width: 1120, height: 820, props: { role: "viewer", file, on } });
 }
 
 const TERM = "office-term";
