@@ -8,9 +8,11 @@
 // 읽기 실패와 빈 결과를 나눈다: 실패한 기기는 머리줄 아래 이유 한 줄 + "다시 읽기", 지난 목록이 있으면 언제 것인지 붙인다.
 //   보일 포트가 없고 실패가 있으면 오른쪽도 "포트를 읽지 못했습니다"와 이유·다시 읽기(빈 화면 문구 대신 detail이 그린다).
 // 종료는 확인 창(menu.js Confirm) → ACTIONS["ports.kill"]이 pid의 명령줄이 그대로인지 다시 보고 kill -TERM.
+// 터미널 밖(띄운 Herdr 터미널을 찾지 못한) 서버는 고를 때 그 프로세스의 작업 폴더를 한 번 읽어(macOS lsof -a -p <pid> -d cwd,
+//   Linux /proc/<pid>/cwd) 상세와 종료 확인 창에 보인다. 어느 프로젝트 것인지 보고 끄게.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { exec, hc, spaces, panes, terminals, machines, layout, run, notify, shared, setShared, openOverlay, closeOverlay } from "herdr";
+import { exec, hc, spaces, panes, terminals, machines, layout, run, notify, shared, setShared, openOverlay, closeOverlay, home } from "herdr";
 import { ACTIONS } from "./menu.js";
 import { SCRIPT, parseAll, order, isHidden } from "./ports/parse.js";
 
@@ -26,6 +28,8 @@ const machineOf = (address) => (String(address).includes("/") ? String(address).
 const spaceLabel = (name) => (name === "~" ? "홈" : name);
 const keyOf = (m, p) => `${m}|${p.port}|${p.pid ?? ""}`;
 const opts = (on, timeout = 10000) => (on ? { on, timeout } : { timeout });
+// pid의 작업 폴더(읽기만). Linux는 /proc, 아니면 lsof(-a: -p와 -d를 둘 다 맞는 것만).
+const CWD_SCRIPT = `if [ -e "/proc/$1" ]; then readlink "/proc/$1/cwd"; else lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'; fi`;
 const agoText = (at) => {
   if (!at) return "";
   const s = Math.max(0, Math.round((Date.now() - at) / 1000));
@@ -69,6 +73,7 @@ export class PortsApp {
     this.data = new Map();      // 기기 키 → { name, os, ports, error }
     this.roots = new Map();     // 터미널 주소 → { pid, tab } (hc get 한 번)
     this.asking = new Set();
+    this.cwds = new Map();      // "기기|pid|명령줄" → { loading } | { path } | { error } (터미널 밖 서버의 작업 폴더)
     this.loaded = false;
     this.timer = null; this.busy = false; this.again = false;
     this.rendered = 0; this.notified = 0;
@@ -321,6 +326,7 @@ export class PortsApp {
     if (!r) return this.loaded && this.failures().length ? this.failView(t) : null;
     const d = this.data.get(r.machine ?? LOCAL);
     const w = this.whereOf(r.term);
+    const c = !w && r.pid != null ? (this.cwds.get(this.cwdKey(r)) ?? (this.loadCwd(r, cx), this.cwds.get(this.cwdKey(r)))) : null;
     // 키보드 커서가 있는 버튼은 테두리 t.accent(런처 키 계약, focusables와 같은 id)
     const btn = (id, text, fn, danger = false) => div().id(id).px(10).py(4).rounded(6).border_1().border_color(this.kb?.on?.(id) ? t.accent : t.border).text_size(12).flex_none()
       .text_color(danger ? DANGER : t.foreground).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(fn)
@@ -337,6 +343,10 @@ export class PortsApp {
       h_flex().gap(12).items_start()
         .child(div().w(76).flex_none().text_color(t.muted).child("띄운 터미널"))
         .child(div().flex_1().min_w(0).text_color(w ? t.foreground : t.dim).child(w ? w.label : "터미널 밖")),
+      c ? h_flex().gap(12).items_start()
+        .child(div().w(76).flex_none().text_color(t.muted).child("작업 폴더"))
+        .child(div().flex_1().min_w(0).text_color(c.path ? t.foreground : t.dim).when(Boolean(c.path), (el) => el.font_family(CODE_FONT).text_size(12.5))
+          .child(c.path ? c.path.replace(home(), "~") : c.loading ? "읽는 중" : c.error)) : null,
       r.machine ? line("기기", r.machine) : null,
     ].filter(Boolean);
     return v_flex().id("pt-root").size_full().min_h(0)
@@ -362,6 +372,21 @@ export class PortsApp {
     return out;
   }
 
+  // 터미널 밖 서버의 작업 폴더. 처음 물으면 읽기 시작하고 끝나면 다시 그린다(cx가 있을 때).
+  cwdKey(r) { return `${r.machine ?? ""}|${r.pid}|${r.command ?? ""}`; }
+  loadCwd(r, cx) {
+    const k = this.cwdKey(r);
+    if (this.cwds.has(k)) return this.cwds.get(k).done;
+    const entry = { loading: true };
+    entry.done = exec("sh", ["-c", CWD_SCRIPT, "cwd", String(r.pid)], opts(r.machine))
+      .then((x) => { const path = x.code === 0 ? x.stdout.trim().split("\n")[0] : ""; if (path) entry.path = path; else entry.error = "작업 폴더를 읽지 못했습니다"; },
+        (e) => { entry.error = `작업 폴더를 읽지 못했습니다: ${String(e?.message ?? e).slice(0, 80)}`; })
+      .finally(() => { entry.loading = false; if (this.cwds.size > 50) this.cwds.delete(this.cwds.keys().next().value); });
+    this.cwds.set(k, entry);
+    if (cx) cx.spawn(async (cx) => { await entry.done; cx.notify(); });
+    return entry.done;
+  }
+
   openBrowser(r) {
     const url = `http://localhost:${r.port}`;
     exec("open", [url]).then((x) => {
@@ -369,11 +394,20 @@ export class PortsApp {
     }, (e) => notify({ title: "브라우저를 열지 못했습니다", body: String(e?.message ?? e).slice(0, 200), level: "error" }));
   }
 
-  confirmKill(r) {
-    openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 210, props: {
+  // 터미널 밖이면 작업 폴더를 확인 창에 함께 쓴다(아직 안 읽었으면 읽은 뒤 연다).
+  async confirmKill(r) {
+    const outside = !this.whereOf(r.term);
+    let folder = null;
+    if (outside) {
+      await this.loadCwd(r);
+      const c = this.cwds.get(this.cwdKey(r));
+      folder = c?.path ? c.path.replace(home(), "~") : c?.error ?? "작업 폴더를 읽지 못했습니다";
+    }
+    const what = r.command || `pid ${r.pid}`;
+    openOverlay({ mod: "office-apps", kind: "dialog", width: 440, height: outside ? 240 : 210, props: {
       role: "confirm", action: "ports.kill", title: `:${r.port} ${r.name} 종료`, yes: "종료", danger: true,
       ctx: { pid: r.pid, port: r.port, name: r.name, command: r.command, on: r.machine ?? null },
-      detail: r.command || `pid ${r.pid}`,
+      detail: outside ? `띄운 터미널을 찾지 못한 서버입니다.\n작업 폴더: ${folder}${r.machine ? ` (${r.machine})` : ""}\n${what}` : what,
     } });
   }
 
