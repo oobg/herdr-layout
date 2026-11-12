@@ -781,6 +781,18 @@ function openCloseConfirm(a, name) {
     props: { role: "close-agent", pane: a.pane, name, title: a.title ?? "", working: a.status === "working" } });
 }
 
+// 좌측 패널에서 여는 에이전트는 권한 확인 없이(bypass/yolo) 띄운다. 구독 종류별 플래그, 이미 있으면 덧붙이지 않는다.
+const YOLO = {
+  claude: "--dangerously-skip-permissions",
+  codex: "--dangerously-bypass-approvals-and-sandbox",
+  grok: "--always-approve",
+  antigravity: "--dangerously-skip-permissions",
+};
+function yolo(a) {
+  const argv = [...(a.run ?? [])], flag = YOLO[providerOf(a)];
+  return flag && argv.length && !argv.includes(flag) ? [...argv, flag] : argv;
+}
+
 // knownAgents 항목 → 구독 종류. office-usage 모드가 사용량을 읽는 네 곳과 같다.
 const PROVIDER = [[/claude/i, "claude"], [/codex|openai/i, "codex"], [/grok/i, "grok"], [/antigravity|\bagy\b/i, "antigravity"]];
 const providerOf = (a) => PROVIDER.find(([re]) => re.test(`${a.key} ${a.name} ${a.run?.[0] ?? ""}`))?.[1] ?? null;
@@ -827,7 +839,7 @@ class AddAgent {
   start(a) {
     const p = props();
     closeOverlay(p.overlay);
-    run("tab.new", { name: a.name, space: p.space, ...(p.folder ? { folder: p.folder } : {}), argv: a.run });
+    run("tab.new", { name: a.name, space: p.space, ...(p.folder ? { folder: p.folder } : {}), argv: yolo(a) });
     // 새 탭은 그 스페이스에서 선택된다: 사무실 터미널 칸을 그 스페이스로 열어 둔다
     run("space.select", { id: p.space });
     run("layout.show", { id: TERM });
