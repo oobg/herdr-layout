@@ -4,10 +4,24 @@
 //   Antigravity  agy -p /usage (명령이라 할당량을 쓰지 않는다)
 //   Grok         ~/.grok/auth.json               → cli-chat-proxy.grok.com/v1/billing
 // 토큰은 요청 헤더에만 쓰고 저장하거나 출력하지 않는다.
+// 보일 때만 읽는다: 앱 창이 앞이고 이 칸이 탭 묶음(office-side)에서 고른 탭일 때(office-resources visible()과 같은 판단).
+//   안 보이는 동안 주기가 지나면 건너뛰고, 다시 보일 때 바로 읽는다. 새로 고침 버튼은 언제든 읽는다.
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { theme, exec, home, appHome, readTextFile, run, props, openOverlay, closeOverlay } from "herdr";
+import { theme, exec, home, appHome, readTextFile, run, props, window, layout, openOverlay, closeOverlay } from "herdr";
+
+const ID = "office-usage";       // 레이아웃 블록 id이자 모드 이름
+const STACK = "office-side";     // 사용량·리소스 탭 묶음 id
+const AGY_OLD = "agy를 업데이트해 주세요";
+
+// 레이아웃 트리에서 id로 노드 찾기
+function findNode(n, id) {
+  if (!n || typeof n !== "object") return null;
+  if (n.id === id) return n;
+  for (const c of n.children ?? []) { const f = findNode(c, id); if (f) return f; }
+  return null;
+}
 
 const PERIODS = [1, 5, 15, 30]; // 갱신 주기(분) 고르기
 const WEB = { claude: "https://claude.ai/settings/usage", codex: "https://chatgpt.com/codex/settings/usage", grok: "https://grok.com" };
@@ -86,7 +100,7 @@ async function antigravity() {
     return { error: "agy가 사용량을 알려 주지 않았습니다" };
   }
   // 명령이 아니라 프롬프트로 처리된 경우(오래된 agy): 할당량을 썼을 수 있으니 알린다.
-  if (d.num_turns > 0) return { error: "agy를 업데이트해 주세요" };
+  if (d.num_turns > 0) return { error: AGY_OLD };
   // 사용률과 초기화 시각이 같은 모델은 한 줄로 묶는다.
   const buckets = [];
   for (const g of d.command?.data?.groups || []) {
@@ -166,13 +180,27 @@ class Panel {
     try { this.order = JSON.parse(localStorage.getItem("order") || "[]"); } catch { /* 기본 순서 */ }
     this.heights = {}; // id -> 칸 높이 (드래그 위치 계산용)
     this.drag = null; // { id, at }
+    this.agyOld = false; // 옛 agy 안내가 나왔다: 다음 성공(새로 고침 버튼으로 다시 물을 때)까지 자동으로는 부르지 않는다
     this.refresh(cx);
-    // 30초마다: 다음 갱신 시각이 지났으면 다시 읽고, 아니면 남은 시간 표시만 고친다.
-    cx.timer.every(30000, (cx) => { if (Date.now() >= (this.next ?? 0)) this.refresh(cx); else cx.notify(); });
+    // 30초마다: 보일 때만, 다음 갱신 시각이 지났으면 다시 읽고, 아니면 남은 시간 표시만 고친다.
+    cx.timer.every(30000, (cx) => { if (!this.visible()) return; if (this.due()) this.refresh(cx); else cx.notify(); });
   }
 
-  refresh(cx) {
-    if (this.busy) return;
+  // 앱 창이 앞이고, 이 칸이 숨지 않았고, 탭 묶음 안이면 고른 탭일 때. Herdr는 숨은 칸의 타이머도 돌리므로 여기서 거른다.
+  visible() {
+    if (window()?.active === false) return false;
+    if (this.height != null && this.height < 4) return false;
+    const root = layout();
+    if (findNode(root, ID)?.hidden) return false;
+    const stack = findNode(root, STACK);
+    return stack?.type !== "stack" || (stack.active ?? stack.children?.[0]?.id) === ID;
+  }
+
+  due() { return !this.busy && Date.now() >= (this.next ?? 0); }
+
+  // force: 새로 고침 버튼. 안 보여도 읽고, 옛 agy도 다시 물어본다.
+  refresh(cx, force = false) {
+    if (this.busy || (!force && !this.visible())) return;
     this.busy = true;
     cx.notify();
     cx.spawn(async (cx) => {
@@ -182,8 +210,10 @@ class Panel {
         this.installed = new Set(r.stdout.split("\n").map((x) => x.trim()).filter(Boolean));
         cx.notify();
         await Promise.all(PROVIDERS.filter((p) => this.installed.has(p.bin)).map(async (p) => {
+          if (p.id === "antigravity" && this.agyOld && !force) return;   // 안내를 그대로 두고 부르지 않는다
           try {
             this.data[p.id] = await FETCH[p.id]();
+            if (p.id === "antigravity") this.agyOld = this.data[p.id]?.error === AGY_OLD;
           } catch (e) {
             this.data[p.id] = { error: `읽지 못했습니다: ${String(e?.message || e).slice(0, 80)}` };
           }
@@ -226,12 +256,12 @@ class Panel {
     try { localStorage.setItem("order", JSON.stringify(ids)); } catch { /* 저장 못 해도 이번 순서는 유지 */ }
   }
 
-  // "10:42 갱신 · 4분 후 다시"
-  status() {
+  // "10:42 갱신 · 4분 후 다시", short(툴바 안): "10:42 · 4분 후"
+  status(short = false) {
     if (!this.last) return "";
     const d = new Date(this.last), hh = String(d.getHours()).padStart(2, "0"), mm = String(d.getMinutes()).padStart(2, "0");
     const m = Math.max(0, Math.ceil(((this.next ?? 0) - Date.now()) / 60000));
-    return `${hh}:${mm} 갱신 · ${m ? `${m}분 후` : "곧"} 다시`;
+    return short ? `${hh}:${mm} · ${m ? `${m}분 후` : "곧"}` : `${hh}:${mm} 갱신 · ${m ? `${m}분 후` : "곧"} 다시`;
   }
 
   toggle(id) {
@@ -241,7 +271,7 @@ class Panel {
 
   save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 이번 실행 동안만 유지 */ } }
 
-  toolbar(t, shown) {
+  toolbar(t, shown, inTabs) {
     const btn = (id, icon, tip, on, fn, spin, badge) => h_flex().id(`ut-${id}`).p(4).gap(3).items_center().rounded(4).flex_none()
       .on_mouse_move((e) => { if (this.tipFor !== id) this.showTip(id, tip, e.bounds); })
       .on_hover((h) => { if (!h && this.tipFor === id) this.hideTip(); })
@@ -268,7 +298,9 @@ class Panel {
       }, false, `${this.period}분`))
       .child(btn("marquee", this.rolling ? "marquee" : "marquee-off", this.rolling ? "긴 모델 목록 흘리는 중 · 누르면 끄기" : "긴 모델 목록 흘리기 꺼짐 · 누르면 켜기", false, () => { this.rolling = !this.rolling; this.save("rolling", this.rolling); }))
       .child(div().flex_1())
-      .child(btn("refresh", "refresh", this.busy ? "읽는 중" : "지금 새로 고침", false, !this.busy && ((cx) => this.refresh(cx)), this.busy));
+      // 탭 안에서는 머리줄이 없어 갱신 시각을 여기에 둔다
+      .when(inTabs, (el) => el.child(div().min_w(0).truncate().mr(4).text_size(12).text_color(t.dim).child(this.busy ? "읽는 중" : this.status(true))))
+      .child(btn("refresh", "refresh", this.busy ? "읽는 중" : "지금 새로 고침", false, !this.busy && ((cx) => this.refresh(cx, true)), this.busy));
   }
 
   // 툴팁: 아이콘 바로 위, 아이콘 가운데에. 칸 밖까지 그리도록 창 오버레이로 띄운다.
@@ -289,17 +321,23 @@ class Panel {
 
   render(cx) {
     const t = theme();
+    // 다시 보이게 됐는데 주기가 지났으면 바로 읽는다(렌더 안에서 읽기를 시작하지 않고 다음 틱으로 미룬다)
+    if (!this.waking && this.due() && this.visible()) {
+      this.waking = true;
+      cx.timer.after(0, (cx) => { this.waking = false; if (this.due()) this.refresh(cx); });
+    }
+    const inTabs = findNode(layout(), STACK)?.type === "stack";   // 탭 이름이 제목을 대신한다
     let shown = this.sorted(PROVIDERS.filter((p) => this.installed?.has(p.bin)));
     if (this.byUse) {
       const top = (p) => Math.max(-1, ...(this.data[p.id]?.rows ?? []).map((r) => r.used));
       shown = [...shown].sort((a, b) => top(b) - top(a));
     }
     return v_flex().id("usage-root").size_full().bg(t.chrome).text_size(13)
-      .on_size_change((size, cx) => { this.width = size.width; cx.notify(); })
-      .child(h_flex().h(40).px(14).flex_none().items_center().justify_between().border_b_1().border_color(t.border)
+      .on_size_change((size, cx) => { this.width = size.width; this.height = size.height; cx.notify(); })
+      .when(!inTabs, (el) => el.child(h_flex().h(40).px(14).flex_none().items_center().justify_between().border_b_1().border_color(t.border)
         .child(div().text_size(14).font_semibold().text_color(t.foreground).child("사용량"))
-        .child(div().text_size(12).text_color(t.dim).child(this.busy ? "읽는 중" : this.status())))
-      .child(this.toolbar(t, shown))
+        .child(div().text_size(12).text_color(t.dim).child(this.busy ? "읽는 중" : this.status()))))
+      .child(this.toolbar(t, shown, inTabs))
       .child(v_flex().id("usage-list").flex_1().min_h(0).overflow_y_scrollbar()
         .on_mouse_move((e, cx) => {
           if (!this.drag) return;
