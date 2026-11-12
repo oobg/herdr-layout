@@ -17,7 +17,7 @@
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, Scrollbar, v_virtual_list } from "gpui-base";
 import { agents, panes, spaces, exec, readTextFile, home, shared, settings } from "herdr";
-import { candidates, recipients, sendToAgent, statusWord } from "./send.js";
+import { candidates, recipients, sendToAgent, statusWord, nextRecipient } from "./send.js";
 import { BIG, READ, parseNameStatus, parseNumstat, mergeFiles, diffLines, addedLines, diffRows } from "./commit/git.js";
 import {
   DIFF_LINE, NARROW, inlineRow, splitRow, inlineWidth, splitWidth, diffPalette, wordSpans, splitRows, isDark, diffMode, modeToggle,
@@ -78,6 +78,8 @@ export class ReviewApp {
       const empty = !v.trim();
       if (empty !== this.empty) { this.empty = empty; cx.notify(); }
     });
+    // ⌘Enter(입력칸 안): 보내기. 입력의 submit(secondary)로만 받는다(런처는 입력칸 안의 ⌘Enter를 건드리지 않는다)
+    this.input.on("submit", (e, cx) => { if (e?.secondary) this.send(cx); });
     this.empty = true;
     this.timer = null; this.busy = false; this.rendered = 0; this.notified = 0;
   }
@@ -399,6 +401,10 @@ printf '%s\n%s' "$c" "$f"`;
     this.choose(gs[j].key, cx);
   }
 
+  // 런처 키 계약: 지난 그리기에서 모은 멈출 곳(보낼 곳 · 입력칸 · 보내기). ⌘Enter(상세 어디서나) = 보내기.
+  focusables() { return this.stops ?? []; }
+  submitDetail(cx) { this.send(cx); }
+
   // Enter: 피드백 입력칸으로
   activate(_cx) {
     if (this.current()) this.input.focus();
@@ -456,6 +462,7 @@ printf '%s\n%s' "$c" "$f"`;
 
   // ── 오른쪽 ────────────────────────────────────────────
   detail(cx, t) {
+    this.stops = [];
     this.prepare(cx);
     const g = this.current();
     if (!g && this.sel && this.seen) return this.lostView(t);
@@ -586,18 +593,25 @@ printf '%s\n%s' "$c" "$f"`;
     const note = gone ? (this.empty ? "받는 에이전트가 목록에서 사라졌습니다" : "받는 에이전트가 목록에서 사라졌습니다 · 초안 보관됨")
       : blocked ? "입력을 기다리는 중이라 보낼 수 없습니다. 터미널에서 먼저 답하세요."
       : sending ? "보내는 중" : st === "working" ? "작업 중: 보낸 글은 다음 차례에 처리됩니다" : "";
+    // 런처 키 계약의 멈출 곳(화면 순서): 보낼 곳(후보가 둘 이상이면, Enter·Space = 다음 후보) → 입력칸 → 보내기(보낼 수 있을 때)
+    const list = this.agentsOf(g), nx = nextRecipient(list, a?.address), on = (id) => Boolean(this.kb?.on?.(id));
+    if (nx) this.stops.push({ id: "review-to", kind: "button", run: () => this.pickTo(g, nx.address) });
+    this.stops.push({ id: "review-input", kind: "input", focus: () => this.input.focus() });
+    if (can) this.stops.push({ id: "review-send", kind: "button", run: (cx) => this.send(cx) });
     return v_flex().flex_none().px(12).py(8).gap(6).border_t_1().border_color(t.border)
       .child(h_flex().gap(6).items_center().min_w(0)
-        .child(div().flex_1().min_w(0).child(recipients("review", this.agentsOf(g), a?.address, (address) => this.pickTo(g, address), t)))
+        .child(div().flex_1().min_w(0).child(recipients("review", list, a?.address, (address) => this.pickTo(g, address), t, undefined, nx ? on("review-to") : undefined)))
         .when(Boolean(where), (el) => el.child(h_flex().flex_none().max_w(320).gap(4).items_center()
           .child(div().truncate().text_size(11).font_family(CODE_FONT).text_color(t.muted).child(where))
           .when(Boolean(this.pick), (e2) => e2.child(div().id("review-unpick").px(4).rounded(4).text_size(11).text_color(t.dim).cursor_pointer()
             .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.pick = null; cx.notify(); }).child("✕"))))))
-      .child(Textarea.new(this.input).w_full().text_size(13).text_color(t.foreground))
+      // 입력칸 안에서 올라온 Tab·Esc를 런처가 이 자리에서 이어 가게 알린다
+      .child(div().w_full().on_key_down(() => { if (this.kb) this.kb.from = "review-input"; })
+        .child(Textarea.new(this.input).w_full().text_size(13).text_color(t.foreground)))
       .child(h_flex().gap(8).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(blocked ? t.blocked : gone ? t.foreground : t.dim)
           .child(note || (this.pick ? "diff 줄을 다시 누르면 줄 고르기를 풉니다" : "diff 줄을 누르면 그 줄에 대해 보냅니다")))
-        .child(div().id("review-send").flex_none().px(12).py(5).rounded(6).text_size(12).border_1().border_color(t.border)
+        .child(div().id("review-send").flex_none().px(12).py(5).rounded(6).text_size(12).border_1().border_color(on("review-send") ? t.accent : t.border)
           .text_color(can ? t.foreground : t.dim)
           .when(can, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.send(cx)))
           .child(sending ? "보내는 중" : "에이전트에게 보내기")));
