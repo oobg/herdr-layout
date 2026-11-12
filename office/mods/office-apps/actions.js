@@ -492,7 +492,7 @@ export class ActionsApp {
       out.push(btn("act-pin", this.pinned(base.databaseId) ? "✓ 끝나면 알림" : "끝나면 알림", this.pinned(base.databaseId) ? t.foreground : t.muted,
         () => this.togglePin(v ?? base), this.pinned(base.databaseId)));
       out.push(btn("act-cancel", "실행 멈추기", t.ansi1, () => confirm("actions.cancel", "CI 실행 멈출까요?",
-        `${ctx.name}\n도는 잡을 멈춥니다. 다시 돌리려면 처음부터 다시 실행해야 합니다.`, ctx, { yes: "실행 멈추기", danger: true })));
+        `${ctx.name}\n도는 잡을 멈춥니다. 다시 돌리려면 처음부터 다시 실행해야 합니다.`, ctx, { yes: "실행 멈추기", no: "닫기", danger: true })));
     }
     let pick = null;
     if (!going && spot) {

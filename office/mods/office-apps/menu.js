@@ -373,7 +373,8 @@ export class Menu {
   }
 }
 
-// 확인 창(role "confirm"). props: { action, title, detail, ctx, yes?, danger? }
+// 확인 창(role "confirm"). props: { action, title, detail, ctx, yes?, no?, danger? }
+// no: 취소 버튼 이름(없으면 "취소"; 실행 버튼 이름이 "멈추기"처럼 취소와 헷갈릴 때 "닫기").
 // yes: 실행 버튼 이름(동사, 없으면 "확인"). danger: 되돌리기 어려운 동작 — 실행 버튼을 빨간 글씨로,
 // 처음 포커스를 "취소"에 둔다. 보통은 처음 포커스를 실행 버튼에 둔다. 포커스된 버튼은 굵은 강조색 테두리.
 // Enter는 포커스된 버튼만 누른다(버튼에 포커스가 없으면 실행하지 않고 처음 버튼으로 포커스만).
@@ -423,7 +424,7 @@ export class Confirm {
       .child(div().flex_none().text_size(15).font_semibold().text_color(t.foreground).child(p.title))
       .child(div().id("fc-detail").flex_1().min_h(0).overflow_y_scrollbar().text_color(t.muted).child(p.detail))
       .child(h_flex().flex_none().gap(8).justify_end()
-        .child(button("fc-no", "취소", this.no, false, () => this.cancel()))
+        .child(button("fc-no", p.no || "취소", this.no, false, () => this.cancel()))
         // 위험한 동작은 채운 버튼 대신 일반 버튼 모양에 빨간 글씨: Enter 한 번에 눌리는 기본 버튼처럼 보이지 않게.
         .child(button("fc-yes", p.yes || "확인", this.ok, !danger, () => this.yes())));
   }
