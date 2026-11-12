@@ -16,6 +16,7 @@ const arg = (name, required = true) => ({ name, required });
 export const APP_COMMANDS = [
   { name: "office-apps.home", args: [], about: "앱 런처 첫 화면으로 돌아갑니다." },
   ...APP_IDS.map(([id, label]) => ({ name: `office-apps.open-${id}`, args: [], about: `${label} 앱을 엽니다.` })),
+  { name: "office-apps.palette", args: [], about: "명령 창을 띄웁니다. keys.json에 키를 묶어 쓸 수 있습니다(앱 런처 칸이 보일 때 받습니다)." },
   { name: "office-apps.manage", args: [], about: "앱 관리 창을 엽니다. 앱마다 켜고 끌 수 있습니다." },
   { name: "office-apps.disable", args: [arg("id")], about: "앱을 끕니다. 앱 관리에서 다시 켤 수 있습니다(앱 관리 앱은 끌 수 없습니다).",
     send: (a) => `office-apps.disable-${a.id}` },

@@ -5,11 +5,13 @@
 //   클릭: 인자가 필요 없는 명령은 바로 실행, 필요하면 오른쪽 입력 칸으로.
 //   위험해 보이는 명령(이름에 close·kill·reset·remove·quit)은 확인 창(menu.js Confirm, danger)을 거친다.
 //   단축키는 herdr keys()(keys.json과 같은 내용)를 읽기만 한다 — 키를 묶는 일은 하지 않는다.
+//   런처에서는 대화 창(main.js app-modal)으로 뜬다: 열리면 검색창에 포커스(focusOnEnter), 명령을 실행하면 창을 닫는다
+//   (closeHost, 확인 창을 거치면 확인 뒤 ctx.host로). 인자 입력 중에는 닫지 않고, 인자 입력칸의 Esc는 검색창으로.
 //   순수 함수(목록·단축키·위험 판단·인자 만들기·검색)는 palette/core.js(herdr를 import하지 않아 node로 시험).
 //   Herdr 명령 설명은 palette/ko.js의 한국어 한 줄로 보이고, 상세에서 그 아래 영어 원문을 흐리게 둔다. 검색은 둘 다에서.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, ScrollHandle } from "gpui-base";
-import { commands, keys, readTextFile, appHome, run, notify, shared, setShared, openOverlay } from "herdr";
+import { commands, keys, readTextFile, appHome, run, notify, shared, setShared, openOverlay, closeOverlay } from "herdr";
 import { ACTIONS } from "./menu.js";
 import * as P from "./palette/core.js";
 import { argLabel } from "./palette/ko.js";
@@ -31,19 +33,22 @@ function remember(name) {
   setShared(RECENT, next);
 }
 
-// 실행: { cmd(최근 목록에 둘 명령 이름), name(보낼 명령), args }. 실패하면 알린다.
+// 실행: { cmd(최근 목록에 둘 명령 이름), name(보낼 명령), args }. 실패하면 알리고 false.
 function execute(r) {
   try {
     if (r.args) run(r.name, r.args); else run(r.name);
   } catch (e) {
     notify({ title: "명령을 실행하지 못했습니다", body: `${r.name}: ${String(e?.message ?? e).slice(0, 160)}`, level: "error" });
-    return;
+    return false;
   }
   remember(r.cmd);
+  return true;
 }
 
 // 확인 창(Confirm)은 따로 뜨는 복사본이라 함수를 넘길 수 없어, 모듈이 불릴 때 동작을 하나 등록한다(menu.js는 고치지 않는다).
-ACTIONS["palette.run"] = (ctx) => execute(ctx);
+//   ctx.host: 명령 앱이 대화 창으로 떠 있으면 그 오버레이 id. 그 창을 먼저 닫고 실행한다
+//   (닫힐 때의 포커스 되돌리기가 명령이 옮긴 포커스를 덮지 않게).
+ACTIONS["palette.run"] = (ctx) => { if (ctx.host) closeOverlay(ctx.host); execute(ctx); };
 
 // 확인 창에 보일 명령 한 줄. 이 앱이 넣은 confirmed는 빼고 보인다.
 function shown(r) {
@@ -80,6 +85,9 @@ export class PaletteApp {
       });
     }
   }
+
+  // 대화 창으로 들어왔을 때(main.js AppModal): 검색창에 바로 친다
+  focusOnEnter() { this.search?.focus(); }
 
   dispose() {
     this.disposed = true;
@@ -161,7 +169,7 @@ export class PaletteApp {
       this.inputs.find((i) => i.arg.name === r.missing[0])?.state.focus();
       return;
     }
-    const ctx = { cmd: c.name, name: r.name, args: r.args };
+    const ctx = { cmd: c.name, name: r.name, args: r.args, ...(this.hostOverlay ? { host: this.hostOverlay } : {}) };
     if (danger) {
       openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: {
         role: "confirm", action: "palette.run", ctx, title: `${c.name} 실행`, yes: "실행", danger: true,
@@ -169,6 +177,8 @@ export class PaletteApp {
       } });
       return;
     }
+    // 대화 창이면 먼저 닫고 실행한다(ACTIONS["palette.run"]과 같은 순서)
+    this.closeHost?.();
     execute(ctx);
     cx?.notify?.();
   }
@@ -241,6 +251,8 @@ export class PaletteApp {
     // 인자: 필수 인자가 있으면 입력 칸, 없으면 이름만(선택 인자는 이 앱에서 넣지 않는다)
     const argRows = needs
       ? this.inputs.map((i) => v_flex().gap(3)
+        // 인자 입력칸의 Esc: 대화 창을 닫지 않고 검색창으로 돌아간다
+        .on_key_down((e, cx) => { if (e.key === "escape") { this.search.focus(); cx.stop_propagation(); cx.notify(); } })
         .child(h_flex().gap(6).items_center()
           .child(div().min_w(0).truncate().font_family(CODE_FONT).text_size(12).text_color(t.foreground).child(argLabel(i.arg.name)))
           .child(div().flex_none().text_size(11).text_color(t.muted).child(i.arg.required ? "필수" : "선택")))

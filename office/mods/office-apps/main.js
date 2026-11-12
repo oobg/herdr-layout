@@ -1,6 +1,11 @@
 // office 아래 칸: 앱 런처. 기본 화면은 Spotlight처럼 검색창 + 앱 아이콘 격자, 앱을 누르면 들어간다.
 //   런처 키: 검색창에서 ↑↓ = 칸 고르기(selected 바탕), Enter = 고른 칸 열기 후 왼쪽 칸에 포커스. 앱 화면에서 Esc = 격자로.
 //   앱 화면: 위 막대(‹ 앱 · 아이콘 · 이름 · 부제) / 왼쪽 좁은 칸(툴바 + 관리 목록) / 오른쪽 넓은 칸(고른 항목, 없으면 "선택 내용이 없습니다")
+//     틀과 키 처리는 launcher/screen.js(AppScreen): 아래 칸 앱 화면과 앱 대화 창(app-modal)이 같이 쓴다.
+//   대화 창 앱(APPS의 modal): 명령·작업 공간은 아래 칸을 바꾸지 않고 대화 창(오버레이 역할 app-modal)으로 뜬다.
+//     격자 클릭·검색 Enter·open-<id>·즐겨찾기 모두 go()에서 갈라진다. 마지막으로 연 앱 기억("app")에 남지 않는다.
+//     대화 창은 그 앱 인스턴스를 새로 만들고(make) 위 막대 끝에 ✕. Esc = 상세 커서면 목록으로, 아니면 닫기.
+//     앱은 app.closeHost()로 닫기를 요청한다(명령 실행 뒤·가기 뒤). 확인 창 복사본처럼 함수가 닿지 않는 곳은 app.hostOverlay(id)를 값으로 넘긴다.
 //   앱 관리: 격자의 "앱 관리" 앱(manage)을 누르면 대화 상자(오버레이 역할 manage)로 뜬다. 앱마다 켜고 끄기.
 //   끈 앱은 격자에서 숨기고 화면용 인스턴스를 만들지 않는다. 켜고 끄기는 공유 상태 office-apps.disabled로만 오가고,
 //   런처는 렌더 때 이전 값과 비교해 새로 꺼진 앱을 dispose()로 멈추고(타이머·폴더 감시) 인스턴스를 버린다.
@@ -26,6 +31,7 @@
 //   앱 관리 앱은 끄기 없음).
 //   viewer — 떠 있는 파일 뷰어 창(kind "window", props { file: 절대 경로, on? }). 에이전트 활동의 파일 줄이 연다(files.js openViewer).
 // 키·명령: office-apps.home(런처로), office-apps.open-<앱 id>(앱 열기), office-apps.show:<경로>(파일 열기),
+//   office-apps.palette(명령 대화 창 — keys.json에 키를 묶어 쓴다. 바인딩은 사용자 파일이라 이 모드가 쓰지 않는다),
 //   office-apps.manage(앱 관리 대화 상자), office-apps.disable-<앱 id>(앱 끄기),
 //   office-apps.commit:<해시|WORKTREE>(커밋 앱에서 그 커밋 열기), office-apps.range:<a>...<b>(커밋 앱에서 범위 비교),
 //   office-apps.agent:<터미널 주소>(에이전트 앱에서 그 에이전트 줄 고르기, 사무실 오른쪽 패널의 "자세히 →"가 보낸다),
@@ -53,11 +59,11 @@ import { ReviewApp } from "./review.js";
 import { NotesApp } from "./notes.js";
 import { ActionsApp } from "./actions.js";
 import { cleanFavs, toggleFav, moveFav, homeRows } from "./launcher/favorites.js";
-import { step, detailKey, inputKey, listKey } from "./launcher/ring.js";
+import { AppScreen } from "./launcher/screen.js";
 
 const ME = "mods/office-apps";
 const DISABLED = "office-apps.disabled";   // { 앱 id: true } — 끈 앱
-// 앱 목록. make가 없는 앱은 아직 준비 중(격자에는 보이되 들어가면 안내만). action이 있는 앱은 들어가지 않고 그 동작만 한다.
+// 앱 목록. modal 앱은 아래 칸이 아니라 대화 창으로 뜬다({ width, height: 창 비율, left?: 왼쪽 칸 폭 }). make가 없는 앱은 아직 준비 중(격자에는 보이되 들어가면 안내만). action이 있는 앱은 들어가지 않고 그 동작만 한다.
 //   locked 앱은 끌 수 없다. group은 격자·앱 관리에서 나누는 줄(GROUPS 순서): 동작 방식이 아니라 여기 적은 값으로만 나눈다.
 //   줄 안 순서는 여기 적은 순서. 앱마다 색은 두지 않는다: 타일 그림이 없는 앱은 모두 같은 중립색(tile()의 NEUTRAL)으로 그린다.
 const APPS = [
@@ -75,11 +81,11 @@ const APPS = [
   { id: "agent", group: "agents", name: "에이전트", desc: "에이전트와 서브에이전트가 하는 일", make: () => new AgentApp() },
   { id: "inbox", group: "agents", name: "알림함", desc: "답 필요·완료 모아 보기", make: () => new InboxApp() },
   { id: "sessions", group: "agents", name: "세션", desc: "지난 에이전트 세션 이어하기", make: () => new SessionsApp() },
-  { id: "workspace", group: "agents", name: "작업 공간", desc: "스페이스·탭·칸 정리", make: () => new WorkspaceApp() },
+  { id: "workspace", group: "agents", name: "작업 공간", desc: "스페이스·탭·칸 정리", make: () => new WorkspaceApp(), modal: { width: 0.62, height: 0.72 } },
   { id: "watch", group: "agents", name: "출력", desc: "터미널 출력의 오류 모아 보기", make: () => new WatchApp() },
   { id: "ports", group: "agents", name: "포트", desc: "열려 있는 개발 서버", make: () => new PortsApp() },
   { id: "server", group: "agents", name: "서버", desc: "Herdr에 등록한 머신(서버) 관리", make: () => new ServerApp() },
-  { id: "palette", group: "agents", name: "명령", desc: "모든 명령 찾아 실행", make: () => new PaletteApp() },
+  { id: "palette", group: "agents", name: "명령", desc: "모든 명령 찾아 실행", make: () => new PaletteApp(), modal: { width: 0.5, height: 0.62, left: 320 } },
   // 설정: 들어가지 않고 창을 띄우는 것
   { id: "settings", group: "system", name: "설정", desc: "Herdr 설정 창 열기", action: () => run("app.settings") },
   { id: "manage", group: "system", name: "앱 관리", desc: "앱 켜고 끄기", locked: true, action: () => openManage() },
@@ -120,14 +126,18 @@ function openManage() {
   openOverlay({ mod: "office-apps", kind: "dialog", width: MANAGE_W, height: MANAGE_H, props: { role: "manage" } });
 }
 
+// 대화 창 앱 열기(APPS의 modal). 런처가 마지막으로 연 대화 창(prev)은 닫고 새로 연다(키를 두 번 눌러도 하나만). 새 id를 돌려준다.
+function openAppModal(def, prev) {
+  if (prev) { try { closeOverlay(prev); } catch { /* 이미 닫힘 */ } }
+  const m = def.modal;
+  return openOverlay({ mod: "office-apps", kind: "dialog", width: m.width, height: m.height, props: { role: "app-modal", app: def.id } });
+}
+
 class Launcher {
   init(_p, cx) {
     this.app = null;          // 들어가 있는 앱 id
-    this.lh = cx.focus_handle();   // 앱 화면 왼쪽 칸의 키보드 포커스(↑↓ · Enter를 앱의 move/activate로)
-    this.dh = cx.focus_handle();   // 오른쪽 상세 칸의 키보드 포커스. 멈출 곳(버튼·체크)마다 핸들을 두지 않고 커서(kb.at)로 가린다
-    // 상세 키보드 커서: at = 멈출 곳 id(null이면 왼쪽 목록), last = 그 순번(사라졌을 때 이어 갈 자리),
-    //   key = 키보드로 옮긴 커서인지(마우스로 누르면 끈다: 테두리는 키보드로 옮겼을 때만), from = 입력칸 감싼 곳이 알린 id
-    this.kb = { at: null, last: 0, key: false, from: null, on: (id) => this.kb.key && this.kb.at === id && Boolean(this.dh?.is_focused()) };
+    // 앱 화면 틀·키(launcher/screen.js): 왼쪽 목록 lh · 오른쪽 상세 dh 포커스와 상세 키보드 커서 kb
+    this.screen = new AppScreen(cx);
     this.seen = disabled();   // 마지막으로 본 끈 앱 목록(새로 꺼진 앱을 찾는 기준)
     this.inst = {};           // 앱 id → 인스턴스(켜진 앱을 처음 열 때 만든다)
     this.query = "";
@@ -142,7 +152,11 @@ class Launcher {
       this.enter(a.id, cx);
       cx.notify();
     });
-    try { this.go(JSON.parse(localStorage.getItem("app") ?? "null"), cx); } catch { /* 런처부터 */ }
+    // 마지막으로 연 앱 복원. 대화 창 앱(예전에 저장된 palette·workspace)은 시작할 때 띄우지 않는다.
+    try {
+      const last = JSON.parse(localStorage.getItem("app") ?? "null");
+      this.go(APPS.find((a) => a.id === last)?.modal ? null : last, cx);
+    } catch { /* 런처부터 */ }
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
@@ -150,9 +164,10 @@ class Launcher {
         // pane.go로 이 칸에 들어왔거나 위에 뜬 창(확인 창 등)이 닫혔다: 홈이면 검색창, 앱이면 있던 곳(상세 커서 또는 왼쪽 목록)
         else if (c === "focus") {
           if (!this.app) this.search.focus();
-          else if (this.kb?.key && this.kb.at) this.moveTo(this.instance(this.app), this.kb.at);
-          else this.lh?.focus();
+          else this.screen?.refocus(this.instance(this.app));
         }
+        // palette  명령 대화 창(keys.json에 묶어 쓰는 키). open-palette와 같다.
+        else if (c === "palette") this.go("palette", cx);
         // commit:<해시|WORKTREE>  커밋 앱에서 그 커밋(또는 작업 트리 변경)을 연다
         else if (c.startsWith("commit:")) this.toCommit(cx, (app) => app.openCommit?.(c.slice(7), cx));
         // range:<a>...<b>  커밋 앱에서 두 지점 사이를 비교한다(첫 "..."로 나눈다)
@@ -206,8 +221,8 @@ class Launcher {
   //   go()에서는 하지 않는다: 시작할 때 복원·명령(show:·commit: 등)으로 열릴 때 터미널의 키보드를 뺏지 않게.
   enter(id, cx) {
     this.go(id, cx);
-    if (!this.app) return;
-    this.lh?.focus();
+    if (!this.app || APPS.find((a) => a.id === id)?.modal) return;   // 대화 창 앱은 창이 포커스를 가져간다
+    this.screen?.lh?.focus();
     this.inst[this.app]?.focusOnEnter?.();
   }
 
@@ -241,72 +256,16 @@ class Launcher {
   }
 
   // 앱 열기. 앱 인스턴스는 여기(이벤트·명령 처리 시점)에서 만든다: 렌더 중에는 입력 상자 등을 만들 수 없다.
+  //   대화 창 앱(modal)은 아래 칸을 바꾸지 않고 창만 띄운다(꺼져 있으면 아무것도 하지 않는다).
   go(id, cx) {
-    const act = APPS.find((a) => a.id === id)?.action;
-    if (act && !this.disabled()[id]) { act(); return; }
+    const a = APPS.find((x) => x.id === id);
+    if (a?.modal) { if (!this.disabled()[id]) this.modal = openAppModal(a, this.modal); return; }
+    if (a?.action && !this.disabled()[id]) { a.action(); return; }
     this.app = id && !this.disabled()[id] ? id : null;
-    if (this.kb) { this.kb.at = null; this.kb.key = false; this.kb.from = null; }
+    this.screen?.reset();
     const def = APPS.find((a) => a.id === this.app);
     if (def?.make && !this.inst[this.app]) { this.inst[this.app] = def.make(); this.inst[this.app].init({}, cx); }
     try { localStorage.setItem("app", JSON.stringify(this.app)); } catch { /* 이번 실행 동안만 */ }
-  }
-
-  // ── 상세 키보드(키 계약) ─────────────────────────────
-  stops(app) {
-    try { return (app?.focusables?.() ?? []).filter((s) => s && s.id != null); } catch { return []; }
-  }
-
-  // 커서를 그 멈출 곳으로(null·없는 id면 왼쪽 목록). 입력칸은 그 입력에, 버튼·체크는 상세 칸 핸들에 포커스를 준다.
-  moveTo(app, id) {
-    if (!this.kb) return;   // 코드를 다시 불러와 init 없이 남은 인스턴스
-    const kb = this.kb, list = this.stops(app), i = id == null ? -1 : list.findIndex((s) => s.id === id);
-    if (i < 0) { kb.at = null; kb.key = false; this.lh?.focus(); return; }
-    kb.at = id; kb.last = i; kb.key = true;
-    if (list[i].kind === "input") list[i].focus?.();
-    else this.dh?.focus();
-  }
-
-  // Tab(dir 1)·Shift+Tab(dir -1): at(null이면 왼쪽 목록)에서 고리를 따라 옮긴다. 멈출 곳이 없으면 false.
-  tabFrom(app, at, dir) {
-    if (!this.kb || !this.dh) return false;
-    const ids = this.stops(app).map((s) => s.id);
-    if (!ids.length) return false;
-    this.moveTo(app, step(ids, at, dir, this.kb.last));
-    return true;
-  }
-
-  // 오른쪽 상세 칸의 키. 입력칸 안에서 올라온 키(kb.from)는 Tab·Esc만, 상세 칸 핸들이 가진 키는 계약대로.
-  detailKeys(app, e, cx) {
-    const kb = this.kb;
-    if (!app || !kb) return;
-    const from = kb.from;
-    kb.from = null;
-    if (from != null && !this.dh?.is_focused() && !this.lh?.is_focused()) {
-      const k = inputKey(e);
-      if (!k) return;
-      if (k === "left") this.moveTo(app, null);
-      else if (!this.tabFrom(app, from, k === "next" ? 1 : -1)) return;
-      cx.stop_propagation(); cx.notify();
-      return;
-    }
-    if (!this.dh?.is_focused()) return;
-    const k = detailKey(e);
-    if (!k) return;
-    if (k === "up" || k === "down") { if (!app.move) return; app.move(k === "up" ? -1 : 1, cx); }
-    else if (k === "next" || k === "prev") { if (!this.tabFrom(app, kb.key ? kb.at : null, k === "next" ? 1 : -1)) return; }
-    // 마우스로 상세를 누른 뒤(커서 없음)의 Esc는 예전처럼 홈으로(바깥 Esc 처리로 넘긴다)
-    else if (k === "left") { if (!kb.key) return; this.moveTo(app, null); }
-    else if (k === "submit") { if (!app.submitDetail) return; app.submitDetail(cx); }
-    else if (k === "press") {
-      // 마우스로 상세를 누른 뒤(커서 없음)의 Enter는 예전처럼 왼쪽 목록의 Enter(주 동작)
-      if (!kb.key) { if (e.key !== "enter" || !app.activate) return; app.activate(cx); }
-      else {
-        const s = this.stops(app).find((x) => x.id === kb.at);
-        if (!s?.run) return;
-        s.run(cx);
-      }
-    }
-    cx.stop_propagation(); cx.notify();
   }
 
   // 켜진 앱만 열 때 만든다(go). 끈 앱은 만들지 않고, 끄면 있던 인스턴스도 정리(dispose)한 뒤 버린다.
@@ -314,10 +273,26 @@ class Launcher {
     return this.disabled()[id] ? null : this.inst[id] ?? null;
   }
 
+  // 코드를 다시 불러와 init 없이 남은 인스턴스: 예전 빌드의 포커스 핸들(lh·dh)을 넘겨받아 키 처리를 잇는다.
+  ensureScreen() {
+    if (this.screen) return;
+    this.screen = new AppScreen(null);
+    this.screen.lh = this.lh ?? null;
+    this.screen.dh = this.dh ?? null;
+  }
+
   render(cx) {
     const t = theme();
     this.syncDisabled();
+    this.ensureScreen();
     if (this.app && this.disabled()[this.app]) this.app = null;
+    // 예전 빌드에서 아래 칸에 열어 둔 대화 창 앱(palette·workspace)은 런처로 돌리고 인스턴스를 정리한다
+    if (this.app && APPS.find((a) => a.id === this.app)?.modal) {
+      try { this.inst[this.app]?.dispose?.(); } catch { /* 정리 실패해도 돌아간다 */ }
+      delete this.inst[this.app];
+      this.app = null;
+      try { localStorage.setItem("app", "null"); } catch { /* 이번 실행 동안만 */ }
+    }
     return v_flex().id("office-apps").size_full().min_h(0).bg(t.chrome).text_color(t.foreground).text_size(13)
       .child(this.app ? this.appView(this.app, cx, t) : this.home(t));
   }
@@ -392,62 +367,16 @@ class Launcher {
       .child(svg(`${ME}/apps/back.svg`).size(14).text_color(t.foreground)).child(div().text_size(13).child("앱"));
   }
 
-  // 앱 화면: 위 막대 / 왼쪽 목록 / 오른쪽 내용
+  // 앱 화면: 위 막대 / 왼쪽 목록 / 오른쪽 내용(틀·키는 launcher/screen.js). Esc = 격자(홈)로 돌아가 검색창에 포커스.
   appView(id, cx, t) {
-    const a = APPS.find((x) => x.id === id), app = this.instance(id);
-    if (app && this.kb) app.kb = this.kb;   // 앱이 멈출 곳 테두리를 그릴 때 본다(kb.on(id))
-    const detail = app?.detail?.(cx, t) ?? null;
-    // 빈 화면 문구: 앱이 emptyState()로 정하면 그것, 아니면 기본. 준비 중인 앱(인스턴스 없음)은 앱 설명
-    const empty = (!detail && app?.emptyState?.()) || null;
-    return v_flex().size_full().min_h(0)
-      // Esc: 격자(홈)로 돌아가 검색창에 포커스. 안쪽에서 Esc를 쓰는 곳(입력 상자 지우기 등)이 먼저 멈추면 오지 않는다.
-      .on_key_down((e, cx) => {
-        const m = e.modifiers;
-        if (e.key !== "escape" || m.shift || m.alt || m.control || m.platform) return;
-        this.go(null, cx);
-        this.search.focus();
-        cx.stop_propagation(); cx.notify();
-      })
-      .child(h_flex().h(44).flex_none().px(10).gap(8).items_center().border_b_1().border_color(t.border)
-        .child(this.back(t))
-        .child(div().w(1).h(18).bg(t.border))
-        .child(this.tile(a, 24, t))
-        .child(div().flex_none().text_size(15).font_semibold().child(a.name))
-        .child(div().flex_1().min_w(0).child(app?.subtitle?.(t) ?? div())))
-      .child(h_flex().flex_1().min_h(0).items_stretch()
-        // 왼쪽: 관리 목록(좁게)
-        //   포커스(this.lh)를 달아 ↑↓ → app.move(-1|+1), Enter → app.activate(). 이 칸을 누르면 GPUI가 포커스를 이 칸에 준다
-        //   (안쪽 입력 상자를 누르면 입력 상자가 먼저 포커스를 가져가 이 칸은 뺏지 않는다). 키는 이 칸 자체가 포커스를
-        //   가졌을 때만 받는다: 입력 상자에 포커스가 있으면 같은 키가 이리로 올라와도 그냥 둔다.
-        //   (코드를 다시 불러와 init 없이 남은 인스턴스라 this.lh가 없으면 키 처리 없이 그린다)
-        .child(v_flex().id("apps-left").when(Boolean(this.lh), (el) => el.track_focus(this.lh)).w(LEFT).h_full().flex_none().min_h(0).border_r_1().border_color(t.border)
-          .on_key_down((e, cx) => {
-            if (!app || !this.lh?.is_focused()) return;
-            // Tab·Shift+Tab: 오른쪽 상세의 첫(마지막) 멈출 곳으로
-            const lk = listKey(e);
-            if (lk) { if (!this.tabFrom(app, null, lk === "next" ? 1 : -1)) return; cx.stop_propagation(); cx.notify(); return; }
-            const m = e.modifiers;
-            if (m.shift || m.alt || m.control || m.platform) return;
-            if (e.key === "up" || e.key === "down") { if (!app.move) return; app.move(e.key === "up" ? -1 : 1, cx); }
-            else if (e.key === "enter") { if (!app.activate) return; app.activate(cx); }
-            else return;
-            cx.stop_propagation(); cx.notify();
-          })
-          .child(app ? app.list(cx, t) : v_flex().p(16).gap(6).child(div().text_color(t.muted).child("준비 중인 앱입니다"))
-            .child(div().text_size(12).text_color(t.dim).child(a.desc))))
-        // 오른쪽: 고른 항목(강조: 더 넓고 밝은 바탕)
-        //   포커스(this.dh)를 달아 상세 키 계약(Tab 차례·Enter·Space·⌘Enter·Esc)을 받는다. 마우스로 누르면 키보드 커서 테두리를 끈다.
-        .child(v_flex().id("apps-right").when(Boolean(this.dh), (el) => el.track_focus(this.dh)).flex_1().h_full().min_w(0).min_h(0).bg(t.background)
-          .on_mouse_down("left", () => { if (this.kb) this.kb.key = false; })
-          .on_key_down((e, cx) => this.detailKeys(app, e, cx))
-          .child(detail ?? v_flex().size_full().items_center().justify_center().gap(10)
-            .child(this.tile(a, 40, t).opacity(0.5))
-            .child(div().text_size(14).text_color(t.muted).child(empty?.text ?? "선택 내용이 없습니다"))
-            .child(div().text_size(12).text_color(t.dim).child(app ? (empty ? empty.sub ?? "" : "왼쪽에서 항목을 고르세요") : a.desc)))));
+    this.ensureScreen();
+    return this.screen.view({
+      a: APPS.find((x) => x.id === id), app: this.instance(id), cx, t, tile,
+      lead: [this.back(t), div().w(1).h(18).bg(t.border)],
+      onEscape: (cx) => { this.go(null, cx); this.search.focus(); },
+    });
   }
 }
-
-const LEFT = 250;   // 왼쪽 관리 칸 폭(가운데 내용 칸을 강조하려고 좁게)
 
 // 앱 타일 그림: 브러시드 금속 사물 오브제 PNG(apps/tiles/<id>.png, 투명 배경, 256px).
 //   한 장으로 생성한 8개 격자를 잘라 만들었다. 테마와 관계없이 같은 그림을 쓴다.
@@ -576,7 +505,51 @@ class ManageDialog {
   }
 }
 
-const ALL_ROLES = { ...ROLES, launcherMenu: LauncherMenu, manage: ManageDialog, viewer: ViewerWindow };
+// 앱 대화 창(props.role "app-modal", props.app = APPS의 modal 앱 id). 런처 앱 화면과 같은 틀·키(launcher/screen.js),
+//   위 막대 끝에 ✕. 오버레이 복사본이라 앱 인스턴스를 여기서 새로 만들고, 창이 닫히면(close) dispose한다.
+//   닫기: ✕ · Esc(상세 커서가 있으면 먼저 목록으로) · 앱이 부르는 app.closeHost()(명령 실행·가기 뒤).
+//   앱이 띄운 확인 창·입력 창은 이 창 위에 뜨고, 이 창은 그대로 남는다.
+class AppModal {
+  init(_p, cx) {
+    const p = props() ?? {};
+    this.overlay = p.overlay;
+    this.def = APPS.find((a) => a.id === p.app && a.modal) ?? null;
+    this.screen = new AppScreen(cx);
+    this.app = null;
+    if (!this.def || disabled()[this.def.id]) return;
+    this.app = this.def.make();
+    this.app.closeHost = () => this.close();
+    this.app.hostOverlay = this.overlay;
+    this.app.init({}, cx);
+    // 들어갈 때 포커스: 왼쪽 목록, 앱이 따로 정하면(명령 앱: 검색창) 그다음에. 창이 뜨기 전이라 한 번 더 준다(입력 창과 같은 방식).
+    const focus = () => { this.screen.lh?.focus(); this.app?.focusOnEnter?.(); };
+    focus();
+    cx.timer.after(300, (cx) => { focus(); cx.notify(); });
+  }
+
+  close() { if (this.overlay) closeOverlay(this.overlay); }
+
+  dispose() {
+    try { this.app?.dispose?.(); } catch { /* 정리 실패해도 닫기는 마친다 */ }
+    this.app = null;
+  }
+
+  render(cx) {
+    const t = theme(), a = this.def;
+    const x = div().id("app-modal-close").p(5).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+      .on_click(() => this.close())
+      .child(svg(`${ME}/close.svg`).size(14).text_color(t.muted));
+    if (!a || !this.app) {
+      return v_flex().id("app-modal").size_full().p(18).gap(8).bg(t.chrome).text_size(13).text_color(t.foreground)
+        .on_key_down((e, cx) => { if (e.key === "escape") { this.close(); cx.stop_propagation(); } })
+        .child(h_flex().items_center().child(div().flex_1().text_color(t.muted).child(a ? `${a.name} 앱이 꺼져 있습니다` : "열 수 없는 앱입니다")).child(x));
+    }
+    return v_flex().id("app-modal").size_full().min_h(0).bg(t.chrome).text_color(t.foreground).text_size(13)
+      .child(this.screen.view({ a, app: this.app, cx, t, tile, trail: [x], left: a.modal.left, onEscape: () => this.close() }));
+  }
+}
+
+const ALL_ROLES = { ...ROLES, launcherMenu: LauncherMenu, manage: ManageDialog, viewer: ViewerWindow, "app-modal": AppModal };
 
 export default class OfficeApps extends View {
   init(p, cx) {
@@ -587,5 +560,10 @@ export default class OfficeApps extends View {
 
   render(cx) {
     return this.role.render(cx);
+  }
+
+  // 오버레이가 닫힐 때 한 번: 앱 대화 창의 앱 인스턴스(타이머·입력 상자)를 정리한다.
+  async close(_cx) {
+    this.role?.dispose?.();
   }
 }

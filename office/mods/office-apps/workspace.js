@@ -13,9 +13,11 @@
 // 데이터는 spaces()·panes()·agents()(모두 살아 있는 값, 바뀌면 다시 그려진다). 타이머는 잠든 기록 읽기와
 //   재울 만한 칸의 기록 확인(TICK)에만 쓰고, 앱이 안 보이면 멈춘다.
 // 확인 창·이름 입력 창은 오버레이 복사본이라 값만 넘기고, 동작은 ACTIONS["workspace.*"]·ROLES["workspace-prompt"]에 둔다.
+// 런처에서는 대화 창(main.js app-modal)으로 뜬다: 다른 곳으로 가는 동작(스페이스·탭·칸으로 가기, 깨운 뒤 그 칸으로)은
+//   leave()로 창을 먼저 닫고 간다(closeHost). 정리·닫기·재우기·이름 바꾸기는 확인 창이 위에 뜨고 이 창은 남는다.
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { spaces, panes, agents, focused, layout, home, run, setShared, openOverlay, closeOverlay, notify, props, theme } from "herdr";
+import { spaces, panes, agents, focused, layout, home, run, shared, setShared, openOverlay, closeOverlay, notify, props, theme } from "herdr";
 import { ACTIONS } from "./menu.js";
 import { ROLES } from "./files.js";
 import { viewedTabs, panesOf, hasWorking, tabWord, review, skipSummary, riskOf, recheckTidy, recheckClose, treeRows, agentCount, tilde, WORD } from "./workspace/tidy.js";
@@ -31,6 +33,10 @@ const BRAND = [[/claude/i, `${APPS}/agent/icons/claude.svg`, "#d97757"], [/codex
 
 function load(k, d) { try { return JSON.parse(localStorage.getItem(k) ?? "null") ?? d; } catch { return d; } }
 function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 이번 실행 동안만 */ } }
+// 접은 스페이스: 대화 창은 열 때마다 새 복사본이라(localStorage도 복사본마다) 공유 상태를 먼저 본다.
+const FOLD = "office-apps.workspace.fold";
+const loadFold = () => { const v = shared(FOLD); return v && typeof v === "object" ? { ...v } : load("workspace.fold", {}); };
+const saveFold = (v) => { save("workspace.fold", v); setShared(FOLD, { ...v }); };
 const viewed = () => viewedTabs(spaces(), focused()?.tab ?? null);
 const where = (p, machine) => tilde(p, machine ? null : home());
 
@@ -159,7 +165,7 @@ export class WorkspaceApp {
   init(_p, _cx) {
     register();
     this.sel = load("workspace.sel", "tidy");   // "tidy" | "s:<id>" | "t:<id>"
-    this.fold = load("workspace.fold", {});     // 접은 스페이스 { id: true }
+    this.fold = loadFold();     // 접은 스페이스 { id: true }
     this.checks = {};                           // 정리 화면에서 사람이 바꾼 체크 { 탭 id: bool }
     this.zchecks = {};                          // 재울 에이전트 체크 { 터미널 주소: true } (기본 해제)
     this.rows = [];
@@ -209,18 +215,21 @@ export class WorkspaceApp {
     return JSON.stringify([this.sleeping, this.probes]) !== before;
   }
 
-  // 잠든 기록 하나를 깨우고, 칸이 있으면 그리로 간다
-  async wakeOne(rec, cx) {
+  // 다른 곳으로 간다: 대화 창이면 먼저 닫고(닫힐 때의 포커스 되돌리기가 pane.focus를 덮지 않게) 간다.
+  leave(go) { this.closeHost?.(); go(); }
+
+  // 잠든 기록 하나를 깨우고, 칸이 있으면 그리로 간다(last: 마지막 하나면 대화 창도 닫는다 — 중간에 닫으면 남은 깨우기가 끊긴다)
+  async wakeOne(rec, cx, last = true) {
     const to = await wake(rec);
     this.sleeping = this.sleeping.filter((r) => r.address !== rec.address);
-    if (to) goPane(to.space, to.tab, to.pane);
+    if (to) { if (last) this.leave(() => goPane(to.space, to.tab, to.pane)); else goPane(to.space, to.tab, to.pane); }
     cx?.notify?.();
   }
 
   wakeTab(tabId, cx) {
     const recs = this.zTabs?.get(tabId) ?? [];
     if (!recs.length) return false;
-    cx.spawn(async (cx) => { for (const r of recs) await this.wakeOne(r, cx); });
+    cx.spawn(async (cx) => { for (let i = 0; i < recs.length; i++) await this.wakeOne(recs[i], cx, i === recs.length - 1); });
     return true;
   }
 
@@ -258,7 +267,7 @@ export class WorkspaceApp {
 
   toggleFold(id, cx) {
     if (this.fold[id]) delete this.fold[id]; else this.fold[id] = true;
-    save("workspace.fold", this.fold);
+    saveFold(this.fold);
     cx.notify();
   }
 
@@ -274,8 +283,8 @@ export class WorkspaceApp {
   // 잠든 탭이면 깨운다(깨운 뒤 그 칸으로 간다)
   activate(cx) {
     const r = this.current();
-    if (r?.kind === "space") goSpace(r.space.id);
-    else if (r?.kind === "tab" && !this.wakeTab(r.tab.id, cx)) goTab(r.space.id, r.tab.id);
+    if (r?.kind === "space") this.leave(() => goSpace(r.space.id));
+    else if (r?.kind === "tab" && !this.wakeTab(r.tab.id, cx)) this.leave(() => goTab(r.space.id, r.tab.id));
   }
 
   emptyState() {
@@ -316,7 +325,7 @@ export class WorkspaceApp {
           .on_click((_e, cx) => this.toggleFold(s.id, cx))
           .child(svg(`${APPS}/chevron-${open ? "down" : "right"}.svg`).size(14).text_color(t.muted)))
         .child(h_flex().id(`ws-pick-${s.id}`).flex_1().min_w(0).h_full().pr(8).gap(6).items_center().cursor_pointer()
-          .on_click((e, cx) => { this.select(r.key, cx); if (e.click_count >= 2) goSpace(s.id); })
+          .on_click((e, cx) => { this.select(r.key, cx); if (e.click_count >= 2) this.leave(() => goSpace(s.id)); })
           .child(div().flex_1().min_w(0).truncate().text_size(13).font_semibold().text_color(t.foreground).child(s.name))
           .when(Boolean(s.machine), (el) => el.child(div().flex_none().max_w(80).truncate().text_size(11).text_color(t.muted).child(s.machine)))
           .when(s.active, (el) => el.child(div().flex_none().text_size(11).text_color(t.foreground).child("지금")))
@@ -324,7 +333,7 @@ export class WorkspaceApp {
     }
     const tab = r.tab, slept = this.zTabs.has(tab.id), w = word(tab, t, slept), shown = this.viewed.has(tab.id);
     return base(h_flex().id(`ws-${r.key}`).h(24).flex_none().pl(26).pr(8).gap(6).items_center().cursor_pointer()
-      .on_click((e, cx) => { this.select(r.key, cx); if (e.click_count >= 2) goTab(r.space.id, tab.id); }))
+      .on_click((e, cx) => { this.select(r.key, cx); if (e.click_count >= 2) this.leave(() => goTab(r.space.id, tab.id)); }))
       .child(div().flex_1().min_w(0).truncate().text_size(12.5)
         .text_color(w && wordOf(tab, slept)[1] === "dim" ? t.dim : shown ? t.foreground : t.muted).child(tab.name))
       .child(div().flex_none().text_size(11).text_color(t.dim).child(`칸 ${tab.panes}`))
@@ -388,7 +397,7 @@ export class WorkspaceApp {
       { yes: "닫기", danger: true });
     return v_flex().size_full().min_h(0)
       .child(this.head(s.name, s.active ? "지금 보는 스페이스" : "", [
-        this.btn("ws-go", "이 스페이스로 가기", () => goSpace(s.id), t),
+        this.btn("ws-go", "이 스페이스로 가기", () => this.leave(() => goSpace(s.id)), t),
         this.btn("ws-rename", "이름 바꾸기", () => ask("space", s.id, "스페이스 이름 바꾸기", s.named ? s.name : ""), t),
         this.btn("ws-close", "닫기…", close, t, true),
       ], t))
@@ -398,7 +407,7 @@ export class WorkspaceApp {
         .children([...s.tabs].sort((a, b) => a.index - b.index).map((tab) => {
           const w = word(tab, t, this.zTabs.has(tab.id));
           return h_flex().id(`ws-st-${tab.id}`).h(24).px(6).gap(8).items_center().rounded(4).cursor_pointer().hover((x) => x.bg(t.hover))
-            .on_click((_e, cx) => { if (this.fold[s.id]) { delete this.fold[s.id]; save("workspace.fold", this.fold); } this.select(`t:${tab.id}`, cx); })
+            .on_click((_e, cx) => { if (this.fold[s.id]) { delete this.fold[s.id]; saveFold(this.fold); } this.select(`t:${tab.id}`, cx); })
             .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(tab.settled ? t.dim : t.foreground).child(tab.name))
             .child(div().flex_none().text_size(11).text_color(t.dim).child(`칸 ${tab.panes}`))
             .when(Boolean(w), (el) => el.child(w));
@@ -419,7 +428,7 @@ export class WorkspaceApp {
     return v_flex().size_full().min_h(0)
       .child(this.head(tab.name, sub, [
         ...(slept.length ? [this.btn("ws-wake", "깨우기", (_e, cx) => this.wakeTab(tab.id, cx), t)] : []),
-        this.btn("ws-go", "이 탭으로 가기", () => goTab(s.id, tab.id), t),
+        this.btn("ws-go", "이 탭으로 가기", () => this.leave(() => goTab(s.id, tab.id)), t),
         this.btn("ws-rename", "이름 바꾸기", () => ask("tab", tab.id, "탭 이름 바꾸기", tab.named ? tab.name : ""), t),
         tab.settled
           ? this.btn("ws-settle", "펼치기", () => run("tab.unsettle", { id: tab.id }), t)
@@ -438,7 +447,7 @@ export class WorkspaceApp {
     const place = [p.cwd ? where(p.cwd, s.machine) : "", p.branch ?? ""].filter(Boolean).join(" · ");
     const w = WORD[p.status] ?? (slept ? SLEPT : null);
     return v_flex().id(`ws-p-${p.pane}`).min_h(40).px(6).py(4).justify_center().rounded(4).cursor_pointer().hover((x) => x.bg(t.hover))
-      .on_click(() => goPane(s.id, tab.id, p.pane))
+      .on_click(() => this.leave(() => goPane(s.id, tab.id, p.pane)))
       .child(h_flex().gap(8).items_center()
         .child(p.terminal ? programIcon(p.program, 14, t) : div().w(14).flex_none())
         .child(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(p.focused ? t.foreground : t.muted)
