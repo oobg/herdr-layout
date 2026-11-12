@@ -3,7 +3,9 @@
 //         변경 수, 그 폴더에서 도는 에이전트의 상태 낱말.
 //   오른쪽: 경로·브랜치·기본 브랜치 대비·에이전트·변경 파일(누르면 뷰어 창), 동작(에이전트 띄우기·스페이스로 가기·지우기).
 //         그 폴더에 터미널이 열린 에이전트(상태 무관)가 있으면 "지우기"를 잠그고 "먼저 끝내거나 재우세요"와 그 터미널로 가기. 실행 직전에도 다시 본다.
-//         "이슈에서 시작"을 누르면 오른쪽이 이슈 목록이 된다: 고르면 브랜치 이름을 묻고 워크트리를 만든 뒤
+//         툴바 "이슈에서"(아이콘 + 글자)를 누르면 오른쪽이 이슈 목록이 된다. 목록 위 검색칸: 글을 넣고 Enter면
+//         gh issue list --search, "#123"·"123"·이슈 URL이면 그 이슈를 gh issue view로 바로 찾아 연다(최근 30개 밖도 고를 수 있다).
+//         이슈를 고르면 브랜치 이름을 묻고 워크트리를 만든 뒤
 //         그 폴더에서 Claude Code를 띄우고 이슈 본문을 첫 메시지(task)로 넘긴다.
 //         본문을 읽지 못하면(gh issue view 실패) 띄우지 않고 확인 창으로 묻는다: "제목만으로 띄우기"면 제목만 넘긴다
 //         (확인 창 동작은 복사본에서 돌아 공유 값 GO로 앱에게 알린다). 닫으면 워크트리만 남는다. 본문이 빈 이슈는 그대로 띄운다.
@@ -83,6 +85,8 @@ function liveIn(path, all, on) {
 
 const changed = () => setShared(TICK, Date.now());
 // 이슈를 넘기는 첫 메시지. "이슈 #N"으로 시작해 첫 메시지가 옵션으로 읽힐 일이 없다.
+// 검색칸의 "#123" · "123" · ".../issues/123" → 123, 아니면 null(검색어)
+const issueNumber = (q) => Number(/^#?(\d+)$/.exec(String(q ?? "").trim())?.[1] ?? /\/issues\/(\d+)\/?(?:[?#].*)?$/.exec(String(q ?? "").trim())?.[1] ?? 0) || null;
 const issueTask = (issue, body) => `이슈 #${issue.number}: ${issue.title}${body ? `\n\n${body}` : ""}`;
 
 const ACT = {
@@ -190,6 +194,10 @@ export class WorktreesApp {
     this.mode = "list";     // "list" | "issues"(오른쪽이 이슈 목록)
     this.issues = null;     // { list[], error, loading }
     this.isel = null;       // 이슈 목록에서 고른 번호
+    this.iq = "";           // 이슈 검색어(Enter로 정한 것)
+    this.igen = 0;          // 이슈 읽기 차례(늦게 온 옛 결과를 버린다)
+    this.q = InputState.new({ placeholder: "검색어 또는 #번호 · Enter" });
+    this.q.on("submit", (_e, cx) => { this.iq = this.q.value().trim(); this.loadIssues(cx); cx.notify(); });
     this.scroll = ScrollHandle.new();
     this.gh = null;
     cx.spawn(async () => {
@@ -204,6 +212,7 @@ export class WorktreesApp {
     this.disposed = true;
     this.poll?.cancel(); this.poll = null;
     try { this.scroll?.release(); } catch { /* 이미 해제됨 */ }
+    try { this.q?.release(); } catch { /* 이미 해제됨 */ }
   }
 
   reload(cx) {
@@ -368,18 +377,25 @@ export class WorktreesApp {
     this.loadIssues(cx);
   }
 
+  // 검색어 없으면 열린 이슈 최근 30개, 있으면 gh issue list --search, 번호(#123·URL)면 그 이슈 하나(찾으면 바로 연다).
   loadIssues(cx) {
-    if (!this.data || this.issues?.loading) return;
-    const root = this.data.root, on = this.ctx.on;
-    this.issues = { list: this.issues?.list ?? null, error: null, loading: true };
+    if (!this.data) return;
+    const root = this.data.root, on = this.ctx.on, q = this.iq, gen = ++this.igen;
+    const num = issueNumber(q);
+    this.issues = { list: this.issues?.list ?? null, listQ: this.issues?.listQ ?? null, error: null, loading: true, q };
     cx.spawn(async (cx) => {
-      const r = await exec("gh", ["issue", "list", "--limit", "30", "--json", "number,title,labels"], { cwd: root, on, timeout: 30000 }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
-      if (this.data?.root !== root) return;
+      const args = num ? ["issue", "view", String(num), "--json", "number,title,labels,state"]
+        : ["issue", "list", "--limit", "30", ...(q ? ["--search", q] : []), "--json", "number,title,labels"];
+      const r = await exec("gh", args, { cwd: root, on, timeout: 30000 }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+      if (this.data?.root !== root || gen !== this.igen) return;
       let list = null, error = null;
-      if (r.code === 0) { try { list = JSON.parse(r.stdout || "[]"); } catch { error = "이슈 목록을 읽지 못했습니다"; } }
-      else error = (r.stderr || r.stdout || "").trim().slice(0, 300) || "gh issue list 실패";
-      this.issues = { list, error, loading: false };
+      if (r.code === 0) { try { const v = JSON.parse(r.stdout || "[]"); list = Array.isArray(v) ? v : [v]; } catch { error = "이슈 목록을 읽지 못했습니다"; } }
+      else if (num && /could not resolve|not found/i.test(r.stderr ?? "")) error = `이슈 #${num}을 찾지 못했습니다`;
+      else error = (r.stderr || r.stdout || "").trim().slice(0, 300) || "gh issue 실패";
+      this.issues = { list, listQ: q, error, loading: false, q };
       if (list && !list.some((i) => i.number === this.isel)) this.isel = list[0]?.number ?? null;
+      // 번호로 찾은 열린 이슈는 바로 브랜치 이름을 묻는다
+      if (num && list?.[0] && list[0].state !== "CLOSED") this.pickIssue(list[0]);
       cx.notify();
     });
   }
@@ -391,6 +407,11 @@ export class WorktreesApp {
   }
 
   // ── 셸 계약 ──
+
+  // 런처 키 계약: 이슈 목록을 보는 동안만 검색칸(Tab으로 들어간다)
+  focusables() {
+    return this.mode === "issues" && this.data ? [{ id: "wt-q", kind: "input", focus: () => this.q.focus() }] : [];
+  }
 
   // ↑↓: 이슈 목록을 보고 있으면 이슈를, 아니면 워크트리를 옮긴다.
   move(delta, cx) {
@@ -453,17 +474,18 @@ export class WorktreesApp {
 
   toolbar(t) {
     const ok = Boolean(this.data), issues = ok && this.gh && this.data.github;
-    const btn = (id, icon, tip, on, fn) => div().id(`wt-t-${id}`).p(4).rounded(4).flex_none()
+    const btn = (id, icon, tip, on, fn, label = null) => h_flex().id(`wt-t-${id}`).p(4).gap(4).items_center().rounded(4).flex_none()
       .on_mouse_move((e) => { if (this.tipFor !== id) this.showTip(id, tip, e.bounds); })
       .on_hover((hv) => { if (!hv && this.tipFor === id) this.hideTip(); })
       .when(on, (el) => el.bg(t.selected))
       .when(Boolean(fn), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.hideTip(); fn(cx); cx.notify(); }))
-      .child(svg(icon).size(16).text_color(fn ? t.foreground : t.muted));
+      .child(svg(icon).size(16).text_color(fn ? t.foreground : t.muted))
+      .when(Boolean(label), (el) => el.child(div().pr(2).text_size(12).text_color(on ? t.foreground : t.muted).child(label)));
     const base = this.data?.base ?? "HEAD";
     return h_flex().h(32).flex_none().px(6).gap(2).items_center().border_b_1().border_color(t.border)
       .child(btn("new", I("folder-new"), `새 워크트리 (${base}에서 새 브랜치)`, false, ok && (() => this.newWorktree())))
       // gh가 없거나 GitHub 레포가 아니면 숨긴다.
-      .when(Boolean(issues), (el) => el.child(btn("issue", W("issue"), this.mode === "issues" ? "이슈 목록 보는 중 · 누르면 닫기" : "이슈에서 시작", this.mode === "issues", (cx) => this.showIssues(cx))))
+      .when(Boolean(issues), (el) => el.child(btn("issue", W("issue"), this.mode === "issues" ? "이슈 목록 보는 중 · 누르면 닫기" : "이슈에서 워크트리를 만들고 에이전트 띄우기", this.mode === "issues", (cx) => this.showIssues(cx), "이슈에서")))
       .child(div().flex_1())
       .child(btn("refresh", I("refresh"), "다시 읽기", false, ok && ((cx) => { this.reload(cx); if (this.mode === "issues") this.loadIssues(cx); })));
   }
@@ -517,14 +539,15 @@ export class WorktreesApp {
   issuesView(t) {
     const is = this.issues, list = is?.list ?? [];
     const note = (s) => div().px(14).py(10).text_size(12).text_color(t.muted).child(s);
-    const body = is?.error ? [note(`이슈를 읽지 못했습니다 · ${is.error}`)]
-      : !is?.list ? [note("이슈를 읽는 중")]
-      : !list.length ? [note("열린 이슈가 없습니다")]
+    const body = is?.error ? [note(is.error.startsWith("이슈 #") ? is.error : `이슈를 읽지 못했습니다 · ${is.error}`)]
+      : !is?.list || (is.loading && is.listQ !== is.q) ? [note("이슈를 읽는 중")]
+      : !list.length ? [note(is.q ? `'${is.q}'에 맞는 열린 이슈가 없습니다` : "열린 이슈가 없습니다")]
       : list.map((i) => h_flex().id(`wt-issue-${i.number}`).min_h(30).px(14).py(5).gap(8).items_center().cursor_pointer()
         .hover((s) => s.bg(t.hover)).when(this.isel === i.number, (el) => el.bg(t.selected))
         .on_click((_e, cx) => { this.isel = i.number; this.pickIssue(i); cx.notify(); })
         .child(div().flex_none().w(44).text_size(12).text_color(t.muted).child(`#${i.number}`))
-        .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child(i.title))
+        .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(i.state === "CLOSED" ? t.muted : t.foreground).child(i.title))
+        .when(i.state === "CLOSED", (el) => el.child(div().flex_none().text_size(11).text_color(t.muted).child("닫힘")))
         .when((i.labels ?? []).length > 0, (el) => el.child(div().flex_none().max_w(160).truncate().text_size(11).text_color(t.muted)
           .child(i.labels.map((l) => l.name).join(", ")))));
     return v_flex().size_full().min_h(0)
@@ -534,7 +557,14 @@ export class WorktreesApp {
         .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child("고르면 브랜치 이름을 묻고 워크트리를 만든 뒤 Claude Code에 이슈를 넘깁니다"))
         .child(div().id("wt-issues-close").px(6).rounded(4).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover))
           .on_click((_e, cx) => { this.mode = "list"; cx.notify(); }).child("✕")))
-      .child(v_flex().id("wt-issues").flex_1().min_h(0).overflow_y_scrollbar().py(4).children(body));
+      .child(h_flex().flex_none().px(14).py(8).gap(8).items_center().border_b_1().border_color(t.border)
+        .child(div().flex_1().min_w(0).on_key_down(() => { if (this.kb) this.kb.from = "wt-q"; })
+          .child(Input.new(this.q).h(30).px(8).rounded(6).border_1().border_color(this.kb?.on?.("wt-q") ? t.accent : t.border).bg(t.background).text_size(13)))
+        .when(Boolean(is?.q), (el) => el.child(div().id("wt-q-clear").flex_none().px(6).py(2).rounded(4).text_size(12).text_color(t.muted).cursor_pointer()
+          .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.q.set_value(""); this.iq = ""; this.loadIssues(cx); cx.notify(); }).child("전체 보기"))))
+      .child(v_flex().id("wt-issues").flex_1().min_h(0).overflow_y_scrollbar().py(4).children(body))
+      .when(!is?.q && list.length >= 30, (el) => el.child(div().flex_none().px(14).py(4).border_t_1().border_color(t.border)
+        .text_size(11).text_color(t.muted).child("최근 30개만 보입니다 · 위 칸에 검색어나 #번호를 넣으세요")));
   }
 
   detail(cx, t) {
