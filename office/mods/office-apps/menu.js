@@ -53,6 +53,10 @@ async function copy(text, what) {
 
 const RENAME = '[ "$1" = "$2" ] && exit 0; if [ "$1" -ef "$2" ]; then t="$(dirname "$1")/.rename-$$"; mv "$1" "$t" && { mv "$t" "$2" || { mv "$t" "$1"; exit 1; }; }; elif [ -e "$2" ]; then echo "이미 있습니다" >&2; exit 1; else mv "$1" "$2"; fi';
 
+const TRASH = `if command -v trash >/dev/null 2>&1; then trash "$1"
+elif command -v osascript >/dev/null 2>&1; then osascript -e 'on run argv' -e 'tell application "Finder" to delete (POSIX file (item 1 of argv))' -e 'end run' "$1" >/dev/null
+else echo "이 기기에는 휴지통 명령이 없습니다" >&2; exit 1; fi`;
+
 // 이 Mac의 앱(open·qlmanage·에디터·ditto)을 쓰는 동작은 원격 기기(ctx.on) 파일에는 쓰지 않는다. 메뉴에서도 뺀다.
 const local = (ctx) => !ctx.on;
 
@@ -74,7 +78,8 @@ export const ACTIONS = {
   duplicate: (ctx) => sh(ctx, 'n="$1 copy"; i=2; while [ -e "$n" ]; do n="$1 copy $i"; i=$((i+1)); done; cp -R "$1" "$n"', ctx.abs),
   trash: async (ctx) => {
     // macOS 15+의 trash 명령, 없으면 Finder로. 둘 다 휴지통으로 보낸다.
-    const ok = await sh(ctx, 'if command -v trash >/dev/null 2>&1; then trash "$1"; else osascript -e "tell application \\"Finder\\" to delete POSIX file \\"$1\\"" >/dev/null; fi', ctx.abs);
+    // 파일 이름은 AppleScript 글에 끼우지 않고 run 인자(argv)로 넘긴다(따옴표·백슬래시가 든 이름도 그대로).
+    const ok = await sh(ctx, TRASH, ctx.abs);
     if (ok) notify({ title: "휴지통으로 옮겼습니다", body: ctx.path, level: "info" });
   },
   copyPath: (ctx) => copy(ctx.abs, "경로"),
