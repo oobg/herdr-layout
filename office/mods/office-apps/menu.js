@@ -102,8 +102,9 @@ export const ACTIONS = {
 
 const ask = (ctx, action, title, hint, value = "") =>
   openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 210, props: { role: "prompt", ctx, action, title, hint, value } });
-const confirm = (ctx, action, title, detail) =>
-  openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", ctx, action, title, detail } });
+// opts: { yes: 실행 버튼 이름, danger: 되돌리기 어려우면 true } — Confirm 참고
+const confirm = (ctx, action, title, detail, opts = {}) =>
+  openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", ctx, action, title, detail, ...opts } });
 
 const EDITORS = { code: "VS Code", cursor: "Cursor", webstorm: "WebStorm", zed: "Zed", idea: "IntelliJ IDEA", subl: "Sublime Text" };
 
@@ -198,7 +199,7 @@ export function menuTree(ctx) {
     m === "A" && item("stage에서 빼기", "collapse", C.git, () => ACTIONS.unstage(ctx), "git restore --staged"),
     kind !== "root" && (m === "?" || isDir) && item(".gitignore에 추가", "ignored", C.git, () => ACTIONS.ignore(ctx)),
     "-",
-    changed && m !== "D" && { ...item("변경 되돌리기...", "reset", C.danger, () => confirm(ctx, "restore", "변경 되돌리기", `'${ctx.path}'의 변경을 버리고 마지막 커밋 상태로 되돌립니다. 되돌린 변경은 복구할 수 없습니다.`)), danger: true },
+    changed && m !== "D" && { ...item("변경 되돌리기...", "reset", C.danger, () => confirm(ctx, "restore", "변경 되돌리기", `'${ctx.path}'의 변경을 버리고 마지막 커밋 상태로 되돌립니다. 되돌린 변경은 복구할 수 없습니다.`, { yes: "되돌리기", danger: true })), danger: true },
   ]);
 
   const create = [
@@ -244,7 +245,7 @@ export function menuTree(ctx) {
     // 충돌 파일은 해결 항목을 맨 위에 따로 둔다. git 항목이 한두 개면 하위 메뉴 없이 바로.
     m === "U" ? [] : git.length ? (git.length <= 2 ? git : [sub("Git", "branch", C.git, git)]) : [],
     "-",
-    { ...item("휴지통으로 이동...", "trash", C.danger, () => confirm(ctx, "trash", "휴지통으로 이동", `'${ctx.path}'${isDir ? " 폴더와 그 안의 모든 것" : ""}을(를) 휴지통으로 옮깁니다. 휴지통에서 되돌릴 수 있습니다.`)), danger: true },
+    { ...item("휴지통으로 이동...", "trash", C.danger, () => confirm(ctx, "trash", "휴지통으로 이동", `'${ctx.path}'${isDir ? " 폴더와 그 안의 모든 것" : ""}을(를) 휴지통으로 옮깁니다. 휴지통에서 되돌릴 수 있습니다.`, { yes: "휴지통으로 이동" })), danger: true },
   ].flat());
 }
 
@@ -344,34 +345,56 @@ export class Menu {
   }
 }
 
+// 확인 창(role "confirm"). props: { action, title, detail, ctx, yes?, danger? }
+// yes: 실행 버튼 이름(동사, 없으면 "확인"). danger: 되돌리기 어려운 동작 — 실행 버튼을 빨간 글씨로,
+// 처음 포커스를 "취소"에 둔다. Enter는 포커스된 버튼을 누른다(버튼에 포커스가 없으면 보통은 실행,
+// danger면 "취소"로 포커스만). Tab·Shift+Tab·←→로 두 버튼 사이를 옮긴다. Esc는 닫기.
 export class Confirm {
   init(_p, cx) {
     this.h = cx.focus_handle();
-    this.h.focus();
+    this.no = cx.focus_handle();
+    this.ok = cx.focus_handle();
+    (props().danger ? this.no : this.h).focus();
   }
 
   yes() {
+    if (this.done) return;
+    this.done = true;
     const p = props();
     closeOverlay(p.overlay);
     ACTIONS[p.action](p.ctx);
   }
 
+  cancel() {
+    if (this.done) return;
+    this.done = true;
+    closeOverlay(props().overlay);
+  }
+
   render() {
-    const t = theme(), p = props();
-    const button = (id, text, primary, action) => h_flex().id(id).h(32).px(14).items_center().rounded(8).cursor_pointer().text_size(12.5)
-      .border_1().border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
-      .text_color(primary ? t.solid_foreground : t.foreground).hover((s) => s.opacity(0.88)).on_click(action).child(text);
+    const t = theme(), p = props(), danger = Boolean(p.danger);
+    const button = (id, text, handle, primary, action) => {
+      const focused = handle.is_focused();
+      return h_flex().id(id).track_focus(handle).h(32).px(14).items_center().rounded(8).cursor_pointer().text_size(12.5)
+        .border_1().border_color(focused ? t.accent : primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
+        .text_color(primary ? t.solid_foreground : danger && handle === this.ok ? t.ansi1 : t.foreground)
+        .when(danger && handle === this.ok, (el) => el.font_semibold())
+        .hover((s) => s.opacity(0.88)).on_click(action).child(text);
+    };
     return v_flex().id("files-confirm").track_focus(this.h).size_full().p(18).gap(12).bg(t.popover).text_size(13)
       .on_key_down((e, cx) => {
-        if (e.key === "enter") this.yes();
-        else if (e.key === "escape") closeOverlay(p.overlay);
+        // 버튼에 포커스가 없을 때(창 빈 곳을 눌렀을 때 등): 보통은 실행, 위험하면 실행하지 않고 "취소"로 포커스만.
+        if (e.key === "enter") this.ok.is_focused() ? this.yes() : this.no.is_focused() ? this.cancel() : danger ? (this.no.focus(), cx.notify()) : this.yes();
+        else if (e.key === "escape") this.cancel();
+        else if (e.key === "tab" || e.key === "left" || e.key === "right") { (this.ok.is_focused() ? this.no : this.ok).focus(); cx.notify(); }
         else return;
         cx.stop_propagation();
       })
-      .child(div().text_size(15).font_semibold().text_color(t.foreground).child(p.title))
-      .child(div().flex_1().text_color(t.muted).child(p.detail))
-      .child(h_flex().gap(8).justify_end()
-        .child(button("fc-no", "취소", false, () => closeOverlay(p.overlay)))
-        .child(button("fc-yes", "확인", true, () => this.yes())));
+      .child(div().flex_none().text_size(15).font_semibold().text_color(t.foreground).child(p.title))
+      .child(div().id("fc-detail").flex_1().min_h(0).overflow_y_scrollbar().text_color(t.muted).child(p.detail))
+      .child(h_flex().flex_none().gap(8).justify_end()
+        .child(button("fc-no", "취소", this.no, false, () => this.cancel()))
+        // 위험한 동작은 채운 버튼 대신 일반 버튼 모양에 빨간 글씨: Enter 한 번에 눌리는 기본 버튼처럼 보이지 않게.
+        .child(button("fc-yes", p.yes || "확인", this.ok, !danger, () => this.yes())));
   }
 }

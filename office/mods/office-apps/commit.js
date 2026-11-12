@@ -92,8 +92,9 @@ const ACT = {
   only: (ctx) => setShared(ONLY, { sel: ctx.sel, path: ctx.path, at: Date.now() }),
 };
 
-function confirm(ctx, action, title, detail) {
-  openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", ctx, action: `commit.${action}`, title, detail } });
+// opts: { yes: 실행 버튼 이름, danger: 되돌리기 어려우면 true } — menu.js Confirm 참고
+function confirm(ctx, action, title, detail, opts = {}) {
+  openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", ctx, action: `commit.${action}`, title, detail, ...opts } });
 }
 
 // 숨긴 항목(false) 빼고, 구분선이 겹치거나 양 끝에 오지 않게 정리한다.
@@ -118,11 +119,11 @@ function menuItems(ctx) {
     item("해시 복사", I("copy"), C.copy, () => ACT.copyHash(ctx), ctx.short),
     "-",
     item("이 커밋으로 체크아웃...", I("branch"), C.go, () => confirm(ctx, "checkout", `${s} 체크아웃`,
-      `HEAD를 이 커밋으로 옮깁니다(분리된 HEAD). 브랜치는 그대로 남습니다. 커밋 안 된 변경과 겹치면 git이 멈춥니다.`), "git switch --detach"),
+      `HEAD를 이 커밋으로 옮깁니다(분리된 HEAD). 브랜치는 그대로 남습니다. 커밋 안 된 변경과 겹치면 git이 멈춥니다.`, { yes: "체크아웃" }), "git switch --detach"),
     item("이 커밋 되돌리기...", I("reset"), C.edit, () => confirm(ctx, "revert", `${s} 되돌리기`,
-      `이 커밋의 변경을 거꾸로 적용하는 새 커밋을 만듭니다. 충돌을 직접 다룰 수 있게 새 터미널 탭에서 실행합니다.`), "git revert"),
+      `이 커밋의 변경을 거꾸로 적용하는 새 커밋을 만듭니다. 충돌을 직접 다룰 수 있게 새 터미널 탭에서 실행합니다.`, { yes: "되돌리기" }), "git revert"),
     item("현재 브랜치로 가져오기...", I("duplicate"), C.mix, () => confirm(ctx, "cherryPick", `${s} 가져오기`,
-      `이 커밋의 변경을 현재 브랜치에 새 커밋으로 적용합니다. 새 터미널 탭에서 실행합니다.`), "git cherry-pick"),
+      `이 커밋의 변경을 현재 브랜치에 새 커밋으로 적용합니다. 새 터미널 탭에서 실행합니다.`, { yes: "가져오기" }), "git cherry-pick"),
     "-",
     ctx.web && item("브라우저로 열기", `${ME}/branch/web.svg`, C.view, () => ACT.web(ctx), "GitHub"),
   ]);

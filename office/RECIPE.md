@@ -115,7 +115,7 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 | 역할 | 어디 | 하는 일 |
 |---|---|---|
 | `menu` | `menu.js` `Menu` | 파일트리 우클릭 메뉴 |
-| `confirm` | `menu.js` `Confirm` | 확인 창. `ACTIONS[props.action](props.ctx)`를 부른다 |
+| `confirm` | `menu.js` `Confirm` | 확인 창. `ACTIONS[props.action](props.ctx)`를 부른다. 실행 버튼 이름은 `props.yes`(없으면 "확인"), `props.danger`면 빨간 글씨 일반 버튼에 처음 포커스는 "취소" |
 | `prompt` | `files.js` | 이름 입력 창(새 파일·폴더·이름 바꾸기) |
 | `tip` | `files.js` | 툴바 툴팁 창 |
 | `launcherMenu` | `main.js` | 런처 앱 아이콘 우클릭 메뉴 |
@@ -179,7 +179,7 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
    지금 스페이스를 보는 앱은 파일·브랜치 앱과 같은 규칙(포커스된 패인의 폴더, 없으면 스페이스 폴더, 다른 머신이면 `on`)을 따른다.
 2. **`main.js`의 `APPS`에 등록**한다: `{ id, group: "apps", name, desc, color, make: () => new XxxApp() }`(창만 띄우는 항목은 `group: "system"`). 들어가지 않고 동작만 하는 앱은 `make` 대신 `action: () => ...`. `make`도 `action`도 없으면 격자에는 보이되 들어가면 "준비 중인 앱입니다"가 나온다. 파일 맨 위에 import를 더한다.
 3. **아이콘** `apps/tiles/<id>.png`(투명 배경 256px, 지금 타일들과 같은 금속 오브제)를 두고 `main.js`의 `TILES`에 id를 더한다. 그림이 없으면 앱 색 바탕에 이름 첫 글자로 그린다.
-4. **확인 창**이 필요하면 지금은 `menu.js`의 `ACTIONS`에 동작을 등록하는 방식이다. 모듈 최상위(함수 밖)에 `ACTIONS["<id>.<동작>"] = (ctx) => ...`를 두고, `openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", action, title, detail, ctx } })`로 띄운다. `ctx`에는 값만 담는다. 새 오버레이 역할이 필요하면 같은 방식으로 `files.js`의 `ROLES`에 더한다(`branch.js` 끝 참고).
+4. **확인 창**이 필요하면 지금은 `menu.js`의 `ACTIONS`에 동작을 등록하는 방식이다. 모듈 최상위(함수 밖)에 `ACTIONS["<id>.<동작>"] = (ctx) => ...`를 두고, `openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", action, title, detail, ctx, yes, danger } })`로 띄운다. `ctx`에는 값만 담는다. `yes`는 실행 버튼 이름(동사, 예: "삭제"·"병합", 없으면 "확인"). `danger: true`는 되돌리기 어려운 동작(강제 푸시·강제 삭제·되돌린 변경 버리기 등)에 준다: 실행 버튼이 빨간 글씨의 일반 버튼이 되고 처음 포커스가 "취소"에 간다. 키는 공통으로 Enter = 포커스된 버튼, Tab·Shift+Tab·←→ = 버튼 사이 이동, Esc = 닫기(버튼에 포커스가 없을 때 Enter는 보통 실행, danger면 "취소"로 포커스만). 긴 `detail`은 스크롤된다. 사무실(`close-agent`)·리소스(`close-term`)의 닫기 확인 창도 같은 danger 규칙을 각자 복제해 쓴다. 새 오버레이 역할이 필요하면 같은 방식으로 `files.js`의 `ROLES`에 더한다(`branch.js` 끝 참고).
 5. `herdr-app check office/mods/office-apps` → `./install.sh` → `herdr-app do office-apps.open-<id>` → `herdr-app shot`, `herdr-app status`의 errors 확인.
 
 ## LLM 사용량 (`mods/office-usage`)

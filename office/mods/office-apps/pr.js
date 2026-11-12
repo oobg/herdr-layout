@@ -68,8 +68,9 @@ ACTIONS["pr.merge"] = (ctx) => {
 ACTIONS["pr.close"] = (ctx) => gh(ctx, ["pr", "close", String(ctx.number)], "PR을 닫았습니다");
 ACTIONS["pr.checkout"] = async (ctx) => { await gh(ctx, ["pr", "checkout", String(ctx.number)], "체크아웃했습니다"); setShared(TICK, Date.now()); };
 
-const confirm = (action, title, detail, ctx) =>
-  openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", action, title, detail, ctx } });
+// opts: { yes: 실행 버튼 이름, danger: 되돌리기 어려우면 true } — menu.js Confirm 참고
+const confirm = (action, title, detail, ctx, opts = {}) =>
+  openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", action, title, detail, ctx, ...opts } });
 
 // ── 메뉴(⋯ 버튼과 목록 우클릭이 같은 항목을 쓴다). 오버레이 복사본에서 그려지므로 ctx는 값만:
 //   { number, title, url, root, on, open, draft, head, headRef, baseRef, methods: [{ flag, name, by }], method }
@@ -79,12 +80,12 @@ const C = { open: "#7aa2f7", copy: "#d699b6", go: "#e5739d", merge: "#a7c080" };
 
 function askMerge(c, m) {
   confirm("pr.merge", `#${c.number} 병합 · ${m.name}`, `${c.headRef} → ${c.baseRef}, ${m.name} 방식으로 병합합니다.`,
-    { number: c.number, root: c.root, on: c.on, flag: m.flag, head: c.head });
+    { number: c.number, root: c.root, on: c.on, flag: m.flag, head: c.head }, { yes: "병합" });
 }
 const askCheckout = (c) => confirm("pr.checkout", `#${c.number} 체크아웃`,
-  `작업 폴더를 ${c.headRef} 브랜치로 바꿉니다. 커밋하지 않은 변경이 있으면 실패할 수 있습니다.`, { number: c.number, root: c.root, on: c.on });
+  `작업 폴더를 ${c.headRef} 브랜치로 바꿉니다. 커밋하지 않은 변경이 있으면 실패할 수 있습니다.`, { number: c.number, root: c.root, on: c.on }, { yes: "체크아웃" });
 const askClose = (c) => confirm("pr.close", `#${c.number} 닫기`, "병합하지 않고 PR을 닫습니다. 나중에 다시 열 수 있습니다.",
-  { number: c.number, root: c.root, on: c.on });
+  { number: c.number, root: c.root, on: c.on }, { yes: "PR 닫기" });
 
 async function copyText(text, what) {
   await exec("sh", ["-c", 'printf %s "$1" | pbcopy', "copy", text]).catch(() => null);

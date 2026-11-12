@@ -867,35 +867,50 @@ class AddAgent {
 }
 
 // 닫기 확인 창(role "close-agent"). 확인하면 그 터미널의 칸을 닫는다(pane.close: 칸을 닫고 터미널을 끝낸다).
+// 터미널을 끝내는 동작이라 위험한 확인 창으로 그린다(office-apps menu.js Confirm의 danger와 같은 규칙):
+// 처음 포커스는 "취소", Enter는 포커스된 버튼, Tab·Shift+Tab·←→로 버튼 사이 이동, Esc는 닫기.
 class CloseAgent {
   init(_p, cx) {
     this.h = cx.focus_handle();
-    this.h.focus();
+    this.no = cx.focus_handle();
+    this.ok = cx.focus_handle();
+    this.no.focus();
   }
 
   yes() {
+    if (this.done) return;
+    this.done = true;
     const p = props();
     closeOverlay(p.overlay);
     if (p.pane) run("pane.close", { pane: p.pane });
   }
 
+  cancel() {
+    if (this.done) return;
+    this.done = true;
+    closeOverlay(props().overlay);
+  }
+
   render() {
     const t = theme(), p = props();
-    const button = (id, text, primary, action) => h_flex().id(id).h(30).px(14).items_center().rounded(7).cursor_pointer().text_size(12.5)
-      .border_1().border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
-      .text_color(primary ? t.solid_foreground : t.foreground).hover((st) => st.opacity(0.88)).on_click(action).child(text);
+    const button = (id, text, handle, action) => h_flex().id(id).track_focus(handle).h(30).px(14).items_center().rounded(7).cursor_pointer().text_size(12.5)
+      .border_1().border_color(handle.is_focused() ? t.accent : t.input).bg(t.raised)
+      .text_color(handle === this.ok ? t.ansi1 : t.foreground).when(handle === this.ok, (el) => el.font_semibold())
+      .hover((st) => st.opacity(0.88)).on_click(action).child(text);
     return v_flex().id("office-close-agent").track_focus(this.h).size_full().p(18).gap(10).bg(t.popover).text_size(13)
       .on_key_down((e, cx) => {
-        if (e.key === "enter") this.yes();
-        else if (e.key === "escape") closeOverlay(p.overlay);
+        // 버튼에 포커스가 없으면(창 빈 곳을 눌렀을 때) 실행하지 않고 "취소"로 포커스만.
+        if (e.key === "enter") this.ok.is_focused() ? this.yes() : this.no.is_focused() ? this.cancel() : (this.no.focus(), cx.notify());
+        else if (e.key === "escape") this.cancel();
+        else if (e.key === "tab" || e.key === "left" || e.key === "right") { (this.ok.is_focused() ? this.no : this.ok).focus(); cx.notify(); }
         else return;
         cx.stop_propagation();
       })
-      .child(div().text_size(15).font_semibold().text_color(t.foreground).child(p.working ? "작업 중인 에이전트를 닫을까요?" : "에이전트를 닫을까요?"))
-      .child(div().flex_1().text_color(t.muted).child(`${p.name}${p.title ? ` · ${p.title}` : ""}의 터미널을 닫습니다.${p.working ? " 하던 일은 멈춥니다." : ""}`))
-      .child(h_flex().gap(8).justify_end()
-        .child(button("oc-no", "취소", false, () => closeOverlay(p.overlay)))
-        .child(button("oc-yes", "닫기", true, () => this.yes())));
+      .child(div().flex_none().text_size(15).font_semibold().text_color(t.foreground).child(p.working ? "작업 중인 에이전트를 닫을까요?" : "에이전트를 닫을까요?"))
+      .child(div().id("oc-detail").flex_1().min_h(0).overflow_y_scrollbar().text_color(t.muted).child(`${p.name}${p.title ? ` · ${p.title}` : ""}의 터미널을 닫습니다.${p.working ? " 하던 일은 멈춥니다." : ""}`))
+      .child(h_flex().flex_none().gap(8).justify_end()
+        .child(button("oc-no", "취소", this.no, () => this.cancel()))
+        .child(button("oc-yes", "닫기", this.ok, () => this.yes())));
   }
 }
 

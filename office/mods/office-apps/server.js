@@ -397,7 +397,7 @@ export class ServerApp {
 
   confirmRemove(e) {
     openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 210, props: {
-      role: "confirm", action: "serverRemove", ctx: { name: e.name }, title: "기기 제거",
+      role: "confirm", action: "serverRemove", ctx: { name: e.name }, title: "기기 제거", yes: "제거", danger: true,
       detail: `'${e.name}'을(를) Herdr에서 지웁니다. 그 기기의 터미널은 계속 돌고, 다시 추가할 수 있습니다.`,
     } });
   }

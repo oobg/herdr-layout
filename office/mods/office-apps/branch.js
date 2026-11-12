@@ -174,7 +174,7 @@ const ACT = {
     const keep = new Set([ctx.head, ctx.defaultName, "main", "master", "develop", "dev", "staging", "release"]);
     const list = (r?.stdout ?? "").split("\n").filter(Boolean).map((l) => l.split("\0")).filter(([n, wt]) => !keep.has(n) && !wt).map(([n]) => n);
     if (!list.length) return done("정리할 병합된 브랜치가 없습니다");
-    confirm({ ...ctx, list }, "pruneList", `병합된 브랜치 ${list.length}개 삭제`, `${q(ctx.head ?? "HEAD")}에 이미 병합된 브랜치입니다: ${list.join(", ")}`);
+    confirm({ ...ctx, list }, "pruneList", `병합된 브랜치 ${list.length}개 삭제`, `${q(ctx.head ?? "HEAD")}에 이미 병합된 브랜치입니다: ${list.join(", ")}`, { yes: `${list.length}개 삭제`, danger: true });
   },
   pruneList: async (ctx) => { if (await git(ctx, ["branch", "-d", ...ctx.list])) done(`브랜치 ${ctx.list.length}개를 삭제했습니다`); },
   // origin 주소를 웹 주소로 바꿔 브라우저로 연다 (git@host:o/r.git → https://host/o/r).
@@ -193,9 +193,10 @@ const ACT = {
 
 // ── 오버레이 열기 ────────────────────────────────────────────
 
-const confirm = (ctx, action, title, detail) => {
+// opts: { yes: 실행 버튼 이름, danger: 되돌리기 어려우면 true } — menu.js Confirm 참고
+const confirm = (ctx, action, title, detail, opts = {}) => {
   register();
-  openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", ctx, action: `branch.${action}`, title, detail } });
+  openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", ctx, action: `branch.${action}`, title, detail, ...opts } });
 };
 const ask = (ctx, action, title, hint, value = "") => {
   register();
@@ -228,8 +229,8 @@ function itemsFor(ctx) {
   ];
   // 현재 브랜치가 있고, 아직 합쳐지지 않은 것만.
   const mix = !me && head && kind !== "tag" && !ctx.merged && [
-    item("병합...", B("pr"), C.mix, () => confirm(ctx, "merge", "병합", `${q(name)}를 현재 브랜치 ${q(head)}에 병합합니다. 새 탭에서 실행합니다.`), "git merge"),
-    item("리베이스...", I("branch"), C.mix, () => confirm(ctx, "rebase", "리베이스", `현재 브랜치 ${q(head)}를 ${q(name)} 위로 다시 쌓습니다. 새 탭에서 실행합니다.`), "git rebase"),
+    item("병합...", B("pr"), C.mix, () => confirm(ctx, "merge", "병합", `${q(name)}를 현재 브랜치 ${q(head)}에 병합합니다. 새 탭에서 실행합니다.`, { yes: "병합" }), "git merge"),
+    item("리베이스...", I("branch"), C.mix, () => confirm(ctx, "rebase", "리베이스", `현재 브랜치 ${q(head)}를 ${q(name)} 위로 다시 쌓습니다. 새 탭에서 실행합니다.`, { yes: "리베이스", danger: true }), "git rebase"),
   ];
   const copies = [
     item("이름 복사", I("copy"), C.edit, () => ACT.copyName(ctx), name),
@@ -255,7 +256,7 @@ function itemsFor(ctx) {
     } else if (ahead && behind) {
       if (me) sync.push(item("끌어와서 리베이스", B("pull"), C.remote, () => ACT.pullRebase(ctx), "git pull --rebase"));
       sync.push({ ...item("강제 푸시...", B("push"), C.danger, () => confirm(ctx, "forcePush", "강제 푸시",
-        `원격 ${q(upstream.short)}의 커밋 ${behind}개를 덮어씁니다. 그사이 다른 사람이 올린 게 있으면 git이 거부합니다(--force-with-lease).`), "--force-with-lease"), danger: true });
+        `원격 ${q(upstream.short)}의 커밋 ${behind}개를 덮어씁니다. 그사이 다른 사람이 올린 게 있으면 git이 거부합니다(--force-with-lease).`, { yes: "강제 푸시", danger: true }), "--force-with-lease"), danger: true });
     } else if (behind) {
       sync.push(me ? item("끌어오기", B("pull"), C.remote, () => ACT.pull(ctx), "git pull --ff-only")
         : item("빨리 감기", B("pull"), C.remote, () => ACT.fastForward(ctx), "체크아웃 없이"));
@@ -265,8 +266,8 @@ function itemsFor(ctx) {
     if (me && sync.length && !sync[0].danger) sync[0] = primary(sync[0]);
 
     const remove = me || elsewhere || ctx.isDefault ? null
-      : ctx.merged ? danger("삭제...", () => confirm(ctx, "remove", "브랜치 삭제", `${q(name)}를 삭제합니다. ${q(head)}에 이미 병합되어 커밋은 남습니다.`), "병합됨 · git branch -d")
-      : danger("강제 삭제...", () => confirm(ctx, "forceRemove", "브랜치 강제 삭제", `${q(name)}는 ${q(head ?? "HEAD")}에 병합되지 않았습니다. 지우면 이 브랜치에만 있는 커밋을 잃을 수 있습니다.`), "병합 안 됨 · git branch -D");
+      : ctx.merged ? danger("삭제...", () => confirm(ctx, "remove", "브랜치 삭제", `${q(name)}를 삭제합니다. ${q(head)}에 이미 병합되어 커밋은 남습니다.`, { yes: "삭제" }), "병합됨 · git branch -d")
+      : danger("강제 삭제...", () => confirm(ctx, "forceRemove", "브랜치 강제 삭제", `${q(name)}는 ${q(head ?? "HEAD")}에 병합되지 않았습니다. 지우면 이 브랜치에만 있는 커밋을 잃을 수 있습니다.`, { yes: "강제 삭제", danger: true }), "병합 안 됨 · git branch -D");
 
     return tidy([
       ...go, ...sync, "-",
@@ -285,7 +286,7 @@ function itemsFor(ctx) {
     "-",
     newBranch, ...(compare || []), ...(mix || []), "-",
     ...copies, "-",
-    !ctx.isDefault && danger("원격에서 삭제...", () => confirm(ctx, "removeRemote", "원격 브랜치 삭제", `원격의 ${q(name)}를 삭제합니다. 되돌리기 어렵습니다. 새 탭에서 실행합니다.`), "git push --delete"),
+    !ctx.isDefault && danger("원격에서 삭제...", () => confirm(ctx, "removeRemote", "원격 브랜치 삭제", `원격의 ${q(name)}를 삭제합니다. 되돌리기 어렵습니다. 새 탭에서 실행합니다.`, { yes: "원격에서 삭제", danger: true }), "git push --delete"),
   ]);
 
   // 태그
@@ -293,7 +294,7 @@ function itemsFor(ctx) {
     newBranch, ...(compare || []), "-",
     ...copies, "-",
     item("원격에 올리기", B("push"), C.remote, () => ACT.pushTag(ctx), "git push origin"),
-    danger("태그 삭제...", () => confirm(ctx, "removeTag", "태그 삭제", `로컬 태그 ${q(name)}를 삭제합니다. 원격에 올린 태그는 남습니다.`), "git tag -d"),
+    danger("태그 삭제...", () => confirm(ctx, "removeTag", "태그 삭제", `로컬 태그 ${q(name)}를 삭제합니다. 원격에 올린 태그는 남습니다.`, { yes: "태그 삭제" }), "git tag -d"),
   ]);
 }
 
