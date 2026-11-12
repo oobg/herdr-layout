@@ -284,7 +284,7 @@ class Floor {
           .when(m != null, (el) => el.child(div().flex_none().w(52).text_right().text_size(12).text_color(t.muted).child(ago(m))))
           .when(!sub, (el) => el.child(div().id(`ov-close-${a.address}`).w(16).h(16).flex_none().flex().items_center().justify_center()
             .rounded(4).text_size(11).text_color(closable ? t.muted : "#00000000")
-            .when(closable, (x) => x.hover((st) => st.bg(t.hover).text_color(t.foreground))
+            .when(closable, (x) => x.cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
               .on_click((_e, cx) => { cx.stop_propagation(); openCloseConfirm(a, name(a)); }))
             .child("✕"))))
         .when(Boolean(a.title), (el) => el.child(div().pl(24).truncate().text_size(12).text_color(t.muted).child(a.title)));
@@ -736,7 +736,7 @@ class Termbar {
     return h_flex().size_full().px(10).gap(8).items_center().text_size(12)
       .child(div().flex_1().truncate().text_color(t.muted)
         .child(s ? `${s.name}${s.branch ? ` · ${s.branch}` : ""}` : ""))
-      .child(div().id("office-close").px(6).rounded(4).text_color(t.muted)
+      .child(div().id("office-close").px(6).rounded(4).text_color(t.muted).cursor_pointer()
         .hover((st) => st.bg(t.hover).text_color(t.foreground))
         .on_click(() => closeTerm())
         .child("✕"));
