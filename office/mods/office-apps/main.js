@@ -9,16 +9,20 @@
 //   move?(d, cx) — 왼쪽 칸에서 ↑(-1)/↓(+1). activate?(cx) — 왼쪽 칸에서 Enter.
 //   emptyState?() → { text, sub } — detail이 null일 때 오른쪽 빈 화면 문구(없으면 기본 문구).
 //   커밋 앱만: openCommit?(해시|"WORKTREE", cx) · openRange?(a, b, cx) — commit:/range: 명령이 부른다.
-// 런처 격자는 APPS의 group으로 줄을 나눈다: "apps"(들어가는 앱) · "system"(설정·앱 관리처럼 창을 띄우는 것).
+// 런처 격자는 APPS의 group으로 줄을 나눈다(GROUPS 순서): "apps"(레포·코드 일) · "agents"(에이전트·터미널·기기 일)
+//   · "system"(설정·앱 관리처럼 창을 띄우는 것). 즐겨찾기가 있으면 맨 위에 "즐겨찾기" 줄(검색 중에는 숨김)을 더 둔다.
+//   즐겨찾기는 순서 있는 id 배열(localStorage "launcher.favorites"), 즐겨찾기 앱은 자기 줄에도 그대로 남는다.
 // 오버레이 역할(props.role): menu·prompt·confirm·tip — 파일 앱의 우클릭 메뉴와 입력·확인 창, 툴팁.
 //   manage — 앱 관리 대화 상자(앱마다 켜고 끄기).
-//   launcherMenu — 런처 격자의 앱 아이콘 우클릭 메뉴(열기 · 앱 끄기 · 앱 관리…, 앱 관리 앱은 열기만).
+//   launcherMenu — 런처 격자의 앱 아이콘 우클릭 메뉴(열기 · 즐겨찾기 추가/빼기 · 앞으로/뒤로(즐겨찾기 줄에서) · 앱 끄기 · 앱 관리…,
+//   앱 관리 앱은 끄기 없음).
 //   viewer — 떠 있는 파일 뷰어 창(kind "window", props { file: 절대 경로, on? }). 에이전트 활동의 파일 줄이 연다(files.js openViewer).
 // 키·명령: office-apps.home(런처로), office-apps.open-<앱 id>(앱 열기), office-apps.show:<경로>(파일 열기),
 //   office-apps.manage(앱 관리 대화 상자), office-apps.disable-<앱 id>(앱 끄기),
 //   office-apps.commit:<해시|WORKTREE>(커밋 앱에서 그 커밋 열기), office-apps.range:<a>...<b>(커밋 앱에서 범위 비교),
 //   office-apps.agent:<터미널 주소>(에이전트 앱에서 그 에이전트 줄 고르기, 사무실 오른쪽 패널의 "자세히 →"가 보낸다),
-//   office-apps.files-toggle-hidden · files-toggle-ignored(파일 앱 ⋯ 메뉴가 보낸다: 숨김 파일 · gitignore 항목 보이기 전환)
+//   office-apps.files-toggle-hidden · files-toggle-ignored(파일 앱 ⋯ 메뉴가 보낸다: 숨김 파일 · gitignore 항목 보이기 전환),
+//   office-apps.favorite:<앱 id>(즐겨찾기 추가/빼기 전환), office-apps.favorite-move:<앱 id>:<-1|1>(즐겨찾기 줄 안에서 앞/뒤로, 우클릭 메뉴가 보낸다)
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
@@ -30,26 +34,57 @@ import { CommitApp } from "./commit.js";
 import { PrApp } from "./pr.js";
 import { AgentApp } from "./agent.js";
 import { ServerApp } from "./server.js";
+import { InboxApp } from "./inbox.js";
+import { WorkspaceApp } from "./workspace.js";
+import { SessionsApp } from "./sessions.js";
+import { PaletteApp } from "./palette.js";
+import { PortsApp } from "./ports.js";
+import { WorktreesApp } from "./worktrees.js";
+import { WatchApp } from "./watch.js";
+import { ReviewApp } from "./review.js";
+import { NotesApp } from "./notes.js";
+import { ActionsApp } from "./actions.js";
+import { cleanFavs, toggleFav, moveFav, homeRows } from "./launcher/favorites.js";
 
 const ME = "mods/office-apps";
 const DISABLED = "office-apps.disabled";   // { 앱 id: true } — 끈 앱
 // 앱 목록. make가 없는 앱은 아직 준비 중(격자에는 보이되 들어가면 안내만). action이 있는 앱은 들어가지 않고 그 동작만 한다.
 //   locked 앱은 끌 수 없다. group은 격자·앱 관리에서 나누는 줄(GROUPS 순서): 동작 방식이 아니라 여기 적은 값으로만 나눈다.
+//   줄 안 순서는 여기 적은 순서. 앱마다 색은 두지 않는다: 타일 그림이 없는 앱은 모두 같은 중립색(tile()의 NEUTRAL)으로 그린다.
 const APPS = [
-  { id: "files", group: "apps", name: "파일", desc: "파일트리와 뷰어(코드·마크다운·이미지)", color: "#3d7de5", make: () => new FilesApp() },
-  { id: "branch", group: "apps", name: "브랜치", desc: "로컬·원격 브랜치 관리", color: "#2f9e6f", make: () => new BranchApp() },
-  { id: "commit", group: "apps", name: "커밋", desc: "커밋 기록과 변경 내용", color: "#e07b39", make: () => new CommitApp() },
-  { id: "pr", group: "apps", name: "PR", desc: "풀 리퀘스트 목록과 리뷰", color: "#8b5cf6", make: () => new PrApp() },
-  { id: "agent", group: "apps", name: "에이전트", desc: "에이전트와 서브에이전트가 하는 일", color: "#d97757", make: () => new AgentApp() },
-  { id: "server", group: "apps", name: "서버", desc: "Herdr에 등록한 머신(서버) 관리", color: "#4f8fa8", make: () => new ServerApp() },
-  { id: "settings", group: "system", name: "설정", desc: "Herdr 설정 창 열기", color: "#6b7280", action: () => run("app.settings") },
-  { id: "manage", group: "system", name: "앱 관리", desc: "앱 켜고 끄기", color: "#475569", locked: true, action: () => openManage() },
+  // 앱: 레포·코드 일
+  { id: "files", group: "apps", name: "파일", desc: "파일트리와 뷰어(코드·마크다운·이미지)", make: () => new FilesApp() },
+  { id: "branch", group: "apps", name: "브랜치", desc: "로컬·원격 브랜치 관리", make: () => new BranchApp() },
+  { id: "commit", group: "apps", name: "커밋", desc: "커밋 기록과 변경 내용", make: () => new CommitApp() },
+  { id: "pr", group: "apps", name: "PR", desc: "풀 리퀘스트 목록과 리뷰", make: () => new PrApp() },
+  { id: "actions", group: "apps", name: "배포", desc: "GitHub Actions 실행과 배포 지켜보기", make: () => new ActionsApp() },
+  { id: "worktrees", group: "apps", name: "워크트리", desc: "에이전트마다 따로 쓰는 작업 폴더", make: () => new WorktreesApp() },
+  { id: "review", group: "apps", name: "검토", desc: "에이전트별 변경을 보고 피드백 보내기", make: () => new ReviewApp() },
+  { id: "notes", group: "apps", name: "메모", desc: "작업 공간마다 남기는 메모와 할 일", make: () => new NotesApp() },
+  // 새 레포·코드 앱은 이 줄("apps") 끝에 더한다.
+  // 에이전트: 에이전트·터미널·기기 일
+  { id: "agent", group: "agents", name: "에이전트", desc: "에이전트와 서브에이전트가 하는 일", make: () => new AgentApp() },
+  { id: "inbox", group: "agents", name: "알림함", desc: "답 필요·완료 모아 보기", make: () => new InboxApp() },
+  { id: "sessions", group: "agents", name: "세션", desc: "지난 에이전트 세션 이어하기", make: () => new SessionsApp() },
+  { id: "workspace", group: "agents", name: "작업 공간", desc: "스페이스·탭·칸 정리", make: () => new WorkspaceApp() },
+  { id: "watch", group: "agents", name: "출력", desc: "터미널 출력의 오류 모아 보기", make: () => new WatchApp() },
+  { id: "ports", group: "agents", name: "포트", desc: "열려 있는 개발 서버", make: () => new PortsApp() },
+  { id: "server", group: "agents", name: "서버", desc: "Herdr에 등록한 머신(서버) 관리", make: () => new ServerApp() },
+  { id: "palette", group: "agents", name: "명령", desc: "모든 명령 찾아 실행", make: () => new PaletteApp() },
+  // 설정: 들어가지 않고 창을 띄우는 것
+  { id: "settings", group: "system", name: "설정", desc: "Herdr 설정 창 열기", action: () => run("app.settings") },
+  { id: "manage", group: "system", name: "앱 관리", desc: "앱 켜고 끄기", locked: true, action: () => openManage() },
 ];
-// 격자·앱 관리의 줄 순서와 줄 제목
-const GROUPS = [{ id: "apps", title: "앱" }, { id: "system", title: "설정" }];
+// 격자·앱 관리의 줄 순서와 줄 제목(격자 맨 위 "즐겨찾기" 줄은 여기 없다: 앱마다 정하는 줄이 아니라 사람이 고른 것)
+const GROUPS = [{ id: "apps", title: "앱" }, { id: "agents", title: "에이전트" }, { id: "system", title: "설정" }];
 // 줄 제목: 작은 흐린 글자, 장식 없이
 const groupTitle = (title, t) => div().text_size(12).text_color(t.muted).child(title);
 const isLocked = (id) => Boolean(APPS.find((a) => a.id === id)?.locked);
+
+// 즐겨찾기: 순서 있는 앱 id 배열. 런처만 쓰고(우클릭 메뉴는 명령으로 돌려보낸다), 꺼진 앱·없는 id는 그릴 때 거른다.
+const FAVS = "launcher.favorites";
+function loadFavs() { try { return cleanFavs(JSON.parse(localStorage.getItem(FAVS) ?? "[]")); } catch { return []; } }
+function saveFavs(v) { try { localStorage.setItem(FAVS, JSON.stringify(v)); } catch { /* 이번 실행 동안만 */ } }
 
 // 끈 앱 { id: true }. 공유 상태에 끌 수 없는 앱이 꺼져 있다고 적혀 있어도 빼고 돌려준다.
 function disabled() {
@@ -83,15 +118,15 @@ class Launcher {
     this.seen = disabled();   // 마지막으로 본 끈 앱 목록(새로 꺼진 앱을 찾는 기준)
     this.inst = {};           // 앱 id → 인스턴스(켜진 앱을 처음 열 때 만든다)
     this.query = "";
-    this.sel = 0;             // 런처 격자에서 고른 칸(걸러진 목록의 순번). 검색어가 바뀌면 첫 칸으로
+    this.sel = 0;             // 런처 격자에서 고른 칸(homeList의 순번: 즐겨찾기 줄 먼저). 검색어가 바뀌면 첫 칸으로
+    this.favs = loadFavs();   // 즐겨찾기 id 배열(순서 있음)
     this.search = InputState.new({ placeholder: "앱 검색" });
     this.search.on("change", (_e, cx) => { this.query = this.search.value().trim().toLowerCase(); this.sel = 0; cx.notify(); });
     // Enter: 고른 칸(기본은 걸러진 첫 앱)을 열고, 들어갔으면 왼쪽 칸이 키보드를 받는다
     this.search.on("submit", (_e, cx) => {
       const list = this.homeList(), a = list[Math.min(this.sel, list.length - 1)];
       if (!a) return;
-      this.go(a.id, cx);
-      if (this.app) this.lh?.focus();
+      this.enter(a.id, cx);
       cx.notify();
     });
     try { this.go(JSON.parse(localStorage.getItem("app") ?? "null"), cx); } catch { /* 런처부터 */ }
@@ -114,6 +149,12 @@ class Launcher {
         else if (c === "manage") openManage();
         // 끌 수 없는 앱(앱 관리)은 setDisabled가 무시한다
         else if (c.startsWith("disable-")) setDisabled(c.slice(8), true);
+        // favorite:<앱 id>  즐겨찾기에 더하기/빼기. favorite-move:<앱 id>:<-1|1>  즐겨찾기 줄 안에서 앞/뒤로
+        else if (c.startsWith("favorite:")) this.toggleFavorite(c.slice(9));
+        else if (c.startsWith("favorite-move:")) {
+          const s = c.slice(14), i = s.lastIndexOf(":");
+          if (i > 0) this.moveFavorite(s.slice(0, i), Number(s.slice(i + 1)) < 0 ? -1 : 1);
+        }
         // agent:<터미널 주소>  에이전트 앱을 열고 그 줄을 고른다. 꺼져 있으면 열지 않고 알린다.
         else if (c.startsWith("agent:")) {
           if (this.disabled().agent) notify({ title: "에이전트 앱이 꺼져 있습니다", body: "앱 관리에서 켜면 열 수 있습니다", level: "info" });
@@ -127,6 +168,29 @@ class Launcher {
   }
 
   disabled() { return disabled(); }
+
+  toggleFavorite(id) {
+    if (!APPS.some((a) => a.id === id)) return;
+    this.favs = toggleFav(this.favs, id);
+    saveFavs(this.favs);
+  }
+
+  // 보이는(켜진) 즐겨찾기 사이에서 옮긴다. 꺼진 앱은 자리를 지킨다.
+  moveFavorite(id, d) {
+    const off = this.disabled(), on = APPS.filter((a) => !off[a.id]).map((a) => a.id);
+    this.favs = moveFav(this.favs, id, d, on);
+    saveFavs(this.favs);
+  }
+
+  // 격자(클릭·검색창 Enter)에서 앱에 들어간다: 열고, 들어갔으면 왼쪽 칸이 키보드를 받는다(검색창에 있던 포커스를 옮김).
+  //   앱이 진입 때 할 일(focusOnEnter, 예: 명령 앱의 검색창 포커스)이 있으면 그다음에 부른다.
+  //   go()에서는 하지 않는다: 시작할 때 복원·명령(show:·commit: 등)으로 열릴 때 터미널의 키보드를 뺏지 않게.
+  enter(id, cx) {
+    this.go(id, cx);
+    if (!this.app) return;
+    this.lh?.focus();
+    this.inst[this.app]?.focusOnEnter?.();
+  }
 
   // 커밋 앱을 열고 그 인스턴스에 일을 넘긴다. 꺼져 있으면 열지 않고 알린다.
   toCommit(cx, fn) {
@@ -185,38 +249,44 @@ class Launcher {
   }
 
   // 앱 아이콘 우클릭 메뉴. 오버레이는 이 모드의 새 복사본이라 상태를 나누지 않으므로, 고른 동작은 명령으로 돌려받는다.
-  openMenu(a) {
-    const h = menuHeight(menuItems(a));
+  //   즐겨찾기 상태(fav)와 즐겨찾기 줄 안 위치(row: { first, last }, 즐겨찾기 줄에서 누른 때만)는 props로 넘긴다.
+  openMenu(a, inFavRow, first, last) {
+    const ctx = { fav: this.favs.includes(a.id), row: inFavRow ? { first, last } : null };
+    const h = menuHeight(menuItems(a, ctx));
     openOverlay({ mod: "office-apps", kind: "popup", at: popupAt(MENU_W, h), width: MENU_W, height: h,
-      props: { role: "launcherMenu", app: a.id } });
+      props: { role: "launcherMenu", app: a.id, ...ctx } });
   }
 
-  // 런처 격자에 보이는 앱: 끈 앱을 빼고 검색어(이름·설명·id)로 거른 뒤 줄(GROUPS) 순서로 편다.
-  //   격자 그리기와 검색창 Enter·↑↓가 같은 목록·같은 순번을 쓴다.
-  homeList() {
+  // 런처 격자의 줄: 끈 앱을 빼고 검색어(이름·설명·id)로 거른 뒤, 즐겨찾기 줄(검색 중이 아니고 있을 때만) → GROUPS 순서.
+  homeRows() {
     const q = this.query, off = this.disabled();
-    const list = APPS.filter((a) => !off[a.id] && (!q || a.name.toLowerCase().includes(q) || a.desc.toLowerCase().includes(q) || a.id.includes(q)));
-    return GROUPS.flatMap((g) => list.filter((a) => a.group === g.id));
+    const apps = APPS.filter((a) => !off[a.id] && (!q || a.name.toLowerCase().includes(q) || a.desc.toLowerCase().includes(q) || a.id.includes(q)));
+    return homeRows({ apps, groups: GROUPS, favs: this.favs, query: q });
+  }
+
+  // 격자 칸을 줄 순서대로 편 목록(즐겨찾기 앱은 두 번 나올 수 있다). 격자 그리기와 검색창 Enter·↑↓가 같은 순번을 쓴다.
+  homeList() {
+    return this.homeRows().flatMap((r) => r.apps);
   }
 
   // 런처: 검색창 + 격자. 앱 이름·설명으로 거른다.
   //   검색창에서 ↑↓로 칸을 고르고(고른 칸은 selected 바탕) Enter로 연다(submit).
   home(t) {
-    const q = this.query, list = this.homeList();
+    const q = this.query, rows = this.homeRows(), list = rows.flatMap((r) => r.apps);
     // 끈 앱이 생기면 목록이 줄어드니 고른 칸을 목록 안으로 당긴다
     this.sel = Math.max(0, Math.min(this.sel ?? 0, list.length - 1));
-    const sel = list[this.sel]?.id;
-    // 그룹별 줄. 걸러서 빈 줄은 제목째 숨긴다
-    const rows = GROUPS.map((g) => ({ ...g, apps: list.filter((a) => a.group === g.id) })).filter((g) => g.apps.length);
-    const icon = (a) => v_flex().id(`app-${a.id}`).w(92).py(8).gap(8).items_center().rounded(10).cursor_pointer()
-      .when(a.id === sel, (el) => el.bg(t.selected))
-      .hover((s) => s.bg(t.hover))
-      // 격자에서 눌러 들어가면 왼쪽 칸이 키보드를 받는다(검색창에 있던 포커스를 옮김).
-      //   go()에서는 하지 않는다: 시작할 때 복원·명령(show:·commit: 등)으로 열릴 때 터미널의 키보드를 뺏지 않게.
-      .on_click((_e, cx) => { this.go(a.id, cx); if (this.app) this.lh?.focus(); cx.notify(); })
-      .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(a); })
-      .child(this.tile(a, 56, t))
-      .child(div().text_size(13).text_color(t.foreground).child(a.name));
+    // 칸마다 homeList 순번(n)을 매겨 고른 칸을 가린다: 즐겨찾기 줄과 자기 줄에 같은 앱이 있어도 고른 칸은 하나.
+    let n = 0;
+    const icon = (a, fav, i, len) => {
+      const k = n++;
+      return v_flex().id(`${fav ? "fav" : "app"}-${a.id}`).w(92).py(8).gap(8).items_center().rounded(10).cursor_pointer()
+        .when(k === this.sel, (el) => el.bg(t.selected))
+        .hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => { this.enter(a.id, cx); cx.notify(); })
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(a, fav, i === 0, i === len - 1); })
+        .child(this.tile(a, 56, t))
+        .child(div().text_size(13).text_color(t.foreground).child(a.name));
+    };
     return v_flex().size_full().min_h(0)
       // 검색창의 ↑↓(입력 상자에서 올라온 키): 격자의 고른 칸을 앞뒤로 옮긴다. ←→는 입력 상자 커서에 둔다.
       .on_key_down((e, cx) => {
@@ -233,7 +303,7 @@ class Launcher {
       .child(v_flex().id("apps-grid").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(18)
         .children(rows.map((g) => v_flex().gap(6)
           .child(div().px(4).child(groupTitle(g.title, t)))
-          .child(h_flex().flex_wrap().gap(18).children(g.apps.map(icon)))))
+          .child(h_flex().flex_wrap().gap(18).children(g.apps.map((a, i) => icon(a, g.fav, i, g.apps.length))))))
         .when(list.length === 0, (el) => el.child(div().pt(8).text_color(t.muted).child(q ? "맞는 앱이 없습니다" : "켜진 앱이 없습니다"))));
   }
 
@@ -296,11 +366,13 @@ const LEFT = 250;   // 왼쪽 관리 칸 폭(가운데 내용 칸을 강조하�
 
 // 앱 타일 그림: 브러시드 금속 사물 오브제 PNG(apps/tiles/<id>.png, 투명 배경, 256px).
 //   한 장으로 생성한 8개 격자를 잘라 만들었다. 테마와 관계없이 같은 그림을 쓴다.
-//   그림이 없는 앱(TILES에 없음)은 앱 색(APPS color) div 위에 이름 첫 글자를 흰색으로 그린다.
+//   그림이 없는 앱(TILES에 없음)은 모두 같은 중립색(NEUTRAL, 회청색) 바탕에 이름 첫 글자를 흰색으로 그린다.
+//   앱마다 색을 고르지 않는다(앱별 색 배지처럼 보이지 않게).
 const TILES = new Set(["files", "branch", "commit", "pr", "agent", "server", "settings", "manage"]);
+const NEUTRAL = "#4b5563";
 function tile(a, size) {
   if (TILES.has(a.id)) return image(`${ME}/apps/tiles/${a.id}.png`).size(size).flex_none();
-  return div().size(size).flex_none().rounded(Math.round(size * 0.24)).bg(a.color).flex().items_center().justify_center()
+  return div().size(size).flex_none().rounded(Math.round(size * 0.24)).bg(NEUTRAL).flex().items_center().justify_center()
     .text_size(Math.round(size * 0.42)).font_semibold().text_color("#ffffff").child(a.name.slice(0, 1));
 }
 
@@ -309,13 +381,21 @@ const ROW = 30, SEP = 9, HEAD = 34, MENU_W = 240;
 const menuHeight = (items) => 12 + HEAD + items.reduce((h, it) => h + (it === "-" ? SEP : ROW), 0);
 
 // 앱 아이콘 우클릭 메뉴 항목. 런처(창 높이)와 메뉴 오버레이(그리기)가 함께 쓴다.
-//   앱 관리 앱은 끌 수 없고 "열기"가 곧 앱 관리라 "열기"만 둔다.
-function menuItems(a) {
+//   ctx { fav: 즐겨찾기인지, row: 즐겨찾기 줄에서 눌렀으면 { first, last } }. 앞으로/뒤로는 즐겨찾기 줄에서만, 끝이면 뺀다.
+//   앱 관리 앱은 끌 수 없고 "열기"가 곧 앱 관리라 "앱 끄기"·"앱 관리…"를 두지 않는다.
+function menuItems(a, ctx = {}) {
   if (!a) return [];
   const open = { label: "열기", icon: `${ME}/open.svg`, color: "#7aa2f7", hint: a.action ? a.desc.replace(/ 열기$/, "") : "", cmd: `open-${a.id}` };
-  if (a.locked) return [open];
+  const fav = ctx.fav
+    ? { label: "즐겨찾기에서 빼기", icon: `${ME}/star-off.svg`, color: "#dbbc7f", cmd: `favorite:${a.id}` }
+    : { label: "즐겨찾기에 추가", icon: `${ME}/star.svg`, color: "#dbbc7f", hint: "격자 맨 위 줄", cmd: `favorite:${a.id}` };
+  const order = [];
+  if (ctx.row && !ctx.row.first) order.push({ label: "앞으로", icon: `${ME}/chevron-left.svg`, color: "#a7c080", cmd: `favorite-move:${a.id}:-1` });
+  if (ctx.row && !ctx.row.last) order.push({ label: "뒤로", icon: `${ME}/chevron-right.svg`, color: "#a7c080", cmd: `favorite-move:${a.id}:1` });
+  const head = [open, fav, ...order];
+  if (a.locked) return head;
   return [
-    open,
+    ...head,
     { label: "앱 끄기", icon: `${ME}/eye-off.svg`, color: "#dbbc7f", hint: "앱 관리에서 다시 켬", cmd: `disable-${a.id}` },
     "-",
     { label: "앱 관리…", icon: `${ME}/apps/manage.svg`, color: "#7fbbb3", cmd: "manage" },
@@ -332,7 +412,8 @@ class LauncherMenu {
   }
 
   items() {
-    return menuItems(APPS.find((x) => x.id === props().app));
+    const p = props();
+    return menuItems(APPS.find((x) => x.id === p.app), { fav: p.fav, row: p.row });
   }
 
   enter(it) {

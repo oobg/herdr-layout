@@ -6,6 +6,8 @@
 //   run: 인자 값으로 실제 보낼 명령 문자열을 만든다(인자가 없으면 name 그대로).
 export const APP_IDS = [
   ["files", "파일"], ["branch", "브랜치"], ["commit", "커밋"], ["pr", "PR"], ["agent", "에이전트"],
+  ["actions", "배포"], ["worktrees", "워크트리"], ["review", "검토"], ["notes", "메모"],
+  ["inbox", "알림함"], ["sessions", "세션"], ["workspace", "작업 공간"], ["watch", "출력"], ["ports", "포트"],
   ["server", "서버"], ["palette", "명령"], ["settings", "설정"], ["manage", "앱 관리"],
 ];
 const arg = (name, required = true) => ({ name, required });
@@ -21,6 +23,8 @@ export const APP_COMMANDS = [
     send: (a) => `office-apps.commit:${a.hash}` },
   { name: "office-apps.range", args: [arg("from"), arg("to")], about: "커밋 앱에서 두 지점 사이를 비교합니다.",
     send: (a) => `office-apps.range:${a.from}...${a.to}` },
+  { name: "office-apps.favorite", args: [arg("id")], about: "앱을 런처 즐겨찾기에 더하거나 뺍니다. 즐겨찾기는 격자 맨 위 줄에 모입니다.",
+    send: (a) => `office-apps.favorite:${a.id}` },
   { name: "office-apps.files-toggle-hidden", args: [], about: "파일 앱에서 숨김 파일 보이기를 켜고 끕니다." },
   { name: "office-apps.files-toggle-ignored", args: [], about: "파일 앱에서 gitignore 항목 감추기를 켜고 끕니다." },
 ];
