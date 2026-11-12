@@ -453,7 +453,8 @@ const LEFT = 250;   // 왼쪽 관리 칸 폭(가운데 내용 칸을 강조하�
 //   한 장으로 생성한 8개 격자를 잘라 만들었다. 테마와 관계없이 같은 그림을 쓴다.
 //   그림이 없는 앱(TILES에 없음)은 모두 같은 중립색(NEUTRAL, 회청색) 바탕에 이름 첫 글자를 흰색으로 그린다.
 //   앱마다 색을 고르지 않는다(앱별 색 배지처럼 보이지 않게).
-const TILES = new Set(["files", "branch", "commit", "pr", "agent", "server", "settings", "manage"]);
+const TILES = new Set(["files", "branch", "commit", "pr", "agent", "server", "settings", "manage",
+  "inbox", "workspace", "sessions", "palette", "ports", "worktrees", "watch", "review", "notes", "actions"]);
 const NEUTRAL = "#4b5563";
 function tile(a, size) {
   if (TILES.has(a.id)) return image(`${ME}/apps/tiles/${a.id}.png`).size(size).flex_none();
