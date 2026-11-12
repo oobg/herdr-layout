@@ -61,7 +61,7 @@ root  column · padding 8 · gap 8 · background canvas
   일하는 서브에이전트(`terminals()`에서 `parent`가 이 에이전트)가 있으면 `+n`. Herdr는 완료를 한 번 보면 `idle`로 바꾸지만, 사무실은 다음 일을 시작할 때까지 완료로 둔다.
 - **로고:** Claude Code는 Claude 별(`icons/claude.svg`, `#d97757`), Codex는 OpenAI 로고(`icons/openai.svg`). 그 밖에는 `program.icon`.
 - **열고 닫기:** 테이블 클릭 → `space.select` + `layout.show office-term` + 공유 상태 `office.open`. 같은 테이블·빈 바닥·`✕`·`Esc`(사무실에 포커스)·"전체 보기" → `layout.hide`.
-- **오버뷰:** 터미널 칸이 열려 있으면 사무실 칸 위 40%는 장면, 아래는 고른 워크트리의 오버뷰다. 레포 이름 · 브랜치·머신 · `↑n ↓n`(`git status -b -uno`, 10초마다), 입력 대기 에이전트가 있으면 "답하기" 버튼, 에이전트 줄(상태·이름·경과·창 제목)과 그 아래 이번 턴 활동(`activity.js`가 Claude Code 대화 기록 jsonl 끝 2MB에서 도구 호출을 읽는다), 서브에이전트 줄(도는 것과 중단된 것만, 머리말 "서브에이전트 · 작업 중 n · 중단 m", 도는 것은 구역을 접어도 보인다). 구역이 길면 최근 몇 개와 "이전 n개"(누르면 전부, "최근 n개만"으로 되돌린다). 변경 파일 섹션은 없다(파일·커밋 앱이 맡는다).
+- **오버뷰:** 터미널 칸이 열려 있으면 사무실 칸 위 40%는 장면, 아래는 고른 워크트리의 오버뷰다. 레포 이름 · 브랜치·머신 · `↑n ↓n`(`git status -b -uno`, 10초마다), 입력 대기 에이전트가 있으면 "답하기" 버튼, 에이전트 줄(상태·이름·경과·창 제목)과 그 아래 요약(`activity.js`가 Claude Code 대화 기록 jsonl 끝 2MB에서 읽는다): 작업 중이면 "지금" 한 줄(스피너 + 도는 도구 + 단계), 마지막 말 + n분 전, 이번 턴 도구 묶음마다 걸린 시간에 비례한 시간 띠(3분 이상 빈 자리는 쉼 칸, 지금 도는 칸은 깜빡임, 단계 규칙은 에이전트 앱과 같다), "자세히 →"(에이전트 앱에서 그 에이전트를 연다; 도구 흐름 목록은 거기서 본다), 아티팩트 구역(그 세션이 게시한 Claude 아티팩트, URL별 하나, 제목은 title → .html의 `<title>` → description → 파일 이름, 누르면 `open`으로 이 Mac 브라우저; 기록은 처음 한 번 전체를, 그다음은 새로 붙은 부분만 grep한다), 서브에이전트 줄(도는 것과 중단된 것만, 머리말 "서브에이전트 · 작업 중 n · 중단 m", 도는 것은 구역을 접어도 보인다). 구역이 길면 최근 몇 개와 "이전 n개"(누르면 전부, "최근 n개만"으로 되돌린다). 변경 파일 섹션은 없다(파일·커밋 앱이 맡는다).
 - **사무실 추가:** 머리줄 "+ 사무실 추가하기" → `pickFolder` → `space.new`.
 
 ### 스프라이트 (`sprites/`, `tools/render-office.py`)
@@ -86,13 +86,14 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 
 ### 런처 (`main.js`)
 
-- **런처 화면:** 검색창(앱 이름·설명·id로 거름) + 앱 아이콘 격자(타일 56px, 금속 오브제 그림 `apps/tiles/<id>.png`, 그림이 없는 앱은 앱 색 바탕 + 흰 첫 글자). 앱 관리는 격자의 `manage` 앱으로 연다.
-  격자는 `APPS`의 `group`(`"apps"` | `"system"`, `GROUPS` 순서)으로 줄을 나누고 줄마다 작은 흐린 제목("앱" · "설정")을 단다. 걸러서 빈 줄은 제목째 숨긴다. 앱 관리 대화 상자 목록도 같은 순서·제목.
+- **런처 화면:** 검색창(앱 이름·설명·id로 거름) + 앱 아이콘 격자(타일 56px, 금속 오브제 그림 `apps/tiles/<id>.png`, 그림이 없는 앱은 모두 같은 중립색 `NEUTRAL`(#4b5563) 바탕 + 흰 첫 글자. 앱마다 색을 두지 않는다). 앱 관리는 격자의 `manage` 앱으로 연다.
+  격자는 `APPS`의 `group`(`GROUPS` 순서)으로 줄을 나누고 줄마다 작은 흐린 제목을 단다: "앱"(`apps`: 파일·브랜치·커밋·PR·배포·워크트리·검토·메모, 레포·코드 일) · "에이전트"(`agents`: 에이전트·알림함·세션·작업 공간·출력·포트·서버·명령) · "설정"(`system`: 설정·앱 관리). 줄 안 순서는 `APPS`에 적은 순서. 걸러서 빈 줄은 제목째 숨긴다. 앱 관리 대화 상자 목록도 같은 순서·제목.
+- **즐겨찾기:** 순서 있는 앱 id 배열을 `localStorage`의 `launcher.favorites`에 둔다(런처만 쓴다). 있으면 격자 맨 위에 "즐겨찾기" 줄을 두고, 그 앱들은 자기 줄에도 그대로 남긴다(줄 구성은 늘 같게, 즐겨찾기는 지름길). 꺼진 앱·없는 id는 그릴 때 거르고 배열에서는 지우지 않는다(다시 켜면 제자리). 검색 중에는 즐겨찾기 줄을 숨긴다. 우클릭 메뉴 "즐겨찾기에 추가/빼기"(맨 뒤에 붙음), 즐겨찾기 줄 안에서만 "앞으로"/"뒤로"(보이는 즐겨찾기끼리 자리 바꿈, 끝이면 항목을 숨김). 순수 함수(`cleanFavs`·`toggleFav`·`moveFav`·`homeRows`)는 `launcher/favorites.js`(herdr를 import하지 않아 node로 시험).
 - **앱 화면:** 위 막대 44px(`‹ 앱` · 타일 · 이름 · 앱의 `subtitle`) / 왼쪽 250px(`list`) / 오른쪽 나머지(`detail`, 바탕 `background`로 강조). `detail`이 `null`이면 앱의 `emptyState()` 문구, 없으면 "선택 내용이 없습니다 · 왼쪽에서 항목을 고르세요".
-- **키보드:** 왼쪽 칸에 런처의 포커스 핸들(`track_focus`)을 달고, 그 칸 자체가 포커스를 가졌을 때만 ↑↓ → `move(-1|+1, cx)`, Enter → `activate(cx)`. 칸을 누르면 GPUI가 포커스를 준다(안쪽 입력 상자는 자기가 먼저 가져가고, 그때는 키를 가로채지 않는다). 격자에서 눌러 들어갈 때도 이 칸에 포커스(시작 복원·명령으로 열 때는 키보드를 옮기지 않음).
+- **키보드:** 왼쪽 칸에 런처의 포커스 핸들(`track_focus`)을 달고, 그 칸 자체가 포커스를 가졌을 때만 ↑↓ → `move(-1|+1, cx)`, Enter → `activate(cx)`. 칸을 누르면 GPUI가 포커스를 준다(안쪽 입력 상자는 자기가 먼저 가져가고, 그때는 키를 가로채지 않는다). 격자에서 눌러 들어갈 때(클릭·검색창 Enter, `enter`)도 이 칸에 포커스를 주고, 이어서 앱의 `focusOnEnter?.()`를 부른다(시작 복원·명령으로 열 때는 키보드를 옮기지 않음). 검색창의 ↑↓·Enter는 격자에 보이는 순서(`homeList`: 즐겨찾기 줄 → 앱 → 에이전트 → 설정)대로 칸을 지나가고, 즐겨찾기 앱은 두 번 지나간다(고른 칸 표시는 순번으로 하나만).
 - **앱 관리:** 대화 상자(오버레이 역할 `manage`, 420×520)에서 앱마다 스위치. 끈 앱 목록은 공유 상태 `office-apps.disabled`(`{ id: true }`)에 두고, 대화 상자가 `setShared`로 바로 바꾼다. 런처는 렌더 때 이전 값과 비교해(`syncDisabled`) 새로 꺼진 앱의 인스턴스를 `dispose()`한 뒤 버리고, 보던 앱이 꺼졌으면 런처 화면으로 돌아간다. 끈 앱은 격자에서 숨기고 인스턴스를 만들지 않는다.
 - **앱 인스턴스:** 켜진 앱을 처음 열 때(`go`) 만든다. 렌더 중에는 입력 상자 등을 만들 수 없어서 이벤트·명령 처리 시점에 만든다. 마지막으로 연 앱 id는 `localStorage`의 `app`.
-- **우클릭 메뉴:** 앱 아이콘 우클릭 → 오버레이 `launcherMenu`(열기 · 앱 끄기 · 앱 관리…). 오버레이는 모드의 새 복사본이라 상태를 나누지 않으므로, 고른 동작은 `run("office-apps.<명령>")`으로 런처에 돌려보낸다.
+- **우클릭 메뉴:** 앱 아이콘 우클릭 → 오버레이 `launcherMenu`(열기 · 즐겨찾기에 추가/빼기 · 앞으로/뒤로(즐겨찾기 줄에서) · 앱 끄기 · 앱 관리…, 앱 관리 앱은 끄기·앱 관리… 없음). 즐겨찾기 여부와 줄 안 위치는 런처가 `props`(`fav`, `row`)로 넘긴다. 오버레이는 모드의 새 복사본이라 상태를 나누지 않으므로, 고른 동작은 `run("office-apps.<명령>")`으로 런처에 돌려보낸다.
 - **명령**(`nextCommand`)
 
   | 명령 | 하는 일 |
@@ -104,7 +105,10 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
   | `office-apps.disable-<id>` | 앱 끄기 (`manage`는 무시) |
   | `office-apps.commit:<해시\|WORKTREE>` | 커밋 앱을 열고 `openCommit(값, cx)`. 커밋 앱이 꺼져 있으면 알림만 |
   | `office-apps.range:<a>...<b>` | 커밋 앱을 열고 `openRange(a, b, cx)`(첫 `...`로 나눔). 꺼져 있으면 알림만 |
+  | `office-apps.agent:<터미널 주소>` | 에이전트 앱을 열고 `reveal(주소, cx)`로 그 줄을 고름(사무실 오버뷰의 "자세히 →"가 보냄). 꺼져 있으면 알림만 |
   | `office-apps.files-toggle-hidden` · `files-toggle-ignored` | 파일 앱 숨김 파일 · gitignore 항목 보이기 전환(툴바 `⋯` 메뉴가 보냄) |
+  | `office-apps.favorite:<id>` | 즐겨찾기에 더하기/빼기 전환(없는 id는 무시) |
+  | `office-apps.favorite-move:<id>:<-1\|1>` | 즐겨찾기 줄 안에서 앞/뒤로(우클릭 메뉴가 보냄) |
 
   `herdr-app do office-apps.open-files`처럼 클릭 없이 시험할 때 쓴다.
 
@@ -121,8 +125,10 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 | `launcherMenu` | `main.js` | 런처 앱 아이콘 우클릭 메뉴 |
 | `manage` | `main.js` `ManageDialog` | 앱 관리 대화 상자(앱마다 켜고 끄기) |
 | `branch-menu`, `branch-prompt` | `branch.js` | 브랜치 우클릭 메뉴와 입력 창 |
+| `workspace-prompt` | `workspace.js` | 스페이스·탭 이름 입력 창 |
+| `worktrees-prompt` | `worktrees.js` | 새 워크트리 브랜치 이름 입력 창 |
 
-역할 표는 `files.js`의 `ROLES`와 `main.js`의 `ALL_ROLES`, 확인 창 동작 표는 `menu.js`의 `ACTIONS`다. 브랜치·PR·서버 앱은 이 공용 파일을 고치지 않고, 모듈이 불릴 때 자기 동작을 표에 더한다(`branch.*`, `pr.merge`·`pr.close`·`pr.checkout`, `serverRemove`). `main.js`가 모든 앱 파일을 import하므로 오버레이 복사본에서도 먼저 등록된다. 확인 창은 따로 뜨는 복사본이라 함수를 넘길 수 없고, `ctx`에는 값만 담는다.
+역할 표는 `files.js`의 `ROLES`와 `main.js`의 `ALL_ROLES`, 확인 창 동작 표는 `menu.js`의 `ACTIONS`다. 앱들은 이 공용 파일을 고치지 않고, 모듈이 불릴 때 자기 동작을 표에 더한다: `branch.*`, `pr.merge`·`pr.close`·`pr.checkout`, `serverRemove`, `actions.rerun`·`actions.cancel`·`actions.tell`, `worktrees.add`·`worktrees.remove`, `workspace.rename`·`closeSpace`·`closeTab`·`closeTabs`·`sleep`, `ports.kill`, `palette.run`, `review.send`, `watch.send`, `notes.send`. `main.js`가 모든 앱 파일을 import하므로 오버레이 복사본에서도 먼저 등록된다. 확인 창은 따로 뜨는 복사본이라 함수를 넘길 수 없고, `ctx`에는 값만 담는다.
 
 ### 앱
 
@@ -132,10 +138,22 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 | 브랜치 (`branch`) | `branch.js` | 왼쪽: 툴바(검색·가져오기·끌어오기·푸시·새 브랜치·임시 저장·더보기·다시 읽기) + 로컬/원격/태그. 오른쪽: 고른 브랜치의 추적 상태(원격·현재 브랜치 대비 앞섬/뒤처짐), 동작 버튼, 받을 커밋, 최근 커밋. `.git` 감시 + 15초마다 다시 읽음. 짧은 일(체크아웃·만들기·이름 변경·삭제)은 바로, 결과를 사람이 봐야 하는 일(끌어오기·푸시·병합·리베이스·원격 삭제)은 새 터미널 탭에서. 위험한 동작(강제 푸시·갈라진 브랜치를 리베이스로 끌어오기 등)은 확인 창을 거치고 Enter 주 동작에서 빠진다. 강제 푸시는 목록에서 본 원격 해시로 lease를 건다. |
 | 커밋 (`commit`) | `commit.js`, `commit/git.js`, `commit/diffview.js` | 왼쪽: 검색 + 현재 브랜치 커밋 목록(가상 목록, 200개씩, 더 불러오기), 맨 위에 "커밋 안 된 변경"(있을 때만). 오른쪽: 제목·본문·작성자·시각·해시, 바뀐 파일, 고른 파일의 diff(위아래|좌우 모드는 `commit/diffview.js`가 PR 앱과 나눈다). git은 `.git` 아래에 쓰지 않는 옵션으로 읽기만 한다. 파싱은 `commit/git.js`(herdr를 import하지 않아 node로 시험 가능). |
 | PR (`pr`) | `pr.js`, `pr/diff.js`, `pr/status.js` | `gh`로 왼쪽: 필터(열림·내 PR·리뷰 요청·닫힘) + 검색 + 목록(최근 50개. 검색은 그 안에서 거르고, 꽉 찬 목록에서 못 찾으면 "GitHub 전체에서 찾기"로 `gh pr list --search`를 한 번), 오른쪽: 상태, base ← head, 본문, 체크, 리뷰·코멘트, 바뀐 파일, 동작. 머지(`--match-head-commit`)·닫기·체크아웃은 확인 창을 거친다(구현됨). 머지 확인 창은 체크·리뷰 요약 한 줄을 붙이고, 체크 실패나 변경 요청이 있으면 "그래도 병합"(위험 동작)으로 묻는다. 실패 알림은 동작별 제목("#12 병합하지 못했습니다")에 자주 나오는 오류를 한국어 한 줄로 바꾸고 원문을 뒤에 둔다(`pr/status.js`). 동작 뒤 공유 상태를 바꿔 다시 읽는다. |
-| 에이전트 (`agent`) | `agent.js`, `agent/activity.js`, `agent/parse.js` | 왼쪽: 에이전트 목록, 서브에이전트(`hc run`으로 띄운 터미널은 `terminals()`의 `parent`, Claude Code 안의 서브에이전트는 `hc get`의 records)는 부모 아래 들여쓴다. 오른쪽: 이번 턴의 요청·마지막 말·도구 흐름·서브에이전트·고친/읽은 파일, 터미널로 이동·엿보기. 기록은 터미널 앞쪽 프로세스 pid → `~/.claude/sessions/<pid>.json`의 sessionId로 찾고, 못 찾으면 그 폴더의 가장 최근 jsonl. 이 앱이 그려지는 동안만 타이머가 돈다(고른 에이전트 작업 중 4초, 다른 에이전트 작업 중 15초, 모두 쉬면 1분). `office/activity.js`를 옮겨 와 고친 것이다(다른 모드라 import로 나눠 쓸 수 없다). |
+| 에이전트 (`agent`) | `agent.js`, `agent/activity.js`, `agent/parse.js`, `agent/timeline.js` | 왼쪽: 에이전트 목록, 서브에이전트(`hc run`으로 띄운 터미널은 `terminals()`의 `parent`, Claude Code 안의 서브에이전트는 `hc get`의 records)는 부모 아래 들여쓴다. 오른쪽: 요약 세 줄(지금·마지막 말·요청, 누르면 펼침) → 이번 턴 시간 띠(흐름 묶음마다 걸린 시간 비례, 3분 넘게 빈 곳은 쉼 칸) → 단계 목록(살펴보기·고치기·실행·맡기기·기타·쉼, 끝난 단계는 접힘, 묶기 규칙은 `agent/timeline.js`) → 고친 파일, 터미널로 이동·엿보기. 기록은 터미널 앞쪽 프로세스 pid → `~/.claude/sessions/<pid>.json`의 sessionId로 찾고, 못 찾으면 그 폴더의 가장 최근 jsonl. 이 앱이 그려지는 동안만 타이머가 돈다(고른 에이전트 작업 중 4초, 다른 에이전트 작업 중 15초, 모두 쉬면 1분). `office/activity.js`를 옮겨 와 고친 것이다(다른 모드라 import로 나눠 쓸 수 없다). |
+| 배포 (`actions`) | `actions.js`, `actions/run.js` | `gh`로 지금 레포의 GitHub Actions. 왼쪽: 필터(전체·지금 브랜치·실패만·진행 중) + 최근 30개 실행. 오른쪽: 상태·워크플로·제목·브랜치·커밋, 동작(다시 실행·취소·끝나면 알림·에이전트에게 알리기, 확인 창 `actions.*`), 잡과 단계, 실패 로그 끝 80줄, 배포 환경. 그려지는 동안만 갱신(도는 실행이 있으면 10초, 없으면 60초). "끝나면 알림" 핀(최대 3개, `localStorage`)은 앱이 안 보여도 30초마다 그 실행만 확인한다. |
+| 워크트리 (`worktrees`) | `worktrees.js`, `worktrees/model.js` | 지금 레포의 워크트리. 왼쪽: 툴바(새 워크트리·이슈에서 시작·다시 읽기) + 목록(메인이 맨 위, 브랜치·기본 브랜치 대비 ↑↓·변경 수·에이전트 상태). 오른쪽: 경로·브랜치·에이전트·변경 파일(누르면 뷰어 창), 동작(에이전트 띄우기·스페이스로 가기·지우기 — 지우기는 확인 창 `worktrees.remove`). 이름은 `worktrees-prompt`로 묻는다. "이슈에서 시작"은 이슈를 골라 워크트리를 만들고 그 폴더에서 Claude Code에 이슈 본문을 첫 메시지로 넘긴다. |
+| 검토 (`review`) | `review.js`, `review/model.js` | 왼쪽: 에이전트가 있는 작업 폴더(git 루트)별 변경 요약과 상태 낱말. 오른쪽: 보기 전환(커밋 안 된 변경 \| 기본 브랜치 대비), 바뀐 파일, diff(`commit/diffview.js`), diff 줄을 눌러 "파일:줄"을 붙인 피드백을 `hc send`로 그 에이전트에게. 작업 중이면 확인 창(`review.send`), 입력 대기면 보내지 않는다. |
+| 메모 (`notes`) | `notes.js`, `notes/model.js` | 작업 공간(지금 칸 폴더의 git 루트, 아니면 스페이스 폴더)마다 메모와 할 일. 레포 밖 `data/office-apps/notes/`에 저장. 왼쪽: 메모가 있는 작업 공간(지금 것이 맨 위). 오른쪽: 할 일 체크 목록 + 추가 입력, 메모 편집기(1초 뒤 자동 저장), 에이전트에게 보내기(`hc send`, 작업 중이면 확인 창 `notes.send`)·복사. |
+| 알림함 (`inbox`) | `inbox.js`, `inbox/model.js` | 여러 스페이스의 에이전트 중 답 필요·완료(안 본 사이 끝남)를 한 곳에(작업 중·상태 모름은 접힌 묶음). 오른쪽: 상태·마지막 말·요청, 터미널로 가기·에이전트 앱에서 자세히. 그려지는 동안만 갱신(고른 줄이 작업 중이면 4초, 아니면 1분). |
+| 세션 (`sessions`) | `sessions.js`, `sessions/list.js` | 지금 폴더의 지난 Claude Code 세션(`~/.claude/projects/…/*.jsonl`). 왼쪽: 날짜 묶음 아래 첫 요청 한 줄(최근 50개, 더 보기). 오른쪽: 요청·마지막 말·고친 파일·아티팩트·길이, "이어하기"(새 탭에서 `claude --resume`, 지금 열려 있으면 그 터미널로). 그려지는 동안 30초마다. |
+| 작업 공간 (`workspace`) | `workspace.js`, `workspace/tidy.js`, `workspace/sleep.js`, `workspace/sleeper.js` | 왼쪽: "정리" 줄 + 스페이스 › 탭 트리(상태 낱말). 오른쪽: 스페이스·탭 정보와 가기·이름 바꾸기(`workspace-prompt`)·접어 두기·닫기(확인 창 `workspace.*`), "정리"는 닫아도 될 탭을 이유와 함께 보여 체크한 것만 한 번에 닫고, 그 아래 "재울 수 있는 에이전트"(아래 참고). |
+| 출력 (`watch`) | `watch.js`, `watch/rules.js` | 에이전트가 아닌 터미널 출력(`hc read`)에서 오류 줄을 모은다. 왼쪽: 걸린 줄(최근 순, ×n). 오른쪽: 앞뒤 2줄 문맥, 그 터미널로 가기·에이전트에게 보내기(작업 중이면 확인 창 `watch.send`)·지우기. 그려지는 동안만 10초마다, 새로 생긴 줄만 규칙에 넣는다. |
+| 포트 (`ports`) | `ports.js`, `ports/parse.js` | 기기별 LISTEN 포트(macOS `lsof`, Linux `ss`·`/proc/net/tcp`)와 띄운 터미널(셸 pid 조상 체인). 오른쪽: 주소·pid·명령줄, 브라우저로 열기·터미널로 가기·종료(확인 창 `ports.kill`, 명령줄이 그대로인지 다시 보고 `kill -TERM`). 그려지는 동안만 5초마다. |
 | 서버 (`server`) | `server.js`, `server/add.js`, `server/resources.js` | 왼쪽: 툴바(기기 추가·다시 읽기) + 머신 목록(이 컴퓨터 + `hc machine ls`, 연결 상태, 스페이스 수). 오른쪽: 주소·연결 방식·호스트·hc 버전, 그 머신의 스페이스·에이전트, 새 스페이스·새 터미널·제거(확인 창 → `hc machine rm`). 리소스는 칸이 넓으면 오른쪽 열(260px), 좁으면 정보 줄 아래. 기기 추가·제거는 구현됨. |
+| 명령 (`palette`) | `palette.js`, `palette/core.js` | Herdr 명령(`commands()`) + 앱 명령(`office-apps.*`, `palette/core.js`의 `APP_IDS`·`APP_COMMANDS` — 앱을 더하면 여기도 손으로 더한다). 왼쪽: 검색 + 목록(최근 10개 묶음, 단축키). 오른쪽: 설명·인자 입력·단축키·실행. 위험해 보이는 명령(close·kill·reset·remove·quit)은 확인 창(`palette.run`, danger). |
 | 설정 (`settings`) | `main.js` | `action` 앱: 들어가지 않고 `run("app.settings")`로 Herdr 설정 창을 연다. |
 | 앱 관리 (`manage`) | `main.js` | `action` 앱: `openManage`로 앱 관리 대화 상자를 띄운다(`office-apps.manage`와 같은 함수). `locked`라 끌 수 없다: 관리 목록에 "항상 켜짐", 우클릭 메뉴는 열기만, `disable-manage`와 공유 상태의 `manage: true`는 무시. |
+
+- **에이전트 재우기·깨우기(작업 공간 앱):** 정리 화면의 "재울 수 있는 에이전트"는 완료·대기이고 탭이 20분 넘게 변화 없으며 지금 보는 탭이 아니고 끝나지 않은 백그라운드 작업이 없는 Claude Code. 세션 id는 `~/.claude/sessions/<pid>.json`, 판단 못 하면 넣지 않는다. 재우면 `data/office-apps/sleeping.json`에 터미널·칸·스페이스·탭·세션 id·폴더·기기·시각·탭 이름·RSS를 남기고 `hc send <주소> /exit`로 정상 종료(강제 종료 없음, 확인 창 `workspace.sleep`). 깨우면 같은 칸에서 `cd <폴더> && claude --resume <id>`, 칸이 없으면 같은 폴더에 새 탭. 그 칸에서 다른 프로그램이 돌면 기록을 조용히 지운다(재운 뒤 60초 유예). 순수 함수 `workspace/sleep.js`, 입출력 `workspace/sleeper.js`.
 
 #### 파일 앱
 
@@ -177,8 +195,8 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
    | `openCommit(값, cx)` · `openRange(a, b, cx)` | 커밋 앱만 | `office-apps.commit:` · `range:` 명령이 앱을 연 뒤 부른다 |
 
    지금 스페이스를 보는 앱은 파일·브랜치 앱과 같은 규칙(포커스된 패인의 폴더, 없으면 스페이스 폴더, 다른 머신이면 `on`)을 따른다.
-2. **`main.js`의 `APPS`에 등록**한다: `{ id, group: "apps", name, desc, color, make: () => new XxxApp() }`(창만 띄우는 항목은 `group: "system"`). 들어가지 않고 동작만 하는 앱은 `make` 대신 `action: () => ...`. `make`도 `action`도 없으면 격자에는 보이되 들어가면 "준비 중인 앱입니다"가 나온다. 파일 맨 위에 import를 더한다.
-3. **아이콘** `apps/tiles/<id>.png`(투명 배경 256px, 지금 타일들과 같은 금속 오브제)를 두고 `main.js`의 `TILES`에 id를 더한다. 그림이 없으면 앱 색 바탕에 이름 첫 글자로 그린다.
+2. **`main.js`의 `APPS`에 등록**한다: `{ id, group, name, desc, make: () => new XxxApp() }`. `group`은 레포·코드 일이면 `"apps"`, 에이전트·터미널·기기 일이면 `"agents"`, 창만 띄우는 항목은 `"system"`이고, 그 줄의 원하는 자리에 적는다(색은 두지 않는다). 들어가지 않고 동작만 하는 앱은 `make` 대신 `action: () => ...`. `make`도 `action`도 없으면 격자에는 보이되 들어가면 "준비 중인 앱입니다"가 나온다. 파일 맨 위에 import를 더한다.
+3. **아이콘** `apps/tiles/<id>.png`(투명 배경 256px, 지금 타일들과 같은 금속 오브제)를 두고 `main.js`의 `TILES`에 id를 더한다. 그림이 없으면 모든 앱이 같은 중립색(`NEUTRAL`) 바탕에 이름 첫 글자로 그려진다(앱마다 색을 고르지 않는다). 명령 앱의 `palette/core.js` `APP_IDS`에도 id·이름을 더한다.
 4. **확인 창**이 필요하면 지금은 `menu.js`의 `ACTIONS`에 동작을 등록하는 방식이다. 모듈 최상위(함수 밖)에 `ACTIONS["<id>.<동작>"] = (ctx) => ...`를 두고, `openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", action, title, detail, ctx, yes, danger } })`로 띄운다. `ctx`에는 값만 담는다. `yes`는 실행 버튼 이름(동사, 예: "삭제"·"병합", 없으면 "확인"). `danger: true`는 되돌리기 어려운 동작(강제 푸시·강제 삭제·되돌린 변경 버리기 등)에 준다: 실행 버튼이 빨간 글씨의 일반 버튼이 되고 처음 포커스가 "취소"에 간다. 키는 공통으로 Enter = 포커스된 버튼, Tab·Shift+Tab·←→ = 버튼 사이 이동, Esc = 닫기(버튼에 포커스가 없을 때 Enter는 보통 실행, danger면 "취소"로 포커스만). 긴 `detail`은 스크롤된다. 사무실(`close-agent`)·리소스(`close-term`)의 닫기 확인 창도 같은 danger 규칙을 각자 복제해 쓴다. 새 오버레이 역할이 필요하면 같은 방식으로 `files.js`의 `ROLES`에 더한다(`branch.js` 끝 참고).
 5. `herdr-app check office/mods/office-apps` → `./install.sh` → `herdr-app do office-apps.open-<id>` → `herdr-app shot`, `herdr-app status`의 errors 확인.
 
@@ -214,7 +232,7 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 
 - `layouts/office.json`: 레이아웃
 - `mods/office/`: 사무실과 터미널 막대(`main.js`), 오버뷰 활동 읽기(`activity.js`), 스프라이트(`sprites/`), 로고·활동 아이콘(`icons/`), 패널 글꼴(`fonts/`, OFL)
-- `mods/office-apps/`: 런처(`main.js`), 앱(`files.js`, `branch.js`, `commit.js`, `pr.js`, `agent.js`, `server.js`와 같은 이름 폴더), 파일 우클릭 메뉴·확인 창·`ACTIONS`(`menu.js`), 뷰어(`viewers.js`, `markdown.js`, `viewers/`), 앱 아이콘(`apps/`), 파일 아이콘(`icons/`, `icons.json`, MIT 라이선스)
+- `mods/office-apps/`: 런처(`main.js`, 즐겨찾기 순수 함수 `launcher/favorites.js`), 앱(`<앱 id>.js`와 같은 이름 폴더: files·branch·commit·pr·actions·worktrees·review·notes·agent·inbox·sessions·workspace·watch·ports·server·palette), 파일 우클릭 메뉴·확인 창·`ACTIONS`(`menu.js`), 뷰어(`viewers.js`, `markdown.js`, `viewers/`), 앱 아이콘(`apps/`), 파일 아이콘(`icons/`, `icons.json`, MIT 라이선스)
 - `mods/office-usage/`: 사용량(`main.js`), Grok 토큰 갱신(`grok_refresh.py`), 로고(`icons/`)
 - `mods/office-resources/`: 리소스 관리자(`main.js`), ps 합계 계산(`calc.js`), 로고(`icons/`)
 - `../tools/render-office.py`: 사무실 스프라이트 렌더(Blender)
