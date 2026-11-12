@@ -9,6 +9,8 @@
 //                  닫기(탭·스페이스·일괄)는 모두 취소 우선이고, 실행 직전에 창을 열 때보다 위험해진 탭은 빼고 알린다.
 //                  그 아래 "재울 수 있는 에이전트": 쉬는 Claude Code를 /exit로 끝내 메모리를 비우고(workspace/sleep.js·sleeper.js),
 //                  잠든 기록(data/office-apps/sleeping.json)으로 같은 칸에서 claude --resume. 트리 탭 줄엔 "잠듦", 탭 상세엔 "깨우기".
+//                  후보 아래 흐린 "후보에서 뺀 에이전트 n · 이유별 수"(뺀 탭과 같은 모양, workspace/sleep.js sleepSkips):
+//                  "확인 실패 · …"는 판단을 못 한 것, 나머지는 안전 조건 미충족. Codex 같은 다른 에이전트는 "Claude Code만 재울 수 있음".
 // 셸 계약: move(delta, cx) 선택 이동 · activate(cx) 고른 스페이스·탭으로 가기 · emptyState().
 // 데이터는 spaces()·panes()·agents()(모두 살아 있는 값, 바뀌면 다시 그려진다). 타이머는 잠든 기록 읽기와
 //   재울 만한 칸의 기록 확인(TICK)에만 쓰고, 앱이 안 보이면 멈춘다.
@@ -21,7 +23,7 @@ import { spaces, panes, agents, focused, layout, home, run, shared, setShared, o
 import { ACTIONS } from "./menu.js";
 import { ROLES } from "./files.js";
 import { viewedTabs, panesOf, hasWorking, tabWord, review, skipSummary, riskOf, recheckTidy, recheckClose, treeRows, agentCount, tilde, WORD } from "./workspace/tidy.js";
-import { sleepable, confirmed, pruneSleeping, paneState, sleepingTabs, savedLine, SLEPT } from "./workspace/sleep.js";
+import { sleepable, confirmed, sleepSkips, pruneSleeping, paneState, sleepingTabs, savedLine, SLEPT } from "./workspace/sleep.js";
 import { readSleeping, updateSleeping, probe, sleepAgents, wake, forget } from "./workspace/sleeper.js";
 
 const PROBE_AGAIN = 60000;   // 재울 만한 칸의 기록을 다시 확인하는 간격
@@ -243,6 +245,7 @@ export class WorkspaceApp {
     this.zTabs = sleepingTabs(this.sleeping, ps);
     ({ cands: this.cands, skipped: this.skipped } = review(sps, ps, { viewed: this.viewed, asleep: this.zTabs }));
     this.zcands = confirmed(sleepable(sps, ps, { viewed: this.viewed, sleeping: this.sleeping }), this.probes);
+    this.zskips = sleepSkips(sps, ps, this.probes, { viewed: this.viewed, sleeping: this.sleeping });
     this.orphans = this.sleeping.filter((r) => paneState(r, ps) === "gone");
     // 후보에서 빠진 칸의 체크는 버린다(나중에 다시 후보가 되면 해제된 채로)
     for (const k of Object.keys(this.zchecks)) if (!this.zcands.some((c) => c.address === k)) delete this.zchecks[k];
@@ -491,18 +494,20 @@ export class WorkspaceApp {
   }
 
   // 후보에서 뺀 탭: 흐린 머리줄 하나(누르면 펼침). 펼치면 줄마다 탭 이름 · 스페이스 / 이유. 줄은 누를 수 없다.
-  skippedSection(t) {
-    const xs = this.skipped ?? [];
+  skippedSection(t) { return this.skipList("ws-skip", "후보에서 뺀 탭", this.skipped ?? [], "skipOpen", t); }
+
+  // 같은 모양의 접힌 이유 목록(정리의 뺀 탭, 재우기의 뺀 에이전트). flag = 펼침을 기억하는 필드 이름.
+  skipList(id, label, xs, flag, t) {
     if (!xs.length) return div();
-    const open = Boolean(this.skipOpen);
+    const open = Boolean(this[flag]);
     const sum = skipSummary(xs).slice(0, 3).map(([k, n]) => `${k} ${n}`).join(" · ");
-    const fold = (_e, cx) => { this.skipOpen = !open; cx.notify(); }, f = this.stop("ws-skip-head", "button", fold);
+    const fold = (_e, cx) => { this[flag] = !open; cx.notify(); }, f = this.stop(`${id}-head`, "button", fold);
     return v_flex().pt(10)
-      .child(h_flex().id("ws-skip-head").h(24).px(6).gap(6).items_center().rounded(4).cursor_pointer().hover((x) => x.bg(t.hover))
+      .child(h_flex().id(`${id}-head`).h(24).px(6).gap(6).items_center().rounded(4).cursor_pointer().hover((x) => x.bg(t.hover))
         .border_1().border_color(f ? t.accent : CLEAR)
         .on_click(fold)
         .child(svg(`${APPS}/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim))
-        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(`후보에서 뺀 탭 ${xs.length}`))
+        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(`${label} ${xs.length}`))
         .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(sum)))
       .when(open, (el) => el.children(xs.map((x) => h_flex().min_h(22).pl(24).pr(6).gap(8).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.muted).child(x.tab.name))
@@ -524,7 +529,7 @@ export class WorkspaceApp {
         .child(div().flex_1().text_size(12).font_semibold().text_color(t.muted).child(`재울 수 있는 에이전트 ${zs.length}`))
         .when(zs.length > 0, (el) => el.child(this.btn("ws-sleep-picked", picked.length ? `선택한 ${picked.length}개 재우기…` : "선택한 것 없음", picked.length ? sleepAll : null, t, true))))
       .child(div().px(6).pb(6).text_size(11).text_color(t.dim)
-        .child("완료·대기이고 20분 넘게 변화 없는 Claude Code 중 백그라운드 작업이 없는 것. 프로세스를 끝내 메모리를 비우고, 깨우면 같은 대화로 이어 갑니다"))
+        .child("Claude Code만 · 완료·대기이고 20분 넘게 변화 없는 것 중 백그라운드 작업이 없는 것. 프로세스를 끝내 메모리를 비우고, 깨우면 같은 대화로 이어 갑니다"))
       .when(!zs.length, (el) => el.child(div().px(6).pt(2).text_size(12.5).text_color(t.muted).child(this.loaded ? "재울 만한 에이전트가 없습니다" : "기록을 확인하는 중")))
       .children(zs.map((c) => {
         const v = Boolean(this.zchecks[c.address]);
@@ -541,6 +546,7 @@ export class WorkspaceApp {
               .child(div().flex_none().max_w(140).truncate().text_size(11).text_color(t.dim).child(c.space.name)))
             .child(div().truncate().text_size(11).text_color(t.dim).child(c.reason)));
       }))
+      .child(this.skipList("ws-zskip", "후보에서 뺀 에이전트", this.zskips ?? [], "zskipOpen", t))
       .when(os.length > 0, (el) => el
         .child(div().pt(14).pb(4).px(6).text_size(12).font_semibold().text_color(t.muted).child(`칸이 닫힌 잠든 에이전트 ${os.length}`))
         .children(os.map((r) => h_flex().id(`ws-o-${r.address}`).min_h(40).px(6).py(4).gap(8).items_center()

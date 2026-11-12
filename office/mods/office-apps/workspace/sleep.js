@@ -52,14 +52,49 @@ export function sleepable(sps, ps, { now = Date.now(), viewed = new Set(), sleep
 }
 
 // 2단계: 기록을 확인한 것만 후보로. probes: { 주소: probe 결과 } (probe가 없거나 실패면 뺀다 — 판단 못 하면 재우지 않는다)
-//   probe = { ok, session, guessed, cwd, state, open: [백그라운드 id], agentsRunning, recordsWorking }
+//   probe = { ok, why?, session, guessed, cwd, state, open: [백그라운드 id], agentsRunning, recordsWorking }
 export function confirmed(pre, probes) {
-  return pre.filter((c) => {
-    const p = probes[c.address];
-    return Boolean(p?.ok && p.session && !p.guessed && UUID.test(p.session) && p.cwd
-      && (p.state === "idle" || p.state === "done")
-      && p.open.length === 0 && !p.agentsRunning && !p.recordsWorking);
-  });
+  return pre.filter((c) => probeWhy(probes[c.address]) === null);
+}
+
+// 기록 확인 결과가 후보가 아닌 이유(후보면 null). "확인 실패"로 시작하면 판단을 못 한 것, 나머지는 안전 조건 미충족.
+export function probeWhy(p) {
+  if (!p) return "기록 확인 중";
+  if (!p.ok) return `확인 실패 · ${p.why ?? "기록을 읽지 못함"}`;
+  if (!p.session || p.guessed || !UUID.test(p.session) || !p.cwd) return "확인 실패 · 세션을 특정하지 못함";
+  if (p.state !== "idle" && p.state !== "done") return "그새 상태가 바뀜";
+  if (p.open.length) return `백그라운드 작업이 돎 · ${p.open.length}개`;
+  if (p.agentsRunning || p.recordsWorking) return "서브에이전트가 아직 돎";
+  return null;
+}
+
+// 재울 후보에서 뺀 에이전트와 이유: 정리 화면의 '후보에서 뺀 탭'과 같은 모양 [{ tab, space, address, why }].
+//   대상은 에이전트 칸(Claude Code 또는 상태를 보고하는 에이전트) 중 이미 잠든 것을 뺀 것. 1단계(살아 있는 값)에서 빠졌으면 그 이유,
+//   1단계를 지났으면 기록 확인 결과(probeWhy). 같은 칸은 첫 이유 하나만.
+export function sleepSkips(sps, ps, probes = {}, { now = Date.now(), viewed = new Set(), sleeping = [] } = {}) {
+  const asleep = new Set(sleeping.map((r) => r.address));
+  const out = [];
+  for (const s of sps) {
+    for (const tab of [...s.tabs].sort((a, b) => a.index - b.index)) {
+      const mine = panesOf(tab.id, ps);
+      for (const p of mine) {
+        if (!p.terminal || asleep.has(p.terminal)) continue;
+        const claude = isClaude(p.program, p.app);
+        if (!claude && !p.program?.agent) continue;
+        const idle = tab.changed_at ? now - tab.changed_at : null;
+        const why = !claude ? `Claude Code만 재울 수 있음 (${p.program?.name ?? "에이전트"})`
+          : viewed.has(tab.id) ? "지금 보는 탭"
+          : p.status === "working" || p.status === "blocked" ? (p.status === "working" ? "작업 중" : "답 필요")
+          : hasWorking(tab, mine) ? "같은 탭에 작업 중인 칸"
+          : p.status !== "done" && p.status !== "idle" ? "상태를 모름"
+          : idle === null ? "쉰 시간 모름 · 앱을 켠 뒤 변화 없음"
+          : idle <= SLEEP_AFTER ? `20분 안에 씀 · ${span(idle)} 변화 없음`
+          : probeWhy(probes[p.terminal]);
+        if (why) out.push({ tab, space: s, address: p.terminal, why });
+      }
+    }
+  }
+  return out;
 }
 
 // 백그라운드로 띄운 것 중 아직 안 끝난 tool_use id.

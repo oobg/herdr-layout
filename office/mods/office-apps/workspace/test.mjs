@@ -2,6 +2,7 @@
 //   고정 사례는 실제 `hc ls --json` + `hc get`(앞 프로그램)을 옮긴 것: git show 탭 7개가 git(pager 대기)을 앞에 둔 채 남아 있었다.
 import assert from "node:assert/strict";
 import { review, judge, recheckTidy, recheckClose, riskOf, skipSummary, gitLeftover } from "./tidy.js";
+import { sleepable, confirmed, sleepSkips, probeWhy } from "./sleep.js";
 
 const NOW = 1_800_000_000_000;
 const ZSH = { key: "shell", name: "zsh", shell: true, agent: false };
@@ -106,6 +107,38 @@ assert.equal(recheckTidy(ids, snap, gone, ps, { now: NOW, viewed }).dropped[0].w
   const sn2 = riskOf(["c", "d"], s, p0, {});
   const s3 = [{ id: "s", tabs: [...s[0].tabs, tab("e", "new", 3)] }];
   assert.equal(recheckClose(["c", "d", "e"], sn2, s3, p0, {})[0].why, "창을 연 뒤 생긴 탭입니다");
+}
+
+// ── 재우기: 후보에서 뺀 에이전트와 이유 ──
+{
+  const CODEX = { key: "codex", name: "Codex", shell: false, agent: true };
+  const old = NOW - 30 * 60000;
+  const T = (id, extra = {}) => tab(id, id, 1, { changed_at: old, ...extra });
+  const tabs = [T("ok"), T("seen"), T("fresh", { changed_at: NOW - 5 * 60000 }), T("unknown", { changed_at: null }),
+    T("bg"), T("nolog"), T("work", { status: "working" }), T("cx"), T("slept")];
+  const s = [{ id: "s", name: "S", tabs }];
+  const C = (id, tb, extra = {}) => pane(id, tb, CLAUDE, { status: "done", ...extra });
+  const pz = [C(1, "ok"), C(2, "seen"), C(3, "fresh"), C(4, "unknown"), C(5, "bg"), C(6, "nolog"),
+    C(7, "work", { status: "working" }), pane(8, "cx", CODEX, { status: "idle" }), C(9, "slept"), pane(10, "ok", ZSH)];
+  const good = { ok: true, session: "11111111-2222-3333-4444-555555555555", guessed: false, cwd: "/r", state: "done", open: [], agentsRunning: false, recordsWorking: false };
+  const probes = { t1: good, t5: { ...good, open: ["a", "b"] }, t6: { ok: false, why: "세션을 특정하지 못함", open: [] } };
+  const o = { now: NOW, viewed: new Set(["seen"]), sleeping: [{ address: "t9" }] };
+  const pre = sleepable(s, pz, o);
+  assert.deepEqual(confirmed(pre, probes).map((c) => c.address), ["t1"]);
+  const sk = sleepSkips(s, pz, probes, o);
+  assert.deepEqual(sk.map((x) => [x.tab.id, x.why]), [
+    ["seen", "지금 보는 탭"],
+    ["fresh", "20분 안에 씀 · 5분 변화 없음"],
+    ["unknown", "쉰 시간 모름 · 앱을 켠 뒤 변화 없음"],
+    ["bg", "백그라운드 작업이 돎 · 2개"],
+    ["nolog", "확인 실패 · 세션을 특정하지 못함"],
+    ["work", "작업 중"],
+    ["cx", "Claude Code만 재울 수 있음 (Codex)"],
+  ]);
+  // 후보와 뺀 것이 겹치지 않고, 잠든 칸·셸 칸은 둘 다에 없다
+  assert.ok(!sk.some((x) => x.address === "t1" || x.address === "t9" || x.address === "t10"));
+  assert.equal(probeWhy(undefined), "기록 확인 중");
+  assert.deepEqual(skipSummary(sk).slice(0, 1), [["지금 보는 탭", 1]]);
 }
 
 console.log("workspace/tidy ok");

@@ -46,20 +46,20 @@ const SCAN = [
   "exit 0",
 ].join("\n");
 
-// 한 터미널을 확인한다. 실패·모름은 ok: false(후보에서 뺀다).
-//   { ok, pid, session, guessed, cwd, state, open, agentsRunning, recordsWorking, at }
+// 한 터미널을 확인한다. 실패·모름은 ok: false와 why(후보에서 뺀다, 이유는 정리 화면에).
+//   { ok, why?, pid, session, guessed, cwd, state, open, agentsRunning, recordsWorking, at }
 export async function probe(address) {
-  const at = Date.now(), bad = { ok: false, open: [], at };
+  const at = Date.now(), bad = (why, x = {}) => ({ ok: false, why, open: [], at, ...x });
   try {
     const r = await hc(["get", address, "--json"]);
-    if (r.code !== 0) return bad;
+    if (r.code !== 0) return bad("터미널 상태를 읽지 못함");
     const d = JSON.parse(r.stdout);
     const pid = d.foreground?.pid ?? null, on = machineOf(address);
-    if (!pid || pid === d.pid) return bad;   // 앞쪽 프로세스가 셸 자신이면 Claude가 없다
+    if (!pid || pid === d.pid) return bad("Claude 프로세스가 앞에 없음");   // 앞쪽 프로세스가 셸 자신이면 Claude가 없다
     const sess = await sessionOf(pid, d.foreground?.cwd ?? d.cwd ?? null, on);
-    if (!sess?.session || sess.guessed || !UUID.test(sess.session)) return { ...bad, pid };
+    if (!sess?.session || sess.guessed || !UUID.test(sess.session)) return bad("세션을 특정하지 못함", { pid });
     const g = await exec("sh", ["-c", SCAN, "scan", sess.project, sess.session], { on, timeout: 20000 });
-    if (g.code !== 0) return { ...bad, pid };
+    if (g.code !== 0) return bad("대화 기록을 읽지 못함", { pid });
     const [launched, notes] = g.stdout.split("\n@@\n");
     const open = openBackground(launched ?? "", notes ?? "");
     // 끝부분 해석(parse.js agents): 백그라운드 서브에이전트가 아직 도는지. 못 읽으면 모르는 것으로.
@@ -71,7 +71,7 @@ export async function probe(address) {
     }
     return { ok: true, pid, session: sess.session, guessed: false, cwd: sess.cwd, state: d.status?.state ?? null,
       open, agentsRunning, recordsWorking: recordsWorking(d.records), at };
-  } catch { return bad; }
+  } catch { return bad("기록을 읽지 못함"); }
 }
 
 // ── 재우기(확인 창의 동작) ────────────────────────────────
