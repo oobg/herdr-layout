@@ -13,7 +13,7 @@
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, ScrollHandle, Scrollbar, v_virtual_list } from "gpui-base";
 import { spaces, panes, focused, exec, watchFolder, theme, home, props, run, openOverlay, closeOverlay, notify, shared, setShared } from "herdr";
-import { Menu, ACTIONS, TICK, popupAt } from "./menu.js";
+import { Menu, ACTIONS, TICK, popupAt, inTab as termTab } from "./menu.js";
 import { ROLES } from "./files.js";
 
 const ME = "mods/office-apps";
@@ -98,10 +98,9 @@ async function git(ctx, args, timeout) {
   return r.code === 0;
 }
 
-// 결과를 사람이 봐야 하는 명령은 터미널 탭에서.
+// 결과를 사람이 봐야 하는 명령은 터미널 탭에서(menu.js inTab: 같은 이름 탭이 셸만 남았으면 다시 쓴다).
 function inTab(ctx, name, argv) {
-  run("tab.new", { name, folder: ctx.top, argv });
-  run("layout.show", { id: "office-term" });
+  termTab(ctx, name, argv, ctx.top);
   changed();
 }
 

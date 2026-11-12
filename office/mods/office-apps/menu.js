@@ -8,7 +8,8 @@
 
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { props, closeOverlay, openOverlay, run, exec, theme, notify, setShared } from "herdr";
+import { props, closeOverlay, openOverlay, run, exec, theme, notify, setShared, spaces, panes } from "herdr";
+import { reusableTab, sendLine } from "./branch/tab.js";
 
 export const TICK = "office-apps.tick";
 
@@ -41,8 +42,18 @@ async function git(ctx, args) {
   return r.code === 0;
 }
 
-function inTab(ctx, name, argv, folder = ctx.root) {
-  run("tab.new", { name, folder, argv });
+// 결과를 사람이 봐야 하는 명령은 터미널 탭에서. 같은 이름의 탭이 셸만 남아 있으면 그 탭을 다시 쓴다(branch/tab.js):
+//   tab.select 후 hc send로 "cd <폴더> && <명령>" 한 줄. 브랜치 앱도 이 함수를 쓴다.
+//   보내지 못하면 알리기만 한다: 시간 초과로 늦게 들어갈 수도 있어 새 탭에서 또 돌리면 두 번 실행된다(stash pop 등).
+export function inTab(ctx, name, argv, folder = ctx.root) {
+  const reuse = reusableTab(spaces(), panes(), name), line = reuse ? sendLine(argv, folder) : null;
+  if (reuse && line) {
+    run("tab.select", { id: reuse.tab });
+    const fail = (why) => notify({ title: `'${name}' 탭에 명령을 보내지 못했습니다`, body: why, level: "error" });
+    exec("hc", ["send", "--", reuse.terminal, line], { timeout: 10000 })
+      .then((r) => { if (r.code !== 0) fail((r.stderr || r.stdout).trim().split("\n")[0] || `hc 종료 코드 ${r.code}`); })
+      .catch((e) => fail(String(e?.message ?? e)));
+  } else run("tab.new", { name, folder, argv });
   run("layout.show", { id: "office-term" });
 }
 
