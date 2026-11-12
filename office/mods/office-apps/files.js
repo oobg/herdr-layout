@@ -25,7 +25,9 @@ const TOOL = { search: "#a7c080", hidden: "#7fbbb3", ignored: "#a07850", file: "
   reveal: "#7aa2f7", terminal: "#83c092", copy: "#d699b6", collapse: "#9da9a0", refresh: "#7fbbb3", more: "#9da9a0" };
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
 // git 상태 색 (WebStorm 기본 다크 테마 톤)
-const GIT = { M: "#6897bb", A: "#629755", "?": "#d1675a", U: "#d1675a", D: "#8c8c8c", I: "#a07850" };
+// 충돌(U)은 새 파일(?)과 갈리게 테마의 빨강(t.ansi1)을 쓴다: gitColor 참고.
+const GIT = { M: "#6897bb", A: "#629755", "?": "#d1675a", D: "#8c8c8c", I: "#a07850" };
+const gitColor = (mark, t) => (mark === "U" ? t.ansi1 : GIT[mark]);
 // 확장자 → VS Code 언어 id: Material Icon Theme는 흔한 언어를 확장자 대신 언어 id로 매핑한다.
 const LANGUAGE = {
   ts: "typescript", mts: "typescript", cts: "typescript", tsx: "typescriptreact",
@@ -285,7 +287,7 @@ export class FilesApp {
       const path = prefix ? `${prefix}/${entry.name}` : entry.name, open = this.folders.has(path), abs = `${this.root}/${path}`;
       const ignored = this.isIgnored(abs), mark = this.marks[abs];
       if ((!this.showHidden && entry.name.startsWith(".")) || (this.hideIgnored && ignored)) continue;
-      const color = mark ? GIT[mark] : ignored ? GIT.I : t.foreground;
+      const color = mark ? gitColor(mark, t) : ignored ? GIT.I : t.foreground;
       const icon = iconFor(entry.name, entry.dir, open);
       out.push(h_flex().id(`file-${path}`).h(24).flex_none().pl(6 + depth * 16).pr(8).gap(5).items_center().rounded(4)
         .cursor_pointer().hover((s) => s.bg(t.hover)).when(this.file === path || (entry.dir && this.sel === path), (el) => el.bg(t.selected))
@@ -293,7 +295,9 @@ export class FilesApp {
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(this.ctxFor(path, entry.dir, mark, ignored)); })
         .child(entry.dir ? svg(`${ME}/chevron-${open ? "down" : "right"}.svg`).size(14).flex_none().text_color(t.foreground) : div().w(14).flex_none())
         .child(icon ? image(icon).size(16).flex_none() : div().w(16).flex_none())
-        .child(div().flex_1().min_w(0).truncate().text_color(color).child(entry.name)));
+        .child(div().flex_1().min_w(0).truncate().text_color(color).child(entry.name))
+        // 색만으로 상태를 알리지 않게 오른쪽 끝에 git 상태 글자(M·A·D·U·?)를 흐리게. 충돌은 빨강.
+        .when(Boolean(mark), (el) => el.child(div().flex_none().text_size(11).text_color(mark === "U" ? t.ansi1 : t.muted).child(mark))));
       if (entry.dir && open) this.rows(path, depth + 1, out, t);
     }
     return out;
@@ -423,7 +427,7 @@ export class FilesApp {
         .hover((s) => s.bg(t.hover)).when(this.file === path, (el) => el.bg(t.selected)).on_click((_e, cx) => this.show(path, cx))
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(this.ctxFor(path, false, mark, false)); })
         .child(icon ? image(icon).size(16).flex_none() : div().w(16).flex_none())
-        .child(div().flex_none().text_color(mark ? GIT[mark] : t.foreground).child(name))
+        .child(div().flex_none().text_color(mark ? gitColor(mark, t) : t.foreground).child(name))
         .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ""));
     });
   }
