@@ -143,7 +143,12 @@ const ACT = {
   fastForward: (ctx) => git(ctx, ["fetch", ctx.upstream.remote, `${ctx.upstream.branch}:${ctx.name}`], 180000),
   push: (ctx) => inTab(ctx, `push ${ctx.name}`, ["git", "push", ctx.upstream.remote, `${ctx.name}:${ctx.upstream.branch}`]),
   publish: (ctx) => inTab(ctx, `push -u ${ctx.name}`, ["git", "push", "-u", "origin", ctx.name]),
-  forcePush: (ctx) => inTab(ctx, `force push ${ctx.name}`, ["git", "push", "--force-with-lease", ctx.upstream.remote, `${ctx.name}:${ctx.upstream.branch}`]),
+  // lease는 목록을 읽을 때 본 원격 추적 해시로 고정한다. 해시 없이 --force-with-lease만 주면 그사이 가져오기(fetch)가
+  // 원격 추적 ref를 옮겨 보호가 사라진다. ref 이름은 원격 쪽 브랜치 이름이다.
+  forcePush: (ctx) => {
+    if (!ctx.upstream?.hash) return;
+    inTab(ctx, `force push ${ctx.name}`, ["git", "push", `--force-with-lease=${ctx.upstream.branch}:${ctx.upstream.hash}`, ctx.upstream.remote, `${ctx.name}:${ctx.upstream.branch}`]);
+  },
   unsetUpstream: async (ctx) => { if (await git(ctx, ["branch", "--unset-upstream", ctx.name])) done("추적 정보를 정리했습니다", ctx.name); },
   merge: (ctx) => inTab(ctx, `merge ${ctx.name}`, ["git", "merge", ctx.ref]),
   rebase: (ctx) => inTab(ctx, `rebase ${ctx.name}`, ["git", "rebase", ctx.ref]),
@@ -255,8 +260,9 @@ function itemsFor(ctx) {
       sync.push(item("추적 정보 정리", B("prune"), C.remote, () => ACT.unsetUpstream(ctx), "--unset-upstream"));
     } else if (ahead && behind) {
       if (me) sync.push(item("끌어와서 리베이스", B("pull"), C.remote, () => ACT.pullRebase(ctx), "git pull --rebase"));
-      sync.push({ ...item("강제 푸시...", B("push"), C.danger, () => confirm(ctx, "forcePush", "강제 푸시",
-        `원격 ${q(upstream.short)}의 커밋 ${behind}개를 덮어씁니다. 그사이 다른 사람이 올린 게 있으면 git이 거부합니다(--force-with-lease).`, { yes: "강제 푸시", danger: true }), "--force-with-lease"), danger: true });
+      // 원격 추적 해시를 못 읽었으면 lease를 걸 수 없으므로 강제 푸시를 내놓지 않는다.
+      if (upstream.hash) sync.push({ ...item("강제 푸시...", B("push"), C.danger, () => confirm(ctx, "forcePush", "강제 푸시",
+        `원격 ${q(upstream.short)}의 커밋 ${behind}개를 덮어씁니다. 원격이 목록에서 본 상태(${upstream.hash.slice(0, 7)})와 다르면 git이 거부합니다.`, { yes: "강제 푸시", danger: true }), "--force-with-lease"), danger: true });
     } else if (behind) {
       sync.push(me ? item("끌어오기", B("pull"), C.remote, () => ACT.pull(ctx), "git pull --ff-only")
         : item("빨리 감기", B("pull"), C.remote, () => ACT.fastForward(ctx), "체크아웃 없이"));
@@ -482,14 +488,16 @@ export class BranchApp {
 
   async loadRefs(ctx) {
     const o = { cwd: ctx.top, on: ctx.on };
-    const fmt = ["%(refname)", "%(objectname:short)", "%(HEAD)", "%(symref)", "%(upstream)", "%(upstream:short)", "%(upstream:remotename)",
+    const fmt = ["%(refname)", "%(objectname:short)", "%(objectname)", "%(HEAD)", "%(symref)", "%(upstream)", "%(upstream:short)", "%(upstream:remotename)",
       "%(upstream:track,nobracket)", "%(worktreepath)", "%(committerdate:unix)", "%(creatordate:unix)", "%(contents:subject)"].join("%00");
     const r = await exec("git", ["for-each-ref", `--format=${fmt}`, "refs/heads", "refs/remotes", "refs/tags"], o);
     if (r.code !== 0) throw new Error(r.stderr.trim() || "브랜치를 읽지 못했습니다");
     const refs = { head: null, detached: null, local: [], remote: [], tags: [], defaults: new Set() };
+    const fullOf = new Map(); // ref → 전체 해시. 로컬 브랜치의 upstream 해시(강제 푸시 lease)를 채울 때 쓴다.
     for (const line of r.stdout.split("\n").filter(Boolean)) {
-      const [ref, hash, star, symref, up, upShort, upRemote, track, wt, cdate, tdate, subject] = line.split("\0");
+      const [ref, hash, full, star, symref, up, upShort, upRemote, track, wt, cdate, tdate, subject] = line.split("\0");
       const at = Number(cdate) || Number(tdate) || 0;
+      fullOf.set(ref, full);
       if (ref.startsWith("refs/heads/")) {
         const name = ref.slice(11);
         const ahead = Number(/ahead (\d+)/.exec(track)?.[1] ?? 0), behind = Number(/behind (\d+)/.exec(track)?.[1] ?? 0);
@@ -517,7 +525,10 @@ export class BranchApp {
     refs.dirty = Boolean((dirty?.stdout ?? "").trim());
     refs.detached = detached?.code === 0 ? detached.stdout.trim() : null;
     refs.tracking = {};
-    for (const b of refs.local) if (b.upstream) refs.tracking[b.upstream.short] = b.name;
+    for (const b of refs.local) if (b.upstream) {
+      refs.tracking[b.upstream.short] = b.name;
+      b.upstream.hash = fullOf.get(b.upstream.ref) || null;
+    }
     const def = [...refs.defaults][0];
     refs.defaultName = def ? def.slice(def.indexOf("/") + 1) : refs.local.some((b) => b.name === "main") ? "main" : refs.local.some((b) => b.name === "master") ? "master" : null;
     return refs;
