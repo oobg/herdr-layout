@@ -8,6 +8,7 @@ import { View, div, svg, image } from "gpui-kit";
 import * as fs from "fs/promises";
 import { readActivity, readSub } from "./activity.js";
 import { placeOf, summary, artifactTitle } from "./parse.js";
+import * as md from "./md.js";
 import { v_flex, h_flex } from "gpui-base";
 import {
   props, spaces, agents, panes, terminals, theme, run, exec,
@@ -686,9 +687,9 @@ class Floor {
     return out;
   }
 
-  // 요약 블록: 1) 지금(작업 중일 때) 2) 마지막 말 + n분 전 3) 시간 비례 띠 + "자세히 →"(부모만)
-  //   띠: 흐름 묶음마다 한 칸, 너비 ∝ 걸린 시간(flex_grow, 최소 3px). 3분 이상 빈 자리는 테두리만 있는 쉼 칸(고정 너비).
-  //   지금 도는 칸은 작업 중 색으로 깜빡인다.
+  // 요약 블록: 1) 지금(작업 중일 때) 2) 마지막 말 + n분 전 3) 시간 비례 띠 + "자세히 →"(부모만. 서브에이전트는 지금 한 줄만)
+  //   띠: 흐름 묶음마다 한 칸, 너비 ∝ 걸린 시간(flex_grow, 최소 3px). 기다림(쉼·백그라운드·결과 뒤)은 테두리만 있는 칸
+  //   (parse.js band). 지금 도는 칸은 깜빡이지 않고 같은 종류 색을 진하게(불투명도 1, 다른 칸 0.8).
   summaryView(a, v, working, id, top, t, kindOf) {
     const tail = v.tail ?? {};
     const flow = tail.flow ?? [];
@@ -699,21 +700,70 @@ class Floor {
       .child(svg(SPINNER).size(13).flex_none().text_color(t.working).spin(900))
       .child(div().flex_shrink(1).min_w(0).truncate().text_color(t.foreground).child(sm.now))
       .when(Boolean(sm.phase), (x) => x.child(div().flex_none().text_color(t.muted).child(`· ${sm.phase}`))));
-    if (tail.say) out.push(h_flex().gap(8).items_center().min_h(18)
-      .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(tail.say))
-      .when(Boolean(tail.sayAt), (x) => x.child(div().flex_none().text_size(11).text_color(t.muted).child(ago(tail.sayAt)))));
+    if (!top) return out;   // 서브에이전트 줄 안에는 지금 한 줄만
+    const say = tail.sayText || tail.say;
+    if (say) {
+      // 마지막 말: 줄바꿈을 살린 마크다운, 앞 4줄까지. 넘치면 "더 보기"로 이 에이전트 줄에서만 전체(접힘 상태는 isOpen/toggle).
+      const key = `${id}|say`, full = this.isOpen(key, false);
+      const p = this.sayBlocks(id, say);
+      const shown = full ? { blocks: p.blocks, more: false } : p.short;
+      const toggle = (label) => div().id(`ov-say-more-${id}`).text_size(11).text_color(t.dim).cursor_pointer()
+        .hover((st) => st.text_color(t.foreground))
+        .on_click((_e, cx) => { cx.stop_propagation(); this.toggle(key, false, cx); }).child(label);
+      out.push(h_flex().gap(8).items_start().min_h(18)
+        .child(v_flex().flex_1().min_w(0).gap(2).children(this.mdView(shown.blocks, `${id}-say`, t))
+          .when(shown.more, (x) => x.child(toggle("더 보기")))
+          .when(full && p.short.more, (x) => x.child(toggle("접기"))))
+        .when(Boolean(tail.sayAt), (x) => x.child(div().flex_none().text_size(11).text_color(t.muted).child(ago(tail.sayAt)))));
+    }
     const cells = sm.cells.map((c, i) => c.rest
       ? div().flex_none().w(10).h(6).rounded(2).border_1().border_color(t.border)
       : div().id(`ov-band-${id}-${i}`).flex_grow(Math.max(1, c.ms)).flex_basis(0).min_w(3).h(6).rounded(2)
-        .bg(c.current ? t.working : kindOf(c.kind)[1]).opacity(c.current ? 1 : 0.8)
-        .when(c.current, (x) => x.loop("opacity", { from: 0.35, to: 1, period: 1200 })));
-    if (cells.length || top) out.push(h_flex().gap(8).items_center().min_h(16).pt(2)
+        .bg(kindOf(c.kind)[1]).opacity(c.current ? 1 : 0.8));
+    out.push(h_flex().gap(8).items_center().min_h(16).pt(2)
       .child(h_flex().flex_1().min_w(0).gap(2).items_center().overflow_hidden().children(cells))
-      .when(top, (x) => x.child(div().id(`ov-more-agent-${id}`).flex_none().text_size(11.5).text_color(t.muted).cursor_pointer()
+      .child(div().id(`ov-more-agent-${id}`).flex_none().text_size(11.5).text_color(t.muted).cursor_pointer()
         .hover((st) => st.text_color(t.foreground))
         .on_click((_e, cx) => { cx.stop_propagation(); run(`office-apps.agent:${a.address}`); })
-        .child("자세히 →"))));
+        .child("자세히 →")));
     return out;
+  }
+
+  // 마지막 말의 마크다운 블록(md.js). 말이 바뀔 때만 다시 나눈다. short: 앞 4줄만 남긴 것.
+  sayBlocks(id, src) {
+    const c = (this.sayCache ??= new Map()).get(id);
+    if (c && c.src === src) return c;
+    const blocks = md.parse(src), v = { src, blocks, short: md.cut(blocks, 4) };
+    this.sayCache.set(id, v);
+    return v;
+  }
+
+  // md.js 블록을 좁은 패널에 그린다. 글은 흐린 색, 굵게·제목은 본문 색, 코드는 D2Coding. 제목은 크기 대신 굵게만.
+  //   낱말 조각을 flex_wrap으로 늘어놓아 섞인 줄도 낱말 단위로 줄바꿈한다. 링크는 http(s)만 이 기기 브라우저로 연다.
+  mdView(blocks, id, t) {
+    const word = (w, k) => {
+      let el = div().max_w_full().truncate().when(w.space, (x) => x.mr(3.5));
+      if (w.kind === "b") el = el.font_semibold().text_color(t.foreground);
+      else if (w.kind === "code") el = el.font_family("D2Coding").text_size(11).px(3).rounded(3).bg(t.border).text_color(t.foreground);
+      else if (w.kind === "link") {
+        const url = md.safeUrl(w.url);
+        el = el.id(`ov-md-${id}-${k}`).text_color(t.foreground).underline().when(Boolean(url), (x) => x.cursor_pointer().tooltip(url)
+          .on_click((_e, cx) => { cx.stop_propagation(); cx.spawn(async () => { await exec("open", [url]); }); }));
+      }
+      return el.child(w.text);
+    };
+    const line = (ws, k) => h_flex().flex_1().min_w(0).flex_wrap().items_center().children(ws.map((w, j) => word(w, `${k}-${j}`)));
+    return blocks.map((b, i) => {
+      const el = b.kind === "code"
+        ? v_flex().px(6).py(3).rounded(4).bg(t.border).font_family("D2Coding").text_size(11).text_color(t.foreground)
+          .children(b.lines.map((l) => div().min_h(14).whitespace_nowrap().truncate().child(l || " ")))
+        : b.kind === "li"
+          ? h_flex().items_start().pl(b.depth * 12).child(div().flex_none().min_w(12).pr(4).text_color(t.muted).child(b.marker)).child(line(b.words, i))
+          : b.kind === "h"
+            ? h_flex().child(line(b.words.map((w) => (w.kind === "text" ? { ...w, kind: "b" } : w)), i))
+            : h_flex().child(line(b.words, i));
+      return div().text_color(t.muted).when(Boolean(b.gap), (x) => x.pt(4)).child(el);
+    });
   }
 
   // 벽에 붙일 명패 SVG를 만든다. 글자 크기는 화면 픽셀로 고정(읽히게), 모양만 왼쪽 벽(월드 y축) 기울기로 비튼다.

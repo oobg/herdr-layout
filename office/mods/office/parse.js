@@ -27,6 +27,8 @@ export function describe(name, input) {
   }
 }
 
+// 마지막 말 원문: 줄바꿈은 살리고(마크다운으로 그린다) 끝 공백·3줄 넘는 빈 줄만 정리, n자에서 자른다
+const keep = (s, n) => { const x = String(s).replace(/\r\n?/g, "\n").replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim(); return x.length > n ? `${x.slice(0, n).trimEnd()}…` : x; };
 const clip = (s, n) => { const x = String(s).replace(/\s+/g, " ").trim(); return x.length > n ? `${x.slice(0, n).trimEnd()}…` : x; };
 const textOf = (content) => (typeof content === "string" ? content
   : Array.isArray(content) ? content.filter((it) => it.type === "text").map((it) => it.text).join("\n") : "");
@@ -110,18 +112,20 @@ export function titleOfHtml(html) {
 }
 
 // text: 기록 끝부분. cut: 앞이 잘렸는지(잘렸으면 첫 줄은 깨진 줄). sidechain: 서브에이전트 기록인지.
-// 반환: { flow, tools, running, ended, agents, say, sayAt, lastAt }
+// 반환: { flow, tools, running, ended, agents, say, sayText, sayAt, lastAt }
 //   flow    이번 턴의 도구를 연속된 같은 종류끼리 묶은 것(길면 마지막 24묶음).
 //           at: 묶음의 첫 호출 시각, end: 묶음 안 호출의 결과가 온 마지막 시각(아직 없으면 at)
-//   say     이번 턴에 에이전트가 마지막으로 한 말(한 줄로 편 것), sayAt 그 시각. lastAt: 기록의 마지막 시각
+//           bg: 묶음의 마지막 호출이 백그라운드로 띄운 것(run_in_background 셸·서브에이전트). 띄운 결과가 온 시각이 end
+//   say     이번 턴에 에이전트가 마지막으로 한 말(한 줄로 편 것), sayText 같은 말의 원문(줄바꿈 유지, 4000자),
+//           sayAt 그 시각. lastAt: 기록의 마지막 시각
 //   tools   이번 턴 도구 호출 수
 //   ended   완료 알림에서 읽은 task-id → { status, tools, ms }
 //   agents  끝부분에서 본 서브에이전트 호출(세션의 subagents 목록이 없을 때만 쓴다: 옛 기록 형식)
 export function parse(text, { cut = true, sidechain = false } = {}) {
   const lines = text.split("\n");
   if (cut) lines.shift();
-  let calls = [], askAt = 0, say = "", sayAt = 0, lastAt = 0;
-  const agentCalls = [];
+  let calls = [], askAt = 0, say = "", sayText = "", sayAt = 0, lastAt = 0;
+  const agentCalls = [], bg = new Set();
   const done = new Set(), doneAt = {}, finished = {}, ended = {}, names = {}, agentIds = {};
   for (const line of lines) {
     if (!line) continue;
@@ -154,25 +158,26 @@ export function parse(text, { cut = true, sidechain = false } = {}) {
       const t = queued || textOf(content).trim();
       // 사람이 보낸 메시지면 새 턴(자동 알림·시스템 메시지는 "<"로 시작해 제외): 그 앞 단계는 버린다.
       // 서브에이전트 기록의 첫 줄(부모가 맡긴 일)도 같은 모양이라 그 서브에이전트의 턴이 된다.
-      if (!d.isMeta && t && !t.startsWith("<") && !t.startsWith("[Request interrupted")) { calls = []; askAt = at; say = ""; sayAt = 0; }
+      if (!d.isMeta && t && !t.startsWith("<") && !t.startsWith("[Request interrupted")) { calls = []; askAt = at; say = ""; sayText = ""; sayAt = 0; }
       continue;
     }
     if (!Array.isArray(content)) continue;
     for (const it of content) {
-      if (it.type === "text" && d.type === "assistant" && it.text?.trim()) { say = clip(it.text, 400); sayAt = at; }
+      if (it.type === "text" && d.type === "assistant" && it.text?.trim()) { say = clip(it.text, 400); sayText = keep(it.text, 4000); sayAt = at; }
       else if (it.type === "tool_use") {
         if (names[it.id]) continue; // 같은 호출이 두 번 적힌 줄
         const c = { id: it.id, name: it.name, input: it.input ?? {}, at };
         calls.push(c);
         names[it.id] = it.name;
         if (/^(Agent|Task)$/.test(it.name)) agentCalls.push(c);
+        if (it.input?.run_in_background === true) bg.add(it.id);
       } else if (it.type === "tool_result") {
         if (/^(Agent|Task)$/.test(names[it.tool_use_id] ?? "")) {
           const body = textOf(it.content);
           const aid = /agentId: ([A-Za-z0-9]+)/.exec(body)?.[1];
           if (aid) agentIds[it.tool_use_id] = aid;
-          // 백그라운드로 띄운 서브에이전트는 "시작했다"는 결과가 바로 온다: 끝난 게 아니다
-          if (/Async agent launched/.test(body)) continue;
+          // 백그라운드로 띄운 서브에이전트는 "시작했다"는 결과가 바로 온다: 끝난 게 아니다(띠의 칸은 여기까지)
+          if (/Async agent launched/.test(body)) { bg.add(it.tool_use_id); doneAt[it.tool_use_id] = at; continue; }
         }
         done.add(it.tool_use_id);
         doneAt[it.tool_use_id] = at;
@@ -192,11 +197,12 @@ export function parse(text, { cut = true, sidechain = false } = {}) {
   for (const x of steps) {
     const last = flow[flow.length - 1];
     const end = Math.max(x.at, doneAt[x.id] ?? 0);
-    if (last && last.kind === x.kind) { last.n++; last.running ||= x.running; last.target = x.target; last.end = Math.max(last.end, end); }
-    else flow.push({ kind: x.kind, n: 1, running: x.running, target: x.target, at: x.at, end });
+    const b = bg.has(x.id), fg = x.running && !b;   // fg: 결과를 기다리며 지금 도는 호출(백그라운드로 띄운 것은 아니다)
+    if (last && last.kind === x.kind) { last.n++; last.running ||= x.running; last.fg ||= fg; last.bg = b; last.target = x.target; last.end = Math.max(last.end, end); }
+    else flow.push({ kind: x.kind, n: 1, running: x.running, fg, bg: b, target: x.target, at: x.at, end });
   }
   flow.splice(0, Math.max(0, flow.length - 24));
-  return { flow, tools: steps.length, askAt, running, ended, agents, say, sayAt, lastAt };
+  return { flow, tools: steps.length, askAt, running, ended, agents, say, sayText, sayAt, lastAt };
 }
 
 // ── 요약 줄과 시간 띠(오버뷰 에이전트 줄). 에이전트 앱(office-apps/agent/timeline.js)과 같은 규칙 ──
@@ -215,19 +221,22 @@ export function phases(flow) {
 }
 
 // 시간 띠의 칸: 흐름 항목마다 한 칸, ms = 걸린 시간(화면은 이 비율로 너비를 나눈다).
-//   끝 = 다음 항목의 at. 마지막 항목은 작업 중이면 now, 아니면 lastAt.
-//   다음 항목까지 비는 시간(이 항목의 마지막 결과 end → 다음 at)이 3분 이상이면 끝을 end로 당기고 그 뒤에 쉼 칸.
-//     (at끼리만 재면 5분 걸린 실행 하나도 쉼이 된다)
-//   current: 작업 중일 때 마지막 칸(지금 도는 칸).
+//   칸의 끝 = 다음 항목의 at(사이에 생각한 시간까지 그 칸). 마지막 항목은 작업 중이면 now, 아니면 lastAt.
+//   빈 칸(rest: 테두리만 있는 칸)은 도구를 돌리지 않고 기다리는 시간이다. 그때 앞 칸은 end(마지막 결과가 온 시각)에서 끊는다.
+//     1) 쉼: 다음 항목까지 비는 시간(end → 다음 at)이 3분 이상(at끼리만 재면 5분 걸린 실행 하나도 쉼이 된다)
+//     2) 백그라운드 기다림: 항목(의 마지막 호출)을 백그라운드로 띄웠으면(bg) end → 다음 at(마지막이면 now/lastAt), 길이와 무관
+//     3) 결과 뒤 기다림: 마지막 항목인데 작업 중이고 그 항목에 결과를 기다리는 호출(fg)이 없으면 end → now, 길이와 무관
+//   current: 작업 중이고 마지막 항목에 fg 호출이 있을 때 그 칸(지금 도는 칸).
 export function band(flow, { working = false, now = Date.now(), lastAt = 0 } = {}) {
   const cells = [];
   flow.forEach((f, i) => {
     const next = flow[i + 1], end = Math.max(f.at ?? 0, f.end ?? 0);
-    let stop = next ? next.at : working ? now : Math.max(lastAt, end);
-    const rest = next && next.at - end >= REST_MS ? next.at - end : 0;
-    if (rest) stop = end;
-    cells.push({ kind: f.kind, ms: Math.max(0, stop - (f.at ?? 0)), current: working && i === flow.length - 1 });
-    if (rest) cells.push({ rest: true, ms: rest });
+    const fg = f.fg ?? f.running;   // 옛 기록 형식(fg 없음)은 running으로
+    const tail = next ? next.at : working ? now : Math.max(lastAt, end);
+    const waits = next ? f.bg || next.at - end >= REST_MS : working ? !fg : f.bg;
+    const stop = waits ? end : tail;
+    cells.push({ kind: f.kind, ms: Math.max(0, stop - (f.at ?? 0)), current: working && !next && fg });
+    if (waits && tail > end) cells.push({ rest: true, ms: tail - end });
   });
   return cells;
 }
