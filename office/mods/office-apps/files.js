@@ -489,7 +489,7 @@ export class FilesApp {
   // 오른쪽: 고른 파일의 뷰어
   detail(cx, t) {
     if (!this.file) return null;
-    const abs = `${this.root}/${this.file}`, name = this.file.split("/").pop(), v = this.view;
+    const abs = `${this.root}/${this.file}`, name = this.file.split("/").pop(), v = this.view, local = !this.on;
     const icon = iconFor(name, false, false);
     const W = Math.max(200, (this.dw ?? 600) - 40);
     const btn = (id, text, fn) => div().id(id).px(10).py(4).rounded(6).border_1().border_color(t.border).text_size(12)
@@ -501,20 +501,23 @@ export class FilesApp {
       .child(h_flex().h(40).flex_none().px(14).gap(8).items_center().border_b_1().border_color(t.border)
         .when(Boolean(icon), (el) => el.child(image(icon).size(16).flex_none()))
         .child(div().flex_none().text_size(14).font_semibold().text_color(t.foreground).child(name))
-        .child(div().id("files-detail-path").flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).cursor_pointer()
-          .hover((s) => s.text_color(t.foreground).underline()).on_click(() => exec("open", ["-R", abs])).child(v?.note ?? this.file))
-        .child(btn("files-open-ext", "기본 앱으로 열기", () => exec("open", [abs])))
+        // 경로 클릭(Finder에서 보기)과 "기본 앱으로 열기"는 이 Mac의 파일일 때만. 원격 기기 파일은 경로만 보인다.
+        .child(div().id("files-detail-path").flex_1().min_w(0).truncate().text_size(12).text_color(t.dim)
+          .when(local, (el) => el.cursor_pointer().hover((s) => s.text_color(t.foreground).underline()).on_click(() => exec("open", ["-R", abs])))
+          .child(v?.note ?? this.file))
+        .when(local, (el) => el.child(btn("files-open-ext", "기본 앱으로 열기", () => exec("open", [abs]))))
         .child(div().id("files-close").px(6).rounded(4).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("✕")))
       .child(body);
   }
 
-  // 마크다운 링크: http·mailto는 브라우저로, 상대 경로는 이 파일 앱에서 연다(#제목 링크는 무시)
+  // 마크다운 링크: http·mailto는 브라우저로, 상대 경로는 이 파일 앱에서 연다(#제목 링크는 무시).
+  // 프로젝트 밖 절대 경로는 이 Mac이면 기본 앱으로, 원격 기기면 이 Mac에 없는 경로라 무시한다.
   openLink(url, dir, cx) {
     if (/^(https?|mailto):/i.test(url)) { exec("open", [url]); return; }
     let p = decodeURIComponent(url.replace(/^file:\/\//i, "").replace(/[?#].*$/, ""));
     if (!p) return;
     if (p.startsWith(this.root + "/")) p = p.slice(this.root.length + 1);
-    else if (p.startsWith("/")) { exec("open", [p]); return; }
+    else if (p.startsWith("/")) { if (!this.on) exec("open", [p]); return; }
     else {
       const out = dir ? dir.split("/") : [];
       for (const part of p.split("/")) { if (part === "..") out.pop(); else if (part && part !== ".") out.push(part); }

@@ -51,12 +51,15 @@ async function copy(text, what) {
   notify({ title: `${what}를 복사했습니다`, body: text, level: "info" });
 }
 
+// 이 Mac의 앱(open·qlmanage·에디터·ditto)을 쓰는 동작은 원격 기기(ctx.on) 파일에는 쓰지 않는다. 메뉴에서도 뺀다.
+const local = (ctx) => !ctx.on;
+
 // 입력 창(이름)과 확인 창이 부르는 동작들.
 export const ACTIONS = {
   preview: (ctx) => setShared("office-apps.preview", { path: ctx.path, root: ctx.root, at: Date.now() }),
-  openDefault: (ctx) => exec("open", [ctx.abs]),
-  openWith: (ctx, app) => exec(app, [ctx.abs]),
-  reveal: (ctx) => exec("open", ["-R", ctx.abs]),
+  openDefault: (ctx) => local(ctx) && exec("open", [ctx.abs]),
+  openWith: (ctx, app) => local(ctx) && exec(app, [ctx.abs]),
+  reveal: (ctx) => local(ctx) && exec("open", ["-R", ctx.abs]),
   terminal: (ctx) => { run("tab.new", { folder: ctx.dir ? ctx.abs : parent(ctx.abs) }); run("layout.show", { id: "office-term" }); },
   file: (ctx, name) => sh(ctx, 'mkdir -p "$(dirname "$1/$2")" && { [ -e "$1/$2" ] && echo "이미 있습니다" >&2 && exit 1 || : > "$1/$2"; }', ctx.dir ? ctx.abs : parent(ctx.abs), name),
   folder: (ctx, name) => sh(ctx, 'mkdir -p "$1/$2"', ctx.dir ? ctx.abs : parent(ctx.abs), name),
@@ -88,7 +91,7 @@ export const ACTIONS = {
   theirs: (ctx) => sh(ctx, 'cd "$1" && git checkout --theirs -- "$2" && git add -- "$2"', ctx.root, ctx.path),
   markResolved: (ctx) => git(ctx, ["add", "--", ctx.path]),
   run: (ctx, argv, name) => inTab(ctx, name ?? argv.join(" "), argv, ctx.dir ? ctx.abs : parent(ctx.abs)),
-  quicklook: (ctx) => exec("qlmanage", ["-p", ctx.abs]),
+  quicklook: (ctx) => local(ctx) && exec("qlmanage", ["-p", ctx.abs]),
   chmodx: async (ctx) => { if (await sh(ctx, 'chmod +x "$1"', ctx.abs)) notify({ title: "실행 권한을 줬습니다", body: ctx.path, level: "info" }); },
   // .env → .env.example: 키만 남기고 값은 비운다(주석·빈 줄은 그대로).
   envExample: async (ctx) => {
@@ -140,7 +143,8 @@ export function menuTree(ctx) {
   const m = ctx.mark, changed = m && m !== "?", tracked = m !== "?" && !ctx.ignored, clean = tracked && !m;
   const item = (label, icon, color, fn, hint) => ({ label, icon: I(icon), color, fn, hint });
   const sub = (label, icon, color, list) => { const l = tidy(list); return l.length ? { label, icon: I(icon), color, sub: l } : null; };
-  const editors = (ctx.tools ?? []).filter((c) => EDITORS[c]).map((c) => item(EDITORS[c], "open", C.open, () => ACTIONS.openWith(ctx, c)));
+  const isLocal = local(ctx); // 이 Mac의 파일인가(원격이면 Finder·기본 앱·에디터·Quick Look·ditto를 숨긴다)
+  const editors = (isLocal ? ctx.tools ?? [] : []).filter((c) => EDITORS[c]).map((c) => item(EDITORS[c], "open", C.open, () => ACTIONS.openWith(ctx, c)));
   const pm = ctx.pm ?? "npm";
   const runIt = (argv, hint) => () => ACTIONS.run(ctx, argv, hint);
 
@@ -172,9 +176,10 @@ export function menuTree(ctx) {
     } else if (/^[cm]?tsx?$/.test(ext) && !lower.endsWith(".d.ts")) {
       special.push(item("실행", "terminal", C.run, runIt(pm === "bun" ? ["bun", name] : ["npx", "tsx", name]), pm === "bun" ? `bun ${name}` : `tsx ${name}`));
     } else if (IMAGE.test(lower)) {
-      special.push(item("훑어보기 (Quick Look)", "eye", C.view, () => ACTIONS.quicklook(ctx), "Space"));
+      if (isLocal) special.push(item("훑어보기 (Quick Look)", "eye", C.view, () => ACTIONS.quicklook(ctx), "Space"));
     } else if (ARCHIVE.test(lower)) {
-      special.push(item("압축 풀기", "folder-new", C.run, () => ACTIONS.unzip(ctx)));
+      // .zip은 ditto(macOS)로 푼다. tar 계열은 원격에서도 된다.
+      if (isLocal || ext !== "zip") special.push(item("압축 풀기", "folder-new", C.run, () => ACTIONS.unzip(ctx)));
     }
     if (/^\.env(\.|$)/.test(lower) && !lower.endsWith(".example")) {
       special.push(item(".env.example 만들기", "file-new", C.run, () => ACTIONS.envExample(ctx), "키만, 값은 비움"));
@@ -215,7 +220,7 @@ export function menuTree(ctx) {
   if (kind === "root") return tidy([
     ...create,
     "-",
-    item("Finder에서 열기", "reveal", C.open, () => exec("open", [ctx.abs])),
+    isLocal && item("Finder에서 열기", "reveal", C.open, () => exec("open", [ctx.abs])),
     item("여기서 터미널", "terminal", C.open, () => ACTIONS.terminal(ctx)),
     ...editors.map((e) => ({ ...e, label: `${e.label}에서 프로젝트 열기` })),
     "-",
@@ -228,10 +233,10 @@ export function menuTree(ctx) {
     kind === "file" && !IMAGE.test(lower) && !ARCHIVE.test(lower) && item("미리보기", "eye", C.view, () => ACTIONS.preview(ctx)),
     ...special,
     sub("다음으로 열기", "open", C.open, [
-      item("기본 앱", "open", C.open, () => ACTIONS.openDefault(ctx)),
+      isLocal && item("기본 앱", "open", C.open, () => ACTIONS.openDefault(ctx)),
       ...editors,
       "-",
-      item("Finder에서 보기", "reveal", C.open, () => ACTIONS.reveal(ctx)),
+      isLocal && item("Finder에서 보기", "reveal", C.open, () => ACTIONS.reveal(ctx)),
       item(isDir ? "여기서 터미널" : "폴더에서 터미널", "terminal", C.open, () => ACTIONS.terminal(ctx)),
     ]),
     "-",
@@ -240,7 +245,7 @@ export function menuTree(ctx) {
     copyMenu,
     item("이름 바꾸기...", "rename", C.edit, () => ask(ctx, "rename", "이름 바꾸기", `'${name}'의 새 이름`, name)),
     item("복제", "duplicate", C.edit, () => ACTIONS.duplicate(ctx), `${name} copy`),
-    kind === "dir" && item("압축하기", "duplicate", C.edit, () => ACTIONS.zip(ctx), `${name}.zip`),
+    kind === "dir" && isLocal && item("압축하기", "duplicate", C.edit, () => ACTIONS.zip(ctx), `${name}.zip`),
     "-",
     // 충돌 파일은 해결 항목을 맨 위에 따로 둔다. git 항목이 한두 개면 하위 메뉴 없이 바로.
     m === "U" ? [] : git.length ? (git.length <= 2 ? git : [sub("Git", "branch", C.git, git)]) : [],
