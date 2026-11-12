@@ -110,6 +110,22 @@ class AgentMenu extends Menu {
 function register() { ROLES["agent-menu"] = AgentMenu; }
 register();
 
+// agents()는 상태를 보고(OSC 7501)하는 터미널만 준다. Codex처럼 보고 훅이 없는 에이전트도 보이게,
+//   칸에서 에이전트 프로그램이 돌고 있으면 상태 없이(null) 덧붙인다(office 모드의 withSilent와 같은 규칙).
+const SILENT_AGENT = /claude|codex|grok|antigravity|gemini|cursor|opencode|\bamp\b|\bpi\b/i;
+function withSilent(list, ps) {
+  const have = new Set(list.map((a) => a.address));
+  const spaceOf = new Map(spaces().flatMap((s) => s.tabs.map((x) => [x.id, s])));
+  const extra = ps.filter((p) => p.terminal && !p.status && !have.has(p.terminal) && spaceOf.has(p.tab)
+      && (p.program?.agent || SILENT_AGENT.test(p.program?.key ?? "")))
+    .map((p) => {
+      const s = spaceOf.get(p.tab), tab = s.tabs.find((x) => x.id === p.tab);
+      return { address: p.terminal, pane: p.pane, space: s.id, space_name: s.name, tab: p.tab, tab_index: tab?.index ?? 0,
+        tab_name: tab?.name ?? "", status: null, app: null, program: p.program, title: p.program?.name ?? p.title ?? "", seq: 0, pinned: false, focused: p.focused };
+    });
+  return extra.length ? [...list, ...extra] : list;
+}
+
 function programIcon(p, size, t) {
   const id = `${p?.key ?? ""} ${p?.name ?? ""}`;
   const b = BRAND.find(([re]) => re.test(id));
@@ -132,7 +148,7 @@ export class AgentApp {
   }
 
   // ── 목록 만들기 ─────────────────────────────────────────
-  build(ags = agents(), terms = terminals() ?? [], sps = spaces()) {
+  build(ags = withSilent(agents(), panes() ?? []), terms = terminals() ?? [], sps = spaces()) {
     const tmap = new Map(terms.map((x) => [x.address, x]));
     const mine = new Set(ags.map((a) => a.address));
     const rows = [];
@@ -335,10 +351,11 @@ export class AgentApp {
           .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.select(r.key, cx); this.openMenu(r); })
           .child(h_flex().gap(8).items_center()
             .child(this.dot(r.status, t))
+            .when(r.kind !== "rec", (el) => el.child(programIcon(r.program, 14, t)))   // 서브에이전트는 부모와 같은 아이콘이라 뺀다
             .child(div().flex_1().min_w(0).truncate().text_size(top ? 13 : 12)
               .text_color(top || r.status === "working" ? t.foreground : t.muted).child(r.title))
             .when(Boolean(right), (el) => el.child(div().flex_none().text_size(11).text_color(rc).child(right))))
-          .when(Boolean(where), (el) => el.child(div().pl(15).truncate().text_size(11).text_color(t.dim).child(where)));
+          .when(Boolean(where), (el) => el.child(div().pl(r.kind !== "rec" ? 37 : 15).truncate().text_size(11).text_color(t.dim).child(where)));
       }));
   }
 
