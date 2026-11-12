@@ -58,7 +58,12 @@ export class ReviewApp {
     this.groups = [];
     this.sel = load("review.sel", null);
     this.mode = load("review.mode", "worktree") === "base" ? "base" : "worktree";
-    this.to = {};             // 묶음 key → 보낼 에이전트 주소
+    this.to = {};             // 묶음 key → 보낼 에이전트 주소(묶음을 처음 볼 때 정하고, 그 뒤로는 사람이 고를 때만 바뀐다)
+    this.drafts = {};         // 초안 key(draftKey) → 글. 폴더·받는 사람을 바꿔도 남는다
+    this.dk = null;           // 입력칸에 보이는 초안의 key
+    this.sentDraft = {};      // 보낸 id → 초안 key(보낸 뒤 그 초안만 비운다)
+    this.seen = false;        // 이 앱에서 고른 폴더를 한 번이라도 봤는지(본 뒤 사라지면 다른 폴더를 저절로 고르지 않는다)
+    this.last = null;         // 마지막으로 본 고른 폴더 { key, root, on }
     this.files = []; this.file = null; this.rows = []; this.pairs = [];
     this.filesOpen = true;
     this.pick = null;         // diff에서 고른 줄 { line, side, key }
@@ -68,7 +73,9 @@ export class ReviewApp {
     this.input = TextareaState.new({ placeholder: "에이전트에게 보낼 피드백 (고른 파일·줄이 앞에 붙습니다)", rows: 3 });
     try { this.input.set_auto_grow(2, 6); } catch { /* 고정 3줄 */ }
     this.input.on("change", (_e, cx) => {
-      const empty = !this.input.value().trim();
+      const v = this.input.value();
+      if (this.dk) { if (v) this.drafts[this.dk] = v; else delete this.drafts[this.dk]; }
+      const empty = !v.trim();
       if (empty !== this.empty) { this.empty = empty; cx.notify(); }
     });
     this.empty = true;
@@ -95,15 +102,43 @@ export class ReviewApp {
 
   current() { return this.groups.find((g) => g.key === this.sel) ?? null; }
 
-  // 렌더마다(detail·list 둘 다에서): 목록을 새로 만들고, 고른 줄이 없으면 첫 줄을 고르고, 타이머를 깨운다.
+  // 고른 폴더가 목록에서 사라졌다(아직 루트를 찾는 폴더가 있으면 판단을 미룬다)
+  lost() { return Boolean(this.sel && this.seen && !this.current() && !this.unresolved); }
+
+  // 초안 key = (기기, 폴더 루트, 받는 에이전트 주소). 폴더가 사라졌으면 마지막 것을 그대로 둔다.
+  draftKey() {
+    const g = this.current();
+    if (!g) return this.dk;
+    const to = this.to[g.key];
+    return to ? JSON.stringify([g.on ?? null, g.root, to]) : null;
+  }
+
+  swap(dk) {
+    if (dk === this.dk) return;
+    this.dk = dk;
+    const v = (dk && this.drafts[dk]) || "";
+    if (this.input.value() !== v) this.input.set_value(v);
+    this.empty = !v.trim();
+  }
+
+  // 렌더마다(detail·list 둘 다에서): 목록을 새로 만들고, 처음이면 첫 줄을 고르고, 초안을 맞추고, 타이머를 깨운다.
+  //   고른 폴더를 본 뒤 그 폴더가 빠지면 다른 폴더를 고르지 않는다(초안이 다른 에이전트에게 가지 않게). 사람이 고를 때까지 lost.
   prepare(cx) {
     const dirs = this.build();
     this.syncSent();
-    if (dirs.some((d) => !(d.key in this.roots)) && !this.busy) this.kick(cx);
-    if (!this.current() && this.groups.length) {
+    this.unresolved = dirs.some((d) => !(d.key in this.roots));
+    if (this.unresolved && !this.busy) this.kick(cx);
+    if (!this.current() && !this.seen && (!this.sel || !this.unresolved)) {
       const g = this.groups.find((x) => !x.pending) ?? null;
       if (g) this.choose(g.key, cx);
     }
+    const cur = this.current();
+    if (cur && !cur.pending) {
+      this.seen = true; this.last = { key: cur.key, root: cur.root, on: cur.on };
+      // 받는 사람은 처음 볼 때 정해 둔다: 그 뒤 그 에이전트가 빠져도 다음 사람으로 넘어가지 않는다.
+      if (!this.to[cur.key]) { const a = this.agentsOf(cur)[0]; if (a) this.to[cur.key] = a.address; }
+    }
+    this.swap(this.draftKey());
     this.rendered = Date.now();
     if (!this.timer && !this.busy) this.loop(cx, 0);
   }
@@ -118,7 +153,13 @@ export class ReviewApp {
     if (s.phase === "sending") { this.sending = s.id; return; }
     if (this.sending === s.id || this.waiting === s.id) {
       this.sending = null; this.waiting = null;
-      if (s.ok) { this.empty = true; this.pick = null; this.input.set_value(""); }
+      const dk = this.sentDraft[s.id];
+      delete this.sentDraft[s.id];
+      // 보낸 초안만 비운다(2분까지 걸리므로 그 사이 다른 폴더·받는 사람으로 옮겼을 수 있다)
+      if (s.ok && dk) {
+        delete this.drafts[dk];
+        if (this.dk === dk) { this.empty = true; this.pick = null; this.input.set_value(""); }
+      }
     }
   }
 
@@ -319,17 +360,29 @@ printf '%s\n%s' "$c" "$f"`;
   // 그 폴더의 에이전트(지금 상태, 공용 순서)
   agentsOf(g) { return g ? candidates({ list: g.agents }) : []; }
 
+  // 정해 둔 받는 사람. 목록에서 빠졌으면 null(다른 사람으로 넘어가지 않는다).
   target(g = this.current()) {
-    const list = this.agentsOf(g);
-    return list.find((a) => a.address === this.to[g?.key]) ?? list[0] ?? null;
+    if (!g) return null;
+    return this.agentsOf(g).find((a) => a.address === this.to[g.key]) ?? null;
+  }
+
+  // 사람이 받는 사람을 바꾼다. 앞 사람이 목록에서 빠져 있었고 새 사람의 초안이 없으면, 보이던 글을 새 사람 초안으로 옮긴다
+  //   (칩을 눌러 받는 사람을 직접 고른 것이라 옮겨도 엉뚱한 곳으로 가지 않는다).
+  pickTo(g, address) {
+    const was = this.target(g), from = this.dk, text = from ? this.drafts[from] : null;
+    this.to[g.key] = address;
+    const dk = this.draftKey();
+    if (!was && text && dk && !this.drafts[dk]) { this.drafts[dk] = text; delete this.drafts[from]; }
+    this.swap(dk);
   }
 
   send(cx) {
-    const a = this.target();
-    if (!a || this.sending) return;
+    const g = this.current(), a = this.target(g), dk = this.draftKey();
+    if (!g || !a || this.sending || !dk || dk !== this.dk) return;
     const text = feedbackText({ path: this.file, line: this.pick?.line, side: this.pick?.side, text: this.input.value() });
     if (!text) return;
     const r = sendToAgent(a, text, { reply: SENT });
+    if (r.state === "confirm" || r.state === "sending") this.sentDraft[r.id] = dk;
     if (r.state === "confirm") this.waiting = r.id;
     if (r.state !== "sending") return;
     this.sending = r.id; this.waiting = r.id;
@@ -405,6 +458,7 @@ printf '%s\n%s' "$c" "$f"`;
   detail(cx, t) {
     this.prepare(cx);
     const g = this.current();
+    if (!g && this.sel && this.seen) return this.lostView(t);
     if (!g || g.pending) return null;
     const st = this.stats[g.key];
     const tab = (mode, label) => div().id(`review-view-${mode}`).px(8).py(3).rounded(4).text_size(12).cursor_pointer()
@@ -505,25 +559,43 @@ printf '%s\n%s' "$c" "$f"`;
         .text_size(11).text_color(t.dim).child("앞 1,500줄만 보여 줍니다")));
   }
 
+  // 고른 폴더가 목록에서 빠졌을 때: 다른 폴더를 저절로 고르지 않고 한 줄로 알린다. 보내기는 없다(초안은 남는다).
+  lostView(t) {
+    const name = this.last ? baseName(this.last.root) : "";
+    const line = !this.lost() ? "읽는 중"
+      : this.empty ? "이 폴더가 목록에서 사라졌습니다" : "이 폴더가 목록에서 사라졌습니다 · 초안 보관됨";
+    return v_flex().size_full().min_h(0)
+      .child(h_flex().h(40).flex_none().px(14).gap(8).items_center().border_b_1().border_color(t.border)
+        .child(div().flex_none().max_w(220).truncate().text_size(14).font_semibold().text_color(t.foreground).child(name))
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim)
+          .child(this.last ? this.last.root.replace(home(), "~") + (this.last.on ? ` · ${this.last.on}` : "") : "")))
+      .child(div().flex_none().px(14).py(10).border_b_1().border_color(t.border).text_size(12).text_color(t.foreground).child(line))
+      .child(div().flex_1())
+      .when(!this.empty, (el) => el.child(v_flex().flex_none().px(12).py(8).gap(6).border_t_1().border_color(t.border)
+        .child(Textarea.new(this.input).w_full().text_size(13).text_color(t.foreground))
+        .child(div().text_size(11).text_color(t.dim).child("왼쪽에서 폴더를 고르면 그 폴더의 초안으로 바뀝니다. 이 폴더가 돌아오면 초안도 돌아옵니다."))));
+  }
+
   // 피드백: 보낼 곳(여럿이면 골라 누름) · 붙을 위치 / 입력칸 / 보내기
   feedback(g, t) {
-    const a = this.target(g);
+    const a = this.target(g), gone = !a && Boolean(this.to[g.key]);
     const st = a?.status ?? null;
     const blocked = st === "blocked", sending = Boolean(this.sending);
     const can = Boolean(a) && !blocked && !sending && !this.empty;
     const where = this.file ? (this.pick ? `${this.file}:${this.pick.line}${this.pick.side === "old" ? " (지운 줄)" : ""}` : this.file) : null;
-    const note = blocked ? "입력을 기다리는 중이라 보낼 수 없습니다. 터미널에서 먼저 답하세요."
+    const note = gone ? (this.empty ? "받는 에이전트가 목록에서 사라졌습니다" : "받는 에이전트가 목록에서 사라졌습니다 · 초안 보관됨")
+      : blocked ? "입력을 기다리는 중이라 보낼 수 없습니다. 터미널에서 먼저 답하세요."
       : sending ? "보내는 중" : st === "working" ? "작업 중: 보낸 글은 다음 차례에 처리됩니다" : "";
     return v_flex().flex_none().px(12).py(8).gap(6).border_t_1().border_color(t.border)
       .child(h_flex().gap(6).items_center().min_w(0)
-        .child(div().flex_1().min_w(0).child(recipients("review", this.agentsOf(g), a?.address, (address) => { this.to[g.key] = address; }, t)))
+        .child(div().flex_1().min_w(0).child(recipients("review", this.agentsOf(g), a?.address, (address) => this.pickTo(g, address), t)))
         .when(Boolean(where), (el) => el.child(h_flex().flex_none().max_w(320).gap(4).items_center()
           .child(div().truncate().text_size(11).font_family(CODE_FONT).text_color(t.muted).child(where))
           .when(Boolean(this.pick), (e2) => e2.child(div().id("review-unpick").px(4).rounded(4).text_size(11).text_color(t.dim).cursor_pointer()
             .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.pick = null; cx.notify(); }).child("✕"))))))
       .child(Textarea.new(this.input).w_full().text_size(13).text_color(t.foreground))
       .child(h_flex().gap(8).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(blocked ? t.blocked : t.dim)
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(blocked ? t.blocked : gone ? t.foreground : t.dim)
           .child(note || (this.pick ? "diff 줄을 다시 누르면 줄 고르기를 풉니다" : "diff 줄을 누르면 그 줄에 대해 보냅니다")))
         .child(div().id("review-send").flex_none().px(12).py(5).rounded(6).text_size(12).border_1().border_color(t.border)
           .text_color(can ? t.foreground : t.dim)
