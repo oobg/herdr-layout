@@ -19,7 +19,7 @@ import { v_flex, h_flex } from "gpui-base";
 import { spaces, panes, focused, exec, openOverlay, notify, shared, setShared } from "herdr";
 import { ACTIONS } from "./menu.js";
 import { failHint } from "./pr/status.js";
-import { candidates, chosen, recipients, sendToAgent } from "./send.js";
+import { candidates, chosen, recipients, sendToAgent, nextRecipient } from "./send.js";
 import {
   FILTERS, state, active, elapsed, dur, ago, runTime, jobTime, filterRuns, tailLog, failSpot, tellText, latestDeploys, addPin, dropPin, MAX_PINS,
 } from "./actions/run.js";
@@ -421,7 +421,11 @@ export class ActionsApp {
 
   // ── 오른쪽
 
+  // 런처 키 계약: 지난 그리기에서 모은 멈출 곳(다시 실행·끝나면 알림·취소·실패 알리기·보낼 곳).
+  focusables() { return this.stops ?? []; }
+
   detail(cx, t) {
+    this.stops = [];
     if (!this.sel || this.error || !this.runs) return null;
     const v = this.view?.databaseId === this.sel ? this.view : null, row = this.rowFor(this.sel);
     const base = v ?? row;
@@ -461,9 +465,14 @@ export class ActionsApp {
   buttons(base, v, t) {
     const ctx = { id: base.databaseId, root: this.root, on: this.on, name: `${base.workflowName} · ${firstLine(base.displayTitle).slice(0, 60)}` };
     const going = active(base), spot = v ? failSpot(v) : null, failed = state(base).kind === "fail";
-    const btn = (id, text, color, fn, on = false) => div().id(id).flex_none().px(10).py(4).rounded(6).border_1().border_color(t.border)
-      .text_size(12).text_color(color).cursor_pointer().hover((s) => s.bg(t.hover)).when(on, (el) => el.bg(t.selected))
-      .on_click((_e, cx) => { fn(cx); cx.notify(); }).child(text);
+    // 그리면서 런처 키 계약의 멈출 곳으로 모은다(run = on_click과 같은 함수). 키보드 커서가 있으면 테두리 t.accent.
+    const btn = (id, text, color, fn, on = false) => {
+      const press = (cx) => { fn(cx); cx.notify(); };
+      this.stops.push({ id, kind: "button", run: press });
+      return div().id(id).flex_none().px(10).py(4).rounded(6).border_1().border_color(this.kb?.on?.(id) ? t.accent : t.border)
+        .text_size(12).text_color(color).cursor_pointer().hover((s) => s.bg(t.hover)).when(on, (el) => el.bg(t.selected))
+        .on_click((_e, cx) => press(cx)).child(text);
+    };
     const out = [];
     if (!going && (failed || spot)) out.push(btn("act-rerun", "다시 실행", t.foreground, () => confirm("actions.rerun", "실패한 잡 다시 실행",
       `${ctx.name}\n실패한 잡${spot ? `(${spot.job}${spot.more ? ` 외 ${spot.more}개` : ""})` : ""}만 다시 실행합니다.`, ctx, { yes: "실패한 잡 다시 실행" })));
@@ -477,7 +486,9 @@ export class ActionsApp {
     if (!going && spot) {
       const list = candidates({ space: location().space }), to = chosen(list, this.tellTo);
       if (to) out.push(btn("act-tell", "에이전트에게 실패 알리기", t.foreground, () => this.tell(v, to)));
-      pick = recipients("act", list, to?.address, (address) => { this.tellTo = address; }, t);
+      const nx = nextRecipient(list, to?.address);
+      if (nx) this.stops.push({ id: "act-to", kind: "button", run: () => { this.tellTo = nx.address; } });
+      pick = recipients("act", list, to?.address, (address) => { this.tellTo = address; }, t, undefined, nx ? Boolean(this.kb?.on?.("act-to")) : undefined);
     }
     const row = h_flex().flex_wrap().gap(8).items_center().children(out);
     return pick ? v_flex().gap(8).child(row).child(pick) : row;
