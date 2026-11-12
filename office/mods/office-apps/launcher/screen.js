@@ -4,7 +4,7 @@
 //     상세: Tab 차례 · Enter 버튼 · Space 체크 · ⌘Enter submitDetail · Esc 왼쪽 목록으로(커서가 있을 때).
 //     그 밖의 Esc는 바깥(onEscape: 런처는 격자로, 대화 창은 닫기)으로 간다.
 //   main.js를 import하지 않는다(main.js가 이 파일을 import한다): 앱 정의(a)·타일 그리기(tile)는 인자로 받는다.
-import { div } from "gpui-kit";
+import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { step, detailKey, inputKey, listKey, leftWidth } from "./ring.js";
 
@@ -87,7 +87,8 @@ export class AppScreen {
   // 앱 화면. a = 앱 정의({ name, desc }), app = 인스턴스(없으면 준비 중), tile(a, size) = 타일 그림,
   //   lead·trail = 위 막대 앞(런처: ‹ 앱)·뒤(대화 창: ✕) 요소 배열, onEscape(cx) = 안쪽에서 멈추지 않은 Esc.
   //   left = 왼쪽 목록 폭을 정해 둘 때(명령 대화 창 320). 없으면 칸 폭에 비례(on_size_change로 잰 폭).
-  view({ a, app, cx, t, tile, lead = [], trail = [], onEscape, left }) {
+  //   star = { on, toggle(cx) }: 이름 옆 즐겨찾기 별(흐린 빈 별, 켜면 채운 별). 없으면 그리지 않는다.
+  view({ a, app, cx, t, tile, lead = [], trail = [], onEscape, left, star = null }) {
     const lw = left ?? leftWidth(this.width, LEFT);
     if (app) app.kb = this.kb;   // 앱이 멈출 곳 테두리를 그릴 때 본다(kb.on(id))
     const detail = app?.detail?.(cx, t) ?? null;
@@ -106,6 +107,10 @@ export class AppScreen {
         .children(lead)
         .child(tile(a, 24))
         .child(div().flex_none().text_size(15).font_semibold().child(a.name))
+        .when(Boolean(star), (el) => el.child(div().id("apps-star").flex_none().p(3).rounded(5).cursor_pointer()
+          .hover((s) => s.bg(t.hover)).tooltip(star.on ? "즐겨찾기에서 빼기" : "즐겨찾기에 추가(격자 맨 위 줄)")
+          .on_click((_e, cx) => { cx.stop_propagation(); star.toggle(cx); cx.notify(); })
+          .child(svg(star.on ? "mods/office-apps/launcher/star-fill.svg" : "mods/office-apps/star.svg").size(14).text_color(star.on ? t.muted : t.dim))))
         .child(div().flex_1().min_w(0).child(app?.subtitle?.(t) ?? div()))
         .children(trail))
       .child(h_flex().flex_1().min_h(0).items_stretch()
