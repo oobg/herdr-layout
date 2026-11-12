@@ -287,7 +287,8 @@ export class PortsApp {
     const r = this.current();
     if (!r) return null;
     const w = this.whereOf(r.term);
-    const btn = (id, text, fn, danger = false) => div().id(id).px(10).py(4).rounded(6).border_1().border_color(t.border).text_size(12).flex_none()
+    // 키보드 커서가 있는 버튼은 테두리 t.accent(런처 키 계약, focusables와 같은 id)
+    const btn = (id, text, fn, danger = false) => div().id(id).px(10).py(4).rounded(6).border_1().border_color(this.kb?.on?.(id) ? t.accent : t.border).text_size(12).flex_none()
       .text_color(danger ? DANGER : t.foreground).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(fn)
       .child(text);
     const line = (k, v, mono = false) => h_flex().gap(12).items_start()
@@ -313,6 +314,17 @@ export class PortsApp {
       .child(v_flex().id("pt-detail").flex_1().min_h(0).overflow_y_scrollbar().px(18).py(12).gap(6)
         .children(info)
         .when(r.all, (el) => el.child(div().pt(4).text_size(12).text_color(t.dim).child("같은 네트워크에서 접속할 수 있습니다"))));
+  }
+
+  // 런처 키 계약: 상세 머리줄 버튼(화면 순서). 그릴 때와 같은 조건으로 뺀다.
+  focusables() {
+    const r = this.current();
+    if (!r) return [];
+    const w = this.whereOf(r.term), out = [];
+    if (!r.machine) out.push({ id: "pt-open", kind: "button", run: () => this.openBrowser(r) });
+    if (w) out.push({ id: "pt-go", kind: "button", run: () => goTo(w.sp, w.tab, r.term) });
+    if (r.pid != null) out.push({ id: "pt-kill", kind: "button", run: () => this.confirmKill(r) });
+    return out;
   }
 
   openBrowser(r) {
