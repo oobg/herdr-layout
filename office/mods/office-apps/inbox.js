@@ -1,6 +1,6 @@
 // office-apps의 알림함 앱: 여러 스페이스의 에이전트 중 "나를 기다리는 것"을 한 곳에 모아 처리한다.
 //   왼쪽: 묶음 머리줄 "답 필요 n" · "완료 n"(안 본 사이 끝남) · "작업 중 n"(기본 접힘) · "상태 모름 n"(상태를 보고하지 않는 에이전트, 기본 펼침:
-//         답을 기다리는지 알 수 없어서. 줄을 고르고 Enter·더블클릭이면 그 터미널로).
+//         답을 기다리는지 알 수 없어서. 이 묶음 줄만 한 번 클릭으로 바로 그 터미널로, 다른 묶음은 클릭=고르기·Enter·더블클릭=가기).
 //         줄 = 프로그램 아이콘 · 스페이스 › 탭 · 경과("4분째 기다림", "12분 전"). 답 필요는 오래 기다린 순, 완료는 최근 순.
 //         빈 묶음은 머리줄째 숨긴다. 대기(idle)는 기다리는 게 아니라서 넣지 않는다. 묶음 펼침은 localStorage.
 //         상태 낱말은 status.js 표(사무실과 같은 말). 완료는 사무실이 붙잡은 동안(공유 상태 office.finished) idle이어도 완료.
@@ -202,7 +202,9 @@ export class InboxApp {
           .child(svg(`${APPS}/${open ? "chevron-down" : "chevron-right"}.svg`).size(12).flex_none().text_color(t.dim))
           .child(div().flex_none().text_size(12).font_semibold().text_color(g.id === "blocked" ? t.blocked : t.muted).child(g.title))
           .child(div().flex_none().text_size(12).text_color(t.dim).child(String(rows.length)));
-        return [head, ...(open ? rows.map((r) => this.row(r, t)) : [])];
+        // 상태 모름: 고를 이유가 없다(오른쪽에 읽을 것이 없음). 한 번 누르면 바로 그 터미널로 — 머리 아래 흐린 한 줄로 알린다.
+        const hint = open && g.id === "unknown" ? [div().pl(24).pb(2).text_size(11).text_color(t.dim).child("누르면 바로 그 터미널로")] : [];
+        return [head, ...hint, ...(open ? rows.map((r) => this.row(r, t)) : [])];
       }));
   }
 
@@ -220,7 +222,8 @@ export class InboxApp {
     const on = r.key === this.sel, right = elapsed(r);
     return h_flex().id(`inbox-${r.key}`).h(26).flex_none().pl(24).pr(8).gap(8).items_center().rounded(4).cursor_pointer()
       .when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover)))
-      .on_click((e, cx) => { this.select(r.key, cx); if (e.click_count >= 2) goTo(this.target(r)); })
+      // 클릭 = 고르기, 더블클릭 = 가기. 상태 모름 줄은 한 번 클릭으로 바로 가기(Enter와 같은 goTo)
+      .on_click((e, cx) => { this.select(r.key, cx); if (e.click_count >= 2 || r.group === "unknown") goTo(this.target(r)); })
       .child(programIcon(r.program, 14, t))
       .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child(r.where))
       .when(Boolean(right), (el) => el.child(div().flex_none().text_size(11).text_color(r.group === "blocked" ? t.blocked : t.dim).child(right)));
