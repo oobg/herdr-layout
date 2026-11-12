@@ -90,17 +90,19 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 - **런처 화면:** 검색창(앱 이름·설명·id로 거름) + 앱 아이콘 격자(타일 56px, 금속 오브제 그림 `apps/tiles/<id>.png`, 그림이 없는 앱은 모두 같은 중립색 `NEUTRAL`(#4b5563) 바탕 + 흰 첫 글자. 앱마다 색을 두지 않는다). 앱 관리는 격자의 `manage` 앱으로 연다.
   격자는 `APPS`의 `group`(`GROUPS` 순서)으로 줄을 나누고 줄마다 작은 흐린 제목을 단다: "앱"(`apps`: 파일·브랜치·커밋·PR·배포·워크트리·검토·메모, 레포·코드 일) · "에이전트"(`agents`: 에이전트·알림함·세션·작업 공간·출력·포트·서버·명령) · "설정"(`system`: 설정·앱 관리). 줄 안 순서는 `APPS`에 적은 순서. 걸러서 빈 줄은 제목째 숨긴다. 앱 관리 대화 상자 목록도 같은 순서·제목.
 - **즐겨찾기:** 순서 있는 앱 id 배열을 `localStorage`의 `launcher.favorites`에 둔다(런처만 쓴다). 있으면 격자 맨 위에 "즐겨찾기" 줄을 두고, 그 앱들은 자기 줄에도 그대로 남긴다(줄 구성은 늘 같게, 즐겨찾기는 지름길). 꺼진 앱·없는 id는 그릴 때 거르고 배열에서는 지우지 않는다(다시 켜면 제자리). 검색 중에는 즐겨찾기 줄을 숨긴다. 우클릭 메뉴 "즐겨찾기에 추가/빼기"(맨 뒤에 붙음), 즐겨찾기 줄 안에서만 "앞으로"/"뒤로"(보이는 즐겨찾기끼리 자리 바꿈, 끝이면 항목을 숨김). 순수 함수(`cleanFavs`·`toggleFav`·`moveFav`·`homeRows`)는 `launcher/favorites.js`(herdr를 import하지 않아 node로 시험).
-- **앱 화면:** 위 막대 44px(`‹ 앱` · 타일 · 이름 · 앱의 `subtitle`) / 왼쪽 250px(`list`) / 오른쪽 나머지(`detail`, 바탕 `background`로 강조). `detail`이 `null`이면 앱의 `emptyState()` 문구, 없으면 "선택 내용이 없습니다 · 왼쪽에서 항목을 고르세요".
+- **앱 화면:** 틀·키는 `launcher/screen.js`(`AppScreen`, 아래 칸과 대화 창이 같이 쓴다). 위 막대 44px(`‹ 앱` · 타일 · 이름 · 앱의 `subtitle`) / 왼쪽 250px(`list`) / 오른쪽 나머지(`detail`, 바탕 `background`로 강조). `detail`이 `null`이면 앱의 `emptyState()` 문구, 없으면 "선택 내용이 없습니다 · 왼쪽에서 항목을 고르세요".
 - **키보드:** 왼쪽 칸에 런처의 포커스 핸들(`track_focus`)을 달고, 그 칸 자체가 포커스를 가졌을 때만 ↑↓ → `move(-1|+1, cx)`, Enter → `activate(cx)`. 칸을 누르면 GPUI가 포커스를 준다(안쪽 입력 상자는 자기가 먼저 가져가고, 그때는 키를 가로채지 않는다). 격자에서 눌러 들어갈 때(클릭·검색창 Enter, `enter`)도 이 칸에 포커스를 주고, 이어서 앱의 `focusOnEnter?.()`를 부른다(시작 복원·명령으로 열 때는 키보드를 옮기지 않음). 검색창의 ↑↓·Enter는 격자에 보이는 순서(`homeList`: 즐겨찾기 줄 → 앱 → 에이전트 → 설정)대로 칸을 지나가고, 즐겨찾기 앱은 두 번 지나간다(고른 칸 표시는 순번으로 하나만).
 - **앱 관리:** 대화 상자(오버레이 역할 `manage`, 420×520)에서 앱마다 스위치. 끈 앱 목록은 공유 상태 `office-apps.disabled`(`{ id: true }`)에 두고, 대화 상자가 `setShared`로 바로 바꾼다. 런처는 렌더 때 이전 값과 비교해(`syncDisabled`) 새로 꺼진 앱의 인스턴스를 `dispose()`한 뒤 버리고, 보던 앱이 꺼졌으면 런처 화면으로 돌아간다. 끈 앱은 격자에서 숨기고 인스턴스를 만들지 않는다.
 - **앱 인스턴스:** 켜진 앱을 처음 열 때(`go`) 만든다. 렌더 중에는 입력 상자 등을 만들 수 없어서 이벤트·명령 처리 시점에 만든다. 마지막으로 연 앱 id는 `localStorage`의 `app`.
+- **대화 창 앱:** `APPS`에 `modal: { width, height, left? }`가 있는 앱(명령 0.5×0.62·왼쪽 320px, 작업 공간 0.62×0.72)은 아래 칸을 바꾸지 않고 대화 창(오버레이 역할 `app-modal`)으로 뜬다. 격자 클릭·검색 Enter·`open-<id>`·즐겨찾기가 모두 `go()`에서 갈라지고, 마지막으로 연 앱(`app`)에 남지 않는다(예전에 저장된 값도 복원하지 않는다). 런처가 마지막에 연 창은 새로 열 때 닫는다(하나만). 창 안은 아래 칸 앱 화면과 같은 틀·키(`launcher/screen.js` `AppScreen`, 위 막대 앞의 `‹ 앱` 대신 끝에 ✕). 인스턴스는 그 복사본에서 새로 만들고 창이 닫히면(`close`) `dispose()`. 앱에 `closeHost()`(닫기)와 `hostOverlay`(오버레이 id, 확인 창 `ctx`에 값으로 넘길 때)를 넣어 준다. 닫기: ✕ · Esc(상세 커서가 있으면 먼저 목록으로) · 명령 실행 뒤(위험 명령은 확인 뒤, 인자 입력 중엔 유지) · 작업 공간의 가기·칸으로·깨우기 뒤. 이름 바꾸기·닫기·정리·재우기 확인 창은 위에 뜨고 대화 창은 남는다.
 - **우클릭 메뉴:** 앱 아이콘 우클릭 → 오버레이 `launcherMenu`(열기 · 즐겨찾기에 추가/빼기 · 앞으로/뒤로(즐겨찾기 줄에서) · 앱 끄기 · 앱 관리…, 앱 관리 앱은 끄기·앱 관리… 없음). 즐겨찾기 여부와 줄 안 위치는 런처가 `props`(`fav`, `row`)로 넘긴다. 오버레이는 모드의 새 복사본이라 상태를 나누지 않으므로, 고른 동작은 `run("office-apps.<명령>")`으로 런처에 돌려보낸다.
 - **명령**(`nextCommand`)
 
   | 명령 | 하는 일 |
   |---|---|
   | `office-apps.home` | 런처로 |
-  | `office-apps.open-<id>` | 앱 열기 (`action` 앱이면 그 동작) |
+  | `office-apps.open-<id>` | 앱 열기 (`action` 앱이면 그 동작, `modal` 앱이면 대화 창) |
+  | `office-apps.palette` | 명령 대화 창(`open-palette`와 같음). 키는 사용자 `keys.json`에 묶는다(예: `"cmd-k": "office-apps.palette"`) |
   | `office-apps.show:<경로>` | 파일 앱을 열고 그 파일을 보여 줌(프로젝트 기준 상대 경로) |
   | `office-apps.manage` | 앱 관리 대화 상자 |
   | `office-apps.disable-<id>` | 앱 끄기 (`manage`는 무시) |
@@ -125,6 +127,7 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 | `tip` | `files.js` | 툴바 툴팁 창 |
 | `launcherMenu` | `main.js` | 런처 앱 아이콘 우클릭 메뉴 |
 | `manage` | `main.js` `ManageDialog` | 앱 관리 대화 상자(앱마다 켜고 끄기) |
+| `app-modal` | `main.js` `AppModal` | 대화 창 앱(`props.app`: palette·workspace). 앱 화면 틀 + ✕ |
 | `branch-menu`, `branch-prompt` | `branch.js` | 브랜치 우클릭 메뉴와 입력 창 |
 | `workspace-prompt` | `workspace.js` | 스페이스·탭 이름 입력 창 |
 | `worktrees-prompt` | `worktrees.js` | 새 워크트리 브랜치 이름 입력 창 |
@@ -146,11 +149,11 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 | 메모 (`notes`) | `notes.js`, `notes/model.js` | 작업 공간(지금 칸 폴더의 git 루트, 아니면 스페이스 폴더)마다 메모와 할 일. 레포 밖 `data/office-apps/notes/`에 저장. 왼쪽: 메모가 있는 작업 공간(지금 것이 맨 위). 오른쪽: 할 일 체크 목록 + 추가 입력, 메모 편집기(1초 뒤 자동 저장), 에이전트에게 보내기(`send.js`)·복사. |
 | 알림함 (`inbox`) | `inbox.js`, `inbox/model.js` | 여러 스페이스의 에이전트 중 답 필요·완료(안 본 사이 끝남, 사무실이 붙잡은 `office.finished`면 idle이어도)·상태 모름(기본 펼침, 이 묶음 줄만 한 번 클릭으로 바로 그 터미널로 — 다른 묶음은 클릭=고르기·Enter·더블클릭=가기)을 한 곳에(작업 중은 접힌 묶음). 상태 모름이 있으면 빈 화면은 "확인된 답 필요 n명 · 상태 모름 m명". `office.ci`가 실패면 맨 위 "CI 실패" 줄(누르면 배포 앱). 오른쪽: 상태·마지막 말·요청, 터미널로 가기·에이전트 앱에서 자세히. 그려지는 동안만 갱신(고른 줄이 작업 중이면 4초, 아니면 1분). |
 | 세션 (`sessions`) | `sessions.js`, `sessions/list.js` | 지금 폴더의 지난 Claude Code 세션(`~/.claude/projects/…/*.jsonl`). 왼쪽: 날짜 묶음 아래 첫 요청 한 줄(최근 50개, 더 보기). 오른쪽: 요청·마지막 말·고친 파일·아티팩트·길이, "이어하기"(새 탭에서 `claude --resume`, 지금 열려 있으면 그 터미널로. 누른 뒤 열린 터미널이 보일 때까지 최대 15초 "여는 중"이라 다시 열지 않는다). 그려지는 동안 30초마다. |
-| 작업 공간 (`workspace`) | `workspace.js`, `workspace/tidy.js`, `workspace/sleep.js`, `workspace/sleeper.js`, `workspace/test.mjs` | 왼쪽: "정리" 줄 + 스페이스 › 탭 트리(상태 낱말). 오른쪽: 스페이스·탭 정보와 가기·이름 바꾸기(`workspace-prompt`)·접어 두기·닫기(확인 창 `workspace.*`), "정리"는 닫아도 될 탭을 이유와 함께 보여 체크한 것만 한 번에 닫고(git 동작 탭은 셸·git·pager만 남았으면 후보), 뺀 탭은 흐린 "후보에서 뺀 탭 n"을 펼쳐 이유를 본다. 그 아래 "재울 수 있는 에이전트"(아래 참고). 닫기(탭·스페이스·일괄)는 모두 취소 우선이고 실행 직전에 창을 열 때보다 위험해진 탭(작업 중·답 필요·새 프로그램·지금 보는 탭·잠듦)은 닫지 않고 알린다. 규칙 시험 `node office/mods/office-apps/workspace/test.mjs`. |
+| 작업 공간 (`workspace`) | `workspace.js`, `workspace/tidy.js`, `workspace/sleep.js`, `workspace/sleeper.js`, `workspace/test.mjs` | 대화 창으로 뜬다(가기·칸으로·깨우기 뒤 닫힘, 접은 스페이스는 공유 상태 `office-apps.workspace.fold`). 왼쪽: "정리" 줄 + 스페이스 › 탭 트리(상태 낱말). 오른쪽: 스페이스·탭 정보와 가기·이름 바꾸기(`workspace-prompt`)·접어 두기·닫기(확인 창 `workspace.*`), "정리"는 닫아도 될 탭을 이유와 함께 보여 체크한 것만 한 번에 닫고(git 동작 탭은 셸·git·pager만 남았으면 후보), 뺀 탭은 흐린 "후보에서 뺀 탭 n"을 펼쳐 이유를 본다. 그 아래 "재울 수 있는 에이전트"(아래 참고). 닫기(탭·스페이스·일괄)는 모두 취소 우선이고 실행 직전에 창을 열 때보다 위험해진 탭(작업 중·답 필요·새 프로그램·지금 보는 탭·잠듦)은 닫지 않고 알린다. 규칙 시험 `node office/mods/office-apps/workspace/test.mjs`. |
 | 출력 (`watch`) | `watch.js`, `watch/rules.js` | 에이전트가 아닌 터미널 출력(`hc read`)에서 오류 줄을 모은다. 왼쪽: 걸린 줄(최근 순, ×n). 오른쪽: 앞뒤 2줄 문맥, 그 터미널로 가기·에이전트에게 보내기(`send.js`)·지우기. 그려지는 동안만 10초마다, 새로 생긴 줄만 규칙에 넣는다. |
 | 포트 (`ports`) | `ports.js`, `ports/parse.js` | 기기별 LISTEN 포트(macOS `lsof`, Linux `ss`·`/proc/net/tcp`)와 띄운 터미널(셸 pid 조상 체인). 오른쪽: 주소·pid·명령줄, 브라우저로 열기·터미널로 가기·종료(확인 창 `ports.kill`, 명령줄이 그대로인지 다시 보고 `kill -TERM`). 그려지는 동안만 5초마다. |
 | 서버 (`server`) | `server.js`, `server/add.js`, `server/resources.js` | 왼쪽: 툴바(기기 추가·다시 읽기) + 머신 목록(이 컴퓨터 + `hc machine ls`, 연결 상태, 스페이스 수). 오른쪽: 주소·연결 방식·호스트·hc 버전, 그 머신의 스페이스·에이전트, 새 스페이스·새 터미널·제거(확인 창 → `hc machine rm`). 리소스는 칸이 넓으면 오른쪽 열(260px), 좁으면 정보 줄 아래. 기기 추가·제거는 구현됨. |
-| 명령 (`palette`) | `palette.js`, `palette/core.js` | Herdr 명령(`commands()`) + 앱 명령(`office-apps.*`, `palette/core.js`의 `APP_IDS`·`APP_COMMANDS` — 앱을 더하면 여기도 손으로 더한다). 왼쪽: 검색 + 목록(최근 10개 묶음, 단축키). 오른쪽: 설명·인자 입력·단축키·실행. 위험해 보이는 명령(close·kill·reset·remove·quit)은 확인 창(`palette.run`, danger). |
+| 명령 (`palette`) | `palette.js`, `palette/core.js` | 대화 창으로 뜬다(검색창 포커스, 실행하면 닫힘, 인자 입력칸 Esc는 검색창으로). Herdr 명령(`commands()`) + 앱 명령(`office-apps.*`, `palette/core.js`의 `APP_IDS`·`APP_COMMANDS` — 앱을 더하면 여기도 손으로 더한다). 왼쪽: 검색 + 목록(최근 10개 묶음, 단축키). 오른쪽: 설명·인자 입력·단축키·실행. 위험해 보이는 명령(close·kill·reset·remove·quit)은 확인 창(`palette.run`, danger). |
 | 설정 (`settings`) | `main.js` | `action` 앱: 들어가지 않고 `run("app.settings")`로 Herdr 설정 창을 연다. |
 | 앱 관리 (`manage`) | `main.js` | `action` 앱: `openManage`로 앱 관리 대화 상자를 띄운다(`office-apps.manage`와 같은 함수). `locked`라 끌 수 없다: 관리 목록에 "항상 켜짐", 우클릭 메뉴는 열기만, `disable-manage`와 공유 상태의 `manage: true`는 무시. |
 
@@ -178,6 +181,7 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
   워드·RTF 등은 `textutil`로 글을 뽑아 마크다운으로 보여 주고, 오디오는 `mdls` 정보와 Quick Look 그림을 함께 보여 준다.
 - **마크다운(`markdown.js`):** `TextView.markdown`이 그리는 것(표·체크박스·취소선·자동 링크·인용)은 그대로 넘기고, 못 그리는 것만 블록으로 떼어 낸다: 코드 블록(읽기 전용 편집기로 색), `> [!NOTE]` 알림, 그림만 있는 줄(여러 줄 HTML로 감싼 그림 포함, 배지는 한 줄에 나란히). 각주는 위첨자 번호로 바꾸고 내용은 문서 끝에 모은다. 원격 그림은 `curl`로 받아 캐시한다.
 - **글꼴:** 코드·마크다운 뷰어는 `D2Coding`(`CODE_FONT`), 나머지 패널은 레이아웃의 `Pretendard GOV`.
+- **뷰어 창(`files.js` `ViewerWindow`, 오버레이 역할 `viewer`, kind `window`):** 에이전트·워크트리·세션 앱과 사무실 오버뷰(`office/main.js` `openViewer`, 모드 사이 import가 안 돼 같은 `openOverlay`를 직접 부름)가 연다. key는 `office-apps.viewer` 하나라 Herdr가 놓은 자리를 기억하고, 다른 파일을 열면 같은 창이 그 자리에서 내용만 바뀐다. 머리줄 빈 곳은 창 끌기, 버튼·본문·손잡이는 `stop_propagation`. 크기: `⤢`(작게 880×640 · 보통 1120×820 · 크게 1440×960 · 앱 창의 0.92 순환)와 오른쪽 아래 손잡이. 손잡이를 끄는 동안은 앱 창의 포인터 위치를 16ms 타이머로 읽어 테두리 미리보기와 머리줄 `W × H`만 그리고, 창 안에서 놓으면(창 밖에서 놓았으면 다음 누름에서) 같은 key `openOverlay`를 새 width/height로 다시 불러 그 자리에서 바꾼다. Esc는 취소. 최소 560×400, 최대 앱 창의 0.96이면서 앱 창 오른쪽·아래 끝까지. 배율: `−` `100%` `+`와 ⌘− ⌘= ⌘0, 70~200%·10% 단위. 글자 크기·그림/PDF 표시 크기·표 칸에 곱하고 편집기는 다시 만든다(파일 앱 오른쪽 미리보기는 늘 100%). 크기·배율은 공유 상태 `office-apps.viewer.size`(`{w,h}`)·`office-apps.viewer.scale`과 `localStorage`에 두고, 계산은 `viewers/size.js`(순수 함수).
 
 ### 새 앱 추가하기
 
@@ -248,7 +252,7 @@ blender -b --factory-startup --python tools/render-office.py -- <에셋 폴더> 
 
 - `layouts/office.json`: 레이아웃
 - `mods/office/`: 사무실과 터미널 막대(`main.js`), 오버뷰 활동 읽기(`activity.js`), 스프라이트(`sprites/`), 로고·활동 아이콘(`icons/`), 패널 글꼴(`fonts/`, OFL)
-- `mods/office-apps/`: 런처(`main.js`, 즐겨찾기 순수 함수 `launcher/favorites.js`), 앱(`<앱 id>.js`와 같은 이름 폴더: files·branch·commit·pr·actions·worktrees·review·notes·agent·inbox·sessions·workspace·watch·ports·server·palette), 파일 우클릭 메뉴·확인 창·`ACTIONS`(`menu.js`), 뷰어(`viewers.js`, `markdown.js`, `viewers/`), 앱 아이콘(`apps/`), 파일 아이콘(`icons/`, `icons.json`, MIT 라이선스)
+- `mods/office-apps/`: 런처(`main.js`, 즐겨찾기 순수 함수 `launcher/favorites.js`, 앱 화면 틀·키 `launcher/screen.js`·`launcher/ring.js`), 앱(`<앱 id>.js`와 같은 이름 폴더: files·branch·commit·pr·actions·worktrees·review·notes·agent·inbox·sessions·workspace·watch·ports·server·palette), 파일 우클릭 메뉴·확인 창·`ACTIONS`(`menu.js`), 뷰어(`viewers.js`, `markdown.js`, `viewers/`), 앱 아이콘(`apps/`), 파일 아이콘(`icons/`, `icons.json`, MIT 라이선스)
 - `mods/office-usage/`: 사용량(`main.js`), Grok 토큰 갱신(`grok_refresh.py`), 로고(`icons/`)
 - `mods/office-resources/`: 리소스 관리자(`main.js`), ps 합계 계산(`calc.js`), 로고(`icons/`)
 - `../tools/render-office.py`: 사무실 스프라이트 렌더(Blender)
