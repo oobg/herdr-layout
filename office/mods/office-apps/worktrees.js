@@ -2,6 +2,7 @@
 //   왼쪽: 툴바(새 워크트리·이슈에서 시작·다시 읽기) + 워크트리 목록(메인이 맨 위). 줄마다 브랜치, 기본 브랜치 대비 ↑↓,
 //         변경 수, 그 폴더에서 도는 에이전트의 상태 낱말.
 //   오른쪽: 경로·브랜치·기본 브랜치 대비·에이전트·변경 파일(누르면 뷰어 창), 동작(에이전트 띄우기·스페이스로 가기·지우기).
+//         그 폴더에 터미널이 열린 에이전트(상태 무관)가 있으면 "지우기"를 잠그고 "먼저 끝내거나 재우세요"와 그 터미널로 가기. 실행 직전에도 다시 본다.
 //         "이슈에서 시작"을 누르면 오른쪽이 이슈 목록이 된다: 고르면 브랜치 이름을 묻고 워크트리를 만든 뒤
 //         그 폴더에서 Claude Code를 띄우고 이슈 본문을 첫 메시지(task)로 넘긴다.
 // 에이전트 띄우기는 office 모드 AddAgent와 같은 명령: 그 폴더의 스페이스가 있으면 tab.new {name, space, folder, argv},
@@ -13,7 +14,7 @@ import { v_flex, h_flex, InputState, Input, ScrollHandle } from "gpui-base";
 import { spaces, panes, agents, focused, exec, theme, home, props, run, openOverlay, closeOverlay, notify, shared, setShared, knownAgents, layout } from "herdr";
 import { ACTIONS, TICK } from "./menu.js";
 import { ROLES, openViewer } from "./files.js";
-import { parseWorktrees, parseStatus, statusWord, validName, issueBranch, worktreePath, worktreeOf, parseCounts, counts } from "./worktrees/model.js";
+import { parseWorktrees, parseStatus, statusWord, validName, issueBranch, worktreePath, worktreeOf, parseCounts, counts, liveAgentsIn } from "./worktrees/model.js";
 
 const ME = "mods/office-apps";
 const I = (n) => `${ME}/${n}.svg`;
@@ -67,8 +68,15 @@ async function claudeAgent(on, yolo = true) {
   return { name: a?.name ?? "Claude Code", argv };
 }
 
+// 그 워크트리에서 터미널이 열려 있는 에이전트 칸 → [{ address, space, pane }]. 있으면 지우지 않는다(돌던 에이전트가 폴더를 잃는다).
+function liveIn(path, all, on) {
+  const tabSpace = new Map(spaces().flatMap((s) => s.tabs.map((tb) => [tb.id, s])));
+  return liveAgentsIn(path, all, panes() ?? [], { on, machineOfTab: (tab) => tabSpace.get(tab)?.machine ?? null })
+    .map((p) => ({ address: p.terminal, space: tabSpace.get(p.tab)?.id ?? null, tab: p.tab, pane: p.pane }));
+}
+
 // ── 동작(오버레이 복사본에서도 돈다: ctx는 값만) ────────────────
-// ctx: { root, on, base, path?, branch?, dirty?, agents?, issue?: { number, title } }
+// ctx: { root, on, base, path?, all?, branch?, dirty?, agents?, issue?: { number, title } }
 
 const changed = () => setShared(TICK, Date.now());
 
@@ -87,7 +95,14 @@ const ACT = {
     changed();
   },
   // --force는 쓰지 않는다: 변경이 있거나 잠겨 있으면 git이 거부하고, 그 말을 그대로 알린다. 브랜치는 남긴다.
+  // 실행 직전에 그 폴더의 에이전트를 다시 본다: 창을 연 사이 띄웠으면 지우지 않고 알린다(누르면 그 터미널로).
   remove: async (ctx) => {
+    const live = liveIn(ctx.path, ctx.all ?? [ctx.path], ctx.on ?? null);
+    if (live.length) {
+      notify({ title: "워크트리를 지우지 않았습니다", body: `이 폴더에서 에이전트 ${live.length}개가 열려 있습니다. 먼저 끝내거나 재우세요.`,
+        level: "warning", action: { name: "pane.focus", args: { terminal: live[0].address } } });
+      return changed();
+    }
     const r = await exec("git", ["worktree", "remove", ctx.path], { cwd: ctx.root, on: ctx.on, timeout: 60000 }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
     if (r.code !== 0) notify({ title: "워크트리를 지우지 못했습니다", body: (r.stderr || r.stdout || "").trim().slice(0, 400), level: "error" });
     else notify({ title: "워크트리를 지웠습니다", body: `${tilde(ctx.path)}${ctx.branch ? ` · 브랜치 ${ctx.branch}는 남아 있습니다` : ""}`, level: "info" });
@@ -308,7 +323,7 @@ export class WorktreesApp {
 
   removeCtx(w) {
     const n = this.agentsByWt().get(w.path)?.length ?? 0;
-    return { root: this.data.root, on: this.ctx.on, path: w.path, branch: w.branch, dirty: w.files.length, agents: n };
+    return { root: this.data.root, on: this.ctx.on, path: w.path, all: this.paths(), branch: w.branch, dirty: w.files.length, agents: n };
   }
 
   newWorktree() {
@@ -507,10 +522,18 @@ export class WorktreesApp {
     const vsText = isBase ? "기본 브랜치" : !d.base ? "기본 브랜치를 모릅니다" : !w.vs ? "—" : `${d.base} 대비 ${counts(w.vs.ahead, w.vs.behind) || "같음"}`;
     const state = [w.locked && `잠김 (${w.locked})`, w.prunable && `폴더 없음 (${w.prunable})`, w.error].filter(Boolean).join(" · ");
 
+    // 터미널이 열린 에이전트가 있으면 "지우기"를 잠그고 먼저 끝내거나 재우게 한다(그 터미널로 가기).
+    const live = !w.main && !w.bare ? liveIn(w.path, this.paths(), on) : [];
     const actions = h_flex().flex_wrap().gap(6).items_center()
       .when(!w.bare && !w.prunable, (el) => el.child(this.button("wt-launch", "여기서 에이전트 띄우기", t, (cx) => this.launch(w.path, null, cx))))
       .when(Boolean(space), (el) => el.child(this.button("wt-go", `${space.name} 스페이스로 가기`, t, () => showSpace(space.id))))
-      .when(!w.main && !w.bare, (el) => el.child(this.button("wt-remove", "지우기...", t, () => confirmRemove(this.removeCtx(w)), true)));
+      .when(!w.main && !w.bare && !live.length, (el) => el.child(this.button("wt-remove", "지우기...", t, () => confirmRemove(this.removeCtx(w)), true)))
+      .when(live.length > 0, (el) => el.child(h_flex().h(26).px(10).items_center().rounded(6).border_1().border_color(t.border)
+        .text_size(12).text_color(t.dim).child("지우기")));
+    const blocked = live.length > 0 && h_flex().gap(8).items_center()
+      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted)
+        .child(`먼저 이 에이전트를 끝내거나 재우세요${live.length > 1 ? ` (${live.length}개)` : ""}`))
+      .child(this.button("wt-live-go", "그 터미널로 가기", t, () => showPane(live[0])));
 
     const agentRows = mine.map((a) => {
       const st = STATUS[a.status] ? a.status : "idle";
@@ -542,7 +565,8 @@ export class WorktreesApp {
         .child(info("브랜치", w.branch ?? (w.detached ? "없음 (분리된 HEAD)" : "—")))
         .child(info("비교", vsText))
         .when(Boolean(state), (el) => el.child(info("상태", state)))
-        .child(div().pt(4).child(actions)))
+        .child(div().pt(4).child(actions))
+        .when(Boolean(blocked), (el) => el.child(blocked)))
       .child(v_flex().id("wt-d-body").flex_1().min_h(0).overflow_y_scrollbar().pb(10)
         .child(this.heading(mine.length ? `에이전트 ${mine.length}` : "에이전트 없음", t))
         .children(agentRows)
@@ -550,6 +574,13 @@ export class WorktreesApp {
         .children(files)
         .when(w.files.length > FILES_MAX, (el) => el.child(div().px(14).py(4).text_size(12).text_color(t.muted).child(`외 ${w.files.length - FILES_MAX}개`))));
   }
+}
+
+// 상태를 보고하지 않는 에이전트(agents()에 없음)도 갈 수 있게 칸으로 간다.
+function showPane(x) {
+  if (x.space) showSpace(x.space);
+  if (x.tab) run("tab.select", { id: x.tab });
+  run("pane.focus", { pane: x.pane });
 }
 
 // 에이전트 줄을 누르면 그 터미널로(agent.js goTo와 같게).

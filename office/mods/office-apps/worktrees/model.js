@@ -7,6 +7,7 @@
 //   worktreePath    <레포>/../<레포 이름>-<브랜치 이름, '/'는 '-'로>
 //   worktreeOf      폴더 → 그 폴더를 품은 워크트리 경로(가장 깊은 것), 없으면 null
 //   parseCounts     `rev-list --left-right --count A...B` → { behind, ahead } | null
+//   liveAgentsIn    워크트리 → 그 폴더에서 터미널이 열려 있는 에이전트 칸(지우기를 막는다)
 
 // 빈 줄로 나뉜 덩어리마다 한 워크트리. 첫 덩어리가 메인 워크트리다.
 export function parseWorktrees(text) {
@@ -98,3 +99,15 @@ export function parseCounts(text) {
 }
 
 export const counts = (ahead, behind) => [ahead && `${ahead}개 앞섬`, behind && `${behind}개 뒤처짐`].filter(Boolean).join(" · ");
+
+// 그 워크트리 폴더(안쪽 폴더 포함)에서 살아 있는 에이전트 칸: 터미널이 열려 있고 상태를 보고하거나(작업 중·답 필요·완료·대기)
+// 에이전트 프로그램(상태를 보고하지 않는 Codex 등)인 것. 같은 기기의 칸만. 더 깊은 다른 워크트리 안의 칸은 그 워크트리 것이다.
+//   ps: panes() 모양, all: 워크트리 경로 전부, on: 워크트리 기기(null = 이 컴퓨터), machineOfTab: 탭 id → 기기
+export function liveAgentsIn(path, all, ps, { on = null, machineOfTab = () => null } = {}) {
+  const w = String(path).replace(/\/+$/, "");
+  const paths = all.includes(path) ? all : [...all, path];
+  // 에이전트가 끝나고 셸만 남은 칸은 마지막 상태 보고가 남아 있어도 뺀다(재우거나 끝내면 풀려야 한다). 작업 중·답 필요는 그대로 막는다.
+  const ended = (p) => p.program?.shell && !p.program?.agent && p.status !== "working" && p.status !== "blocked";
+  return ps.filter((p) => p.terminal && (p.status || p.program?.agent) && !ended(p)
+    && (machineOfTab(p.tab) ?? null) === (on ?? null) && worktreeOf(p.cwd, paths) === w);
+}
