@@ -6,6 +6,7 @@
 //   오른쪽: 요청(첫 요청) · 마지막 말(마크다운 앞 6줄, agent/say.js) · 마지막 턴에서 고친 파일 · 게시한 아티팩트(누르면 브라우저.
 //         제목은 title → .html의 <title> → description 첫 부분 → 파일 이름, 사무실 왼쪽 패널과 같다) · 길이(크기·기간).
 //         동작 하나: "이어하기"(새 탭에서 claude --resume <id>, 폴더는 그 세션의 cwd). 지금 열려 있으면 대신 "그 터미널로 가기".
+//         이어하기를 누르면 열린 터미널이 보일 때까지(최대 15초) "여는 중"이고, 클릭·Enter·더블클릭 모두 같은 세션을 다시 열지 않는다.
 // 읽는 양: 목록은 stat + 처음 보는 파일만 앞부분의 user 줄 몇 개(sessions/list.js LIST_SH).
 //   마지막 말·고친 파일은 고른 세션만 끝 2MB(agent/activity.js readLog, 크기가 그대로면 다시 읽지 않는다),
 //   아티팩트는 고른 세션 전체를 grep하되 지난번 크기 뒤에 붙은 부분만 이어 읽는다.
@@ -23,6 +24,8 @@ import { slug, parseListing, rowsOf, oneLine, whenLabel, stamp, span, bytes, col
 const PAGE = 50;            // 목록을 몇 개씩
 const EVERY = 30000;        // 다시 읽는 간격
 const TERM_TTL = 15000;     // 터미널 pid(hc get)를 다시 묻는 간격
+const LAUNCH = 15000;       // 이어하기 잠금: 이만큼 지나도 열린 게 안 보이면 실패로 보고 다시 시도하게 한다
+const LOOKS = [2000, 5000, 9000, 13000];     // 이어하기 뒤 열린 터미널을 찾아 다시 읽는 때(잠금이 풀리기 전에 끝나게)
 // 아티팩트 .html의 <title>: 머신|URL|파일 → 제목(없으면 null). URL당 한 번만 앞 8KB를 읽는다.
 const TITLES = new Map();
 
@@ -78,6 +81,7 @@ export class SessionsApp {
     this.heads = new Map();     // id → { ask, cwd, startAt } (앞부분은 한 번만 읽는다)
     this.opened = new Map();    // 세션 id → { address, space } | { elsewhere: true }
     this.pids = new Map();      // 터미널 주소 → { pid, at }
+    this.launching = new Map(); // 이어하기 잠금: 세션 id → 누른 시각. 폴더가 바뀌어도 지우지 않는다(새 탭으로 포커스가 옮겨 간다)
     this.det = {};              // 세션 id → { size, log, acc, artsAt }
     this.sel = null;
     this.more = false;          // 첫 요청을 펼쳤는지
@@ -176,6 +180,8 @@ export class SessionsApp {
     const sig = (m) => JSON.stringify([...m]);
     const changed = sig(next) !== sig(this.opened);
     this.opened = next;
+    // 잠금은 Herdr 터미널이 보일 때만 푼다(새 칸이 Claude로 잡히기 전에는 잠깐 "밖에서 열림"으로 읽힐 수 있다)
+    for (const [id, o] of next) if (o.address) this.launching.delete(id);
     return changed;
   }
 
@@ -234,15 +240,26 @@ export class SessionsApp {
     if (s) this.act(s, cx);
   }
 
+  // 이어하기를 누른 지 LAUNCH가 안 됐고 아직 열린 터미널이 안 보이는지
+  launchingNow(id) {
+    const at = this.launching.get(id);
+    if (at && Date.now() - at < LAUNCH) return true;
+    if (at) this.launching.delete(id);
+    return false;
+  }
+
   // 주 동작: 열려 있으면 그 터미널로, 아니면 새 탭에서 이어하기. Herdr 밖에서 열려 있으면 하지 않는다(두 곳에서 같은 세션을 쓰게 된다).
+  // 클릭·Enter·더블클릭 모두 여기로 온다. 이어하기를 누른 뒤 열린 터미널이 보일 때까지(최대 LAUNCH) 같은 세션은 다시 열지 않는다.
   act(s, cx) {
     const o = this.opened.get(s.id);
-    if (o?.address) return goTo(o);
-    if (o?.elsewhere) return;
-    resume(s, this.loc.cwd);
-    // 곧 다시 읽어 "지금 열림"으로 바꾼다: Enter를 한 번 더 눌러 같은 세션을 또 여는 일을 막는다
-    this.opened.set(s.id, { pending: true });
-    cx.timer.after(4000, (cx) => { this.pids.clear(); this.kick(cx); });
+    if (o?.address) { this.launching.delete(s.id); return goTo(o); }
+    if (this.launchingNow(s.id) || o?.elsewhere) return;
+    this.launching.set(s.id, Date.now());
+    try { resume(s, this.loc.cwd); } catch { this.launching.delete(s.id); cx.notify(); return; }
+    cx.notify();
+    // 몇 번 다시 읽어 "지금 열림"으로 바꾼다. LAUNCH까지 안 보이면 잠금이 풀려 다시 시도할 수 있다(그때 다시 그린다).
+    for (const ms of LOOKS) cx.timer.after(ms, (cx) => { this.pids.clear(); this.kick(cx); });
+    cx.timer.after(LAUNCH + 50, (cx) => cx.notify());
   }
 
   emptyState() {
@@ -263,7 +280,8 @@ export class SessionsApp {
   // 목록 오른쪽 낱말: 열린 것은 "지금 열림"(Herdr 밖이면 "다른 곳에서 열림"), 아니면 흐린 시각
   right(s, t) {
     const o = this.opened.get(s.id);
-    if (o?.address || o?.pending) return ["지금 열림", t.working];
+    if (o?.address) return ["지금 열림", t.working];
+    if (this.launchingNow(s.id)) return ["여는 중", t.muted];   // 다른 곳에서 열림보다 먼저
     if (o?.elsewhere) return ["다른 곳에서 열림", t.muted];
     return [whenLabel(s.mtime), t.dim];
   }
@@ -344,13 +362,14 @@ export class SessionsApp {
     items.push(div().text_size(12).text_color(t.muted)
       .child([bytes(s.size), start ? span(s.mtime - start) : "", start ? `${stamp(start)} ~ ${stamp(s.mtime)}` : stamp(s.mtime)].filter(Boolean).join(" · ")));
     if (s.cwd && s.cwd !== this.loc.cwd) items.push(div().pt(2).text_size(12).text_color(t.dim).child(`폴더 ${tilde(s.cwd)}`));
-    if (o?.elsewhere) items.push(div().pt(14).text_size(12).text_color(t.muted).child("Herdr 밖의 터미널에서 열려 있어 여기서 이어 하지 않습니다"));
+    if (o?.elsewhere && !this.launchingNow(s.id)) items.push(div().pt(14).text_size(12).text_color(t.muted).child("Herdr 밖의 터미널에서 열려 있어 여기서 이어 하지 않습니다"));
 
     return v_flex().size_full().min_h(0)
       .child(h_flex().h(40).flex_none().px(14).gap(8).items_center().border_b_1().border_color(t.border)
         .child(div().flex_1().min_w(0).truncate().text_size(14).font_semibold().text_color(t.foreground).child(oneLine(s.ask) || "요청 없음"))
         .when(Boolean(o?.address), (el) => el.child(btn("sessions-go", "그 터미널로 가기", (_e, cx) => this.act(s, cx))))
-        .when(!o, (el) => el.child(btn("sessions-resume", "이어하기", (_e, cx) => this.act(s, cx)))))
+        .when(!o?.address && this.launchingNow(s.id), (el) => el.child(div().flex_none().px(10).py(4).text_size(12).text_color(t.dim).child("여는 중")))
+        .when(!o && !this.launchingNow(s.id), (el) => el.child(btn("sessions-resume", "이어하기", (_e, cx) => this.act(s, cx)))))
       .child(v_flex().id("sessions-detail").flex_1().min_h(0).overflow_y_scrollbar().px(20).py(14).gap(2).children(items));
   }
 }
