@@ -70,6 +70,17 @@ export function parse(src) {
     }
     if (!line.trim()) { gap = true; continue; }
     if (/^ {0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { gap = true; continue; }   // 구분선은 빈 줄로
+    // 표: 좁은 패널에 칸을 그리지 않고 "표 · n줄 — 머리 칸들" 한 줄로 줄인다(전체는 에이전트 앱에서)
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      const rows = [];
+      for (; i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i]); i++) rows.push(lines[i]);
+      i--;
+      const cells = (r) => r.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim()).filter(Boolean);
+      const body = rows.filter((r) => !/^\s*\|[\s:|-]+\|\s*$/.test(r));
+      const head = cells(body[0] ?? "").map((c) => c.replace(/[*`]/g, "")).join(" · ");
+      push({ kind: "p", words: [{ kind: "text", text: `표 · ${Math.max(0, body.length - 1)}줄${head ? ` — ${head}` : ""}`, space: false }] });
+      continue;
+    }
     const h = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
     if (h) { push({ kind: "h", level: h[1].length, words: words(spans(h[2])) }); continue; }
     const li = /^(\s*)([-*+]|\d{1,3}[.)])\s+(\[[ xX]\]\s+)?(.*)$/.exec(line);
