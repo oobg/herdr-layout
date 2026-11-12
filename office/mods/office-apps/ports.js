@@ -1,6 +1,8 @@
 // office-apps의 포트 앱: 열려 있는(LISTEN) TCP 포트와 그것을 띄운 터미널을 본다.
 //   왼쪽: 툴바(숨긴 포트 보기 · 다시 읽기) + 기기별 머리줄(이 Mac, 원격) 아래 포트 줄(":3000" · 프로세스 · 스페이스 › 탭 또는 "터미널 밖")
 //   오른쪽: 포트·주소·pid·명령줄·띄운 터미널, 동작(브라우저로 열기 · 그 터미널로 가기 · 종료)
+//         원격 기기 포트는 브라우저 대신 "SSH 터널 명령 복사"(ssh -L <포트>:localhost:<포트> <기기>, hc machine ls의 ssh 대상을 쓴다)와
+//         설명 한 줄. 터널은 열지 않고 복사만 한다. 그 포트의 터미널이 없으면 Enter도 이것.
 // 데이터: 기기마다 sh 스크립트 한 번(ports/parse.js의 SCRIPT: macOS lsof, Linux ss 또는 /proc/net/tcp, 공통 ps).
 //   터미널마다 hc get으로 셸(뿌리) pid를 한 번 얻어 두고(office-resources와 같게), 리스닝 pid의 조상 체인에서 가장 가까운 셸을 찾는다.
 // 갱신: 이 앱이 그려지는 동안만 5초마다(에이전트 앱과 같은 방식: 알렸는데 그려지지 않았으면 멈추고, 다시 그려지면 깨운다).
@@ -14,7 +16,7 @@ import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { exec, hc, spaces, panes, terminals, machines, layout, run, notify, shared, setShared, openOverlay, closeOverlay, home } from "herdr";
 import { ACTIONS } from "./menu.js";
-import { SCRIPT, parseAll, order, isHidden } from "./ports/parse.js";
+import { SCRIPT, parseAll, order, isHidden, tunnelCommand } from "./ports/parse.js";
 
 const ME = "mods/office-apps";
 const LOCAL = "";                          // 이 Mac의 키
@@ -231,13 +233,14 @@ export class PortsApp {
     cx?.notify?.();
   }
 
-  // Enter: 이 Mac 포트면 브라우저로, 원격이면 띄운 터미널로(종료는 Enter에 두지 않는다)
+  // Enter: 이 Mac 포트면 브라우저로, 원격이면 띄운 터미널로(없으면 SSH 터널 명령 복사). 종료는 Enter에 두지 않는다.
   activate(_cx) {
     const r = this.current();
     if (!r) return;
     if (!r.machine) return this.openBrowser(r);
     const w = this.whereOf(r.term);
     if (w) goTo(w.sp, w.tab, r.term);
+    else this.copyTunnel(r);
   }
 
   // 읽지 못한 것: [{ name, error }] (전체 실패 + 기기별 실패)
@@ -354,10 +357,13 @@ export class PortsApp {
         .child(div().flex_none().font_family(CODE_FONT).text_size(14).font_semibold().text_color(t.foreground).child(`:${r.port}`))
         .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.muted).child(r.name))
         .when(!r.machine, (el) => el.child(btn("pt-open", "브라우저로 열기", () => this.openBrowser(r))))
+        .when(Boolean(r.machine), (el) => el.child(btn("pt-tunnel", "SSH 터널 명령 복사", () => this.copyTunnel(r))))
         .when(Boolean(w), (el) => el.child(btn("pt-go", "그 터미널로 가기", () => goTo(w.sp, w.tab, r.term))))
         .when(r.pid != null, (el) => el.child(btn("pt-kill", "종료…", () => this.confirmKill(r), true))))
       .child(v_flex().id("pt-detail").flex_1().min_h(0).overflow_y_scrollbar().px(18).py(12).gap(6)
         .children(info)
+        .when(Boolean(r.machine), (el) => el.child(div().pt(4).text_size(12).text_color(t.dim)
+          .child(`터널 명령을 이 Mac 터미널에서 실행하면 http://localhost:${r.port} 로 열립니다. 터널은 직접 열지 않습니다.`)))
         .when(r.all, (el) => el.child(div().pt(4).text_size(12).text_color(t.dim).child("같은 네트워크에서 접속할 수 있습니다"))));
   }
 
@@ -367,6 +373,7 @@ export class PortsApp {
     if (!r) return this.loaded && this.failures().length ? [{ id: "pt-retry", kind: "button", run: (cx) => this.kick(cx) }] : [];
     const w = this.whereOf(r.term), out = [];
     if (!r.machine) out.push({ id: "pt-open", kind: "button", run: () => this.openBrowser(r) });
+    if (r.machine) out.push({ id: "pt-tunnel", kind: "button", run: () => this.copyTunnel(r) });
     if (w) out.push({ id: "pt-go", kind: "button", run: () => goTo(w.sp, w.tab, r.term) });
     if (r.pid != null) out.push({ id: "pt-kill", kind: "button", run: () => this.confirmKill(r) });
     return out;
@@ -385,6 +392,20 @@ export class PortsApp {
     this.cwds.set(k, entry);
     if (cx) cx.spawn(async (cx) => { await entry.done; cx.notify(); });
     return entry.done;
+  }
+
+  // 원격 포트를 이 Mac으로 당겨 올 ssh -L 명령을 클립보드로. 기기의 ssh 대상은 hc machine ls에서 찾는다.
+  async copyTunnel(r) {
+    let m = null;
+    try {
+      const x = await hc(["machine", "ls", "--json"]);
+      if (x.code === 0) m = (JSON.parse(x.stdout).machines ?? []).find((y) => y.name === r.machine) ?? null;
+    } catch { /* 못 찾으면 기기 이름으로 */ }
+    const { command, guess } = tunnelCommand(r.port, m ?? { name: r.machine });
+    const c = await exec("sh", ["-c", 'printf %s "$1" | pbcopy', "copy", command]).catch(() => ({ code: 1 }));
+    if (c.code !== 0) { notify({ title: "복사하지 못했습니다", body: command, level: "error" }); return; }
+    notify({ title: "SSH 터널 명령을 복사했습니다", level: "info",
+      body: `${command}${guess ? "\nssh 대상을 찾지 못해 기기 이름을 호스트로 썼습니다" : ""}` });
   }
 
   openBrowser(r) {

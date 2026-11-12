@@ -231,3 +231,18 @@ export function parseAll(text, roots) {
 export function order(ports) {
   return [...ports].sort((a, b) => (a.term ? 0 : 1) - (b.term ? 0 : 1) || a.port - b.port || (a.pid ?? 0) - (b.pid ?? 0));
 }
+
+// 원격 기기 포트를 이 Mac에서 열 SSH 터널 명령(복사만 한다, 직접 열지 않는다).
+//   m = hc machine ls의 항목 { name, target?, host?, via? }. ssh 대상(target "user@host:port")이 있으면 그것을, 없으면(명령 연결·못 찾음) 기기 이름을 쓴다.
+//   → { command, guess } (guess: 기기 이름을 ssh 호스트로 짐작했다)
+export function tunnelCommand(port, m) {
+  const raw = m?.via ? "" : String(m?.target ?? m?.host ?? "").trim();
+  let dest = raw, p = null;
+  const hp = /^(.*?)(\[[^\]]+\]|[^:@[\]]+):(\d+)$/.exec(raw);   // [user@]host:port 또는 [user@][v6]:port
+  if (hp) { dest = hp[1] + hp[2].replace(/^\[|\]$/g, ""); p = hp[3]; }
+  else dest = dest.replace(/\[|\]/g, "");
+  const guess = !dest;
+  if (guess) dest = String(m?.name ?? "");
+  const q = /^[\w.@:%+-]+$/.test(dest) ? dest : `'${dest.replace(/'/g, `'\\''`)}'`;
+  return { command: `ssh -L ${port}:localhost:${port}${p && p !== "22" ? ` -p ${p}` : ""} ${q}`, guess };
+}
