@@ -31,7 +31,6 @@ const FOLD = "office.fold";           // 활동 구역의 접힘·펼침(localSt
 const SUBS = "office.subs";           // 구독 감지 결과 캐시(localStorage, 1분)
 const OPEN = "office.open";
 const SPINNER = "mods/workspace-chrome/spinner.svg";
-const C = { working: "#e8b92e", blocked: "#e5484d", done: "#30a46c" };
 const SEATS = 4;
 const SPRITES = "mods/office/sprites";
 const ZONE_GAP = 1.2;                 // 구역 사이 통로(m)
@@ -44,6 +43,23 @@ let SPR = null, SPR_LOADING = false;  // sprites/manifest.json
 function seeded(key) { let a = hash(key) || 1; return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 function shuffle(list, rnd) { const a = [...list]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 function hash(s) { let h = 0; for (const ch of String(s)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return h; }
+// 색 바탕 위 글자색: 흰색과 어두운색 중 바탕과 대비(WCAG 상대 휘도)가 큰 쪽. 상태색은 테마 토큰(working·blocked·done·idle)이라
+//   테마마다 밝기가 달라 글자색을 고정할 수 없다. 둘 다 4.5:1이 안 되면 검정과 흰색 중 큰 쪽(어떤 바탕이든 4.58:1 이상).
+function luminance(hex) {
+  let h = String(hex ?? "").replace(/^#/, "");
+  if (h.length === 3 || h.length === 4) h = [...h.slice(0, 3)].map((c) => c + c).join("");
+  if (!/^[0-9a-f]{6}/i.test(h)) return null;
+  const lin = (i) => { const c = parseInt(h.slice(i, i + 2), 16) / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  return 0.2126 * lin(0) + 0.7152 * lin(2) + 0.0722 * lin(4);
+}
+function contrast(a, b) { const [x, y] = [luminance(a), luminance(b)]; return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); }
+function inkOn(bg) {
+  if (luminance(bg) == null) return "#ffffff";
+  const best = (list) => list.reduce((p, c) => (contrast(bg, c) > contrast(bg, p) ? c : p));
+  const ink = best(["#ffffff", "#1c1c1c"]);
+  return contrast(bg, ink) >= 4.5 ? ink : best(["#ffffff", "#000000"]);
+}
+
 // 셔츠·서브에이전트 색. gpui는 hsl()을 받지 않아 hex로 둔다.
 const PALETTE = ["#7aa2d6", "#8cc0a0", "#d69a7a", "#b69ad6", "#d6c27a", "#7ac6c6", "#d67aa2", "#a2b07a"];
 
@@ -254,7 +270,7 @@ class Floor {
     const ago = (m) => (m == null ? "" : m < 1 ? "방금" : m < 60 ? `${m}분` : `${Math.floor(m / 60)}시간 ${m % 60}분`);
     const name = (a) => a.program?.name ?? a.app ?? "에이전트";
     const goto = (a) => () => run("agent.focus", { terminal: a.address });
-    const STATUS = { working: ["작업 중", C.working], blocked: ["입력 대기", C.blocked], done: ["완료", C.done], idle: ["대기", t.muted] };
+    const STATUS = { working: ["작업 중", t.working], blocked: ["입력 대기", t.blocked], done: ["완료", t.done], idle: ["대기", t.muted] };
 
     // "에이전트 N" 머리줄 + 오른쪽 "+": 구독이 있는 에이전트를 골라 이 스페이스에 새 탭으로 띄운다.
     const addHead = (text) => h_flex().pt(18).pb(6).items_center().gap(8)
@@ -313,7 +329,7 @@ class Floor {
       .when(!mine.length, (el) => el.child(addHead("에이전트 0")).child(div().text_size(13).text_color(t.muted).child("에이전트가 없습니다")))
       // 답을 기다리는 에이전트가 있으면 바로 열 수 있게
       .when(blocked.length > 0, (el) => el.child(h_flex().mt(12).gap(10).items_center()
-        .child(div().id("ov-open").px(12).py(5).rounded(6).bg(C.blocked).text_size(13).font_semibold().text_color("#ffffff").cursor_pointer()
+        .child(div().id("ov-open").px(12).py(5).rounded(6).bg(t.blocked).text_size(13).font_semibold().text_color(inkOn(t.blocked)).cursor_pointer()
           .hover((st) => st.opacity(0.9)).on_click(goto(blocked[0])).child(`${name(blocked[0])} 답하기`))
         .when(blocked.length > 1, (x) => x.child(div().text_size(12).text_color(t.muted).child(`외 ${blocked.length - 1}명`)))))
       .when(mine.length > 0, (el) => el
@@ -570,7 +586,7 @@ class Floor {
   sections(a, main, v, sub, depth, cx, t) {
     const KIND = {
       읽음: ["read", "#7aa2f7"], 수정: ["edit", "#e69875"], 작성: ["write", "#a7c080"], 검색: ["search", "#7fbbb3"], 찾기: ["search", "#7fbbb3"],
-      실행: ["run", C.working], 서브에이전트: ["agent", "#d699b6"], 웹: ["web", "#83c092"], 스킬: ["skill", "#dbbc7f"],
+      실행: ["run", t.working], 서브에이전트: ["agent", "#d699b6"], 웹: ["web", "#83c092"], 스킬: ["skill", "#dbbc7f"],
     };
     const kindOf = (k) => KIND[k] ?? ["other", t.muted];
     const icon = (k) => svg(`mods/office/icons/act_${kindOf(k)[0]}.svg`).size(13).flex_none().text_color(kindOf(k)[1]);
@@ -606,7 +622,7 @@ class Floor {
       h_flex().id(`ov-flow-${id}-${i}`).gap(6).items_center().min_h(18)
         .when(FILE.includes(f.kind) && String(f.target ?? "").startsWith("/"),
           (x) => x.cursor_pointer().hover((s) => s.underline()).on_click(() => openViewer(f.target, a.address)))
-        .child(f.running && f.kind === "실행" ? svg(SPINNER).size(13).flex_none().text_color(C.working).spin(900) : icon(f.kind))
+        .child(f.running && f.kind === "실행" ? svg(SPINNER).size(13).flex_none().text_color(t.working).spin(900) : icon(f.kind))
         .child(div().flex_none().text_color(f.running ? t.foreground : kindOf(f.kind)[1]).when(f.running, (x) => x.font_semibold())
           .child(`${f.kind}${f.n > 1 ? ` ×${f.n}` : ""}`))
         .when(Boolean(f.target), (x) => x.child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(short(f.kind, f.target)))), 24));
@@ -623,10 +639,10 @@ class Floor {
       const line = h_flex().id(`ov-sub-${id}-${g.id}`).gap(6).items_center().min_h(18)
         .when(canOpen, (x) => x.cursor_pointer().on_click((_e, cx) => { cx.stop_propagation(); this.toggle(rowKey, g.running, cx); }))
         .child(canOpen ? svg(`mods/office/icons/chevron-${open ? "down" : "right"}.svg`).size(10).flex_none().text_color(t.muted) : div().w(10).flex_none())
-        .child(g.running ? svg(SPINNER).size(13).flex_none().text_color(C.working).spin(900) : icon("서브에이전트"))
+        .child(g.running ? svg(SPINNER).size(13).flex_none().text_color(t.working).spin(900) : icon("서브에이전트"))
         .child(div().flex_none().px(5).rounded(4).bg("#d699b622").text_size(11).text_color("#d699b6").child(g.type))
         .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(g.what))
-        .child(div().flex_none().text_size(11).text_color(g.running ? C.working : g.failed ? C.blocked : t.muted)
+        .child(div().flex_none().text_size(11).text_color(g.running ? t.working : g.failed ? t.blocked : t.muted)
           .child(g.running ? "작업 중" : g.failed ? "중단" : [
             "완료",
             Number.isFinite(g.tools) ? `도구 ${g.tools}번` : null,
@@ -693,19 +709,21 @@ class Floor {
 
   // 말풍선: 흰 바탕에 에이전트 로고, 우상단에 상태 뱃지. 아래 꼬리로 머리를 가리킨다.
   // 머리 위 상태 표시. 상태가 먼저 읽히도록 색 알약에 상태 낱말을 쓰고, 로고는 작게.
-  //   입력 대기: 빨강 "답 필요", 깜빡이며 살짝 튄다(가장 먼저 봐야 하므로)
-  //   작업 중: 노랑 "작업 중 4분"   완료: 초록 "완료"   대기: 회색 "대기"
+  //   바탕은 테마의 상태 토큰(blocked·working·done·idle), 글자색은 inkOn으로 바탕 밝기에 맞춘다.
+  //   입력 대기: blocked "답 필요", 깜빡이며 살짝 튄다(가장 먼저 봐야 하므로)
+  //   작업 중: working "작업 중 4분"   완료: done "완료"   대기: idle "대기"
   //   서브에이전트가 일하는 중이면 "+n"
   bubble(a, terms, t, tab) {
     const ago = (ms) => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 1 ? "방금" : m < 60 ? `${m}분 전` : m < 1440 ? `${Math.floor(m / 60)}시간 전` : `${Math.floor(m / 1440)}일 전`; };
 
     const m = a.status === "working" && tab?.working_since ? Math.max(0, Math.round((Date.now() - tab.working_since) / 60000)) : null;
-    const [bg, fg, text] = {
-      blocked: [C.blocked, "#ffffff", "답 필요"],
-      working: [C.working, "#2a2100", m == null ? "작업 중" : m < 1 ? "작업 중" : `작업 중 ${m < 60 ? `${m}분` : `${Math.floor(m / 60)}시간`}`],
-      done: [C.done, "#ffffff", a.doneAt ? `완료 ${ago(a.doneAt)}` : "완료"],
-      idle: ["#5f6670", "#ffffff", "대기"],
-    }[a.status] ?? ["#5f6670", "#ffffff", ""];
+    const [bg, text] = {
+      blocked: [t.blocked, "답 필요"],
+      working: [t.working, m == null ? "작업 중" : m < 1 ? "작업 중" : `작업 중 ${m < 60 ? `${m}분` : `${Math.floor(m / 60)}시간`}`],
+      done: [t.done, a.doneAt ? `완료 ${ago(a.doneAt)}` : "완료"],
+      idle: [t.idle, "대기"],
+    }[a.status] ?? [t.idle, ""];
+    const fg = inkOn(bg);   // 글자·아이콘색: 바탕 토큰의 밝기로 고른다
     const kids = terms.filter((x) => x.parent === a.address && x.status === "working").length;
     const icon = a.status === "working" ? svg(SPINNER).size(12).text_color(fg).spin(900)
       : a.status === "done" ? div().text_size(12).font_semibold().text_color(fg).child("✓")
@@ -726,10 +744,10 @@ class Floor {
       return div().size(z + 2).rounded_full().border_2().border_color(color).bg("#ffffff")
         .items_center().justify_center().flex().child(programIcon(kid.program, Math.round(z * 0.55), t));
     }
-    if (a.status === "working") return div().size(z).rounded_full().bg("#ffffff").child(svg(SPINNER).size(z).text_color(C.working).spin(900));
-    if (a.status === "blocked") return div().size(z).rounded_full().bg(C.blocked).flex().items_center().justify_center()
-      .text_size(Math.round(z * 0.7)).font_semibold().text_color("#ffffff").child("?");
-    if (a.status === "done") return div().size(z - 2).rounded_full().bg(C.done).border_2().border_color("#ffffff");
+    if (a.status === "working") return div().size(z).rounded_full().bg("#ffffff").child(svg(SPINNER).size(z).text_color(t.working).spin(900));
+    if (a.status === "blocked") return div().size(z).rounded_full().bg(t.blocked).flex().items_center().justify_center()
+      .text_size(Math.round(z * 0.7)).font_semibold().text_color(inkOn(t.blocked)).child("?");
+    if (a.status === "done") return div().size(z - 2).rounded_full().bg(t.done).border_2().border_color("#ffffff");
     return div();
   }
 }
