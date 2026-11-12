@@ -119,36 +119,52 @@ export async function sleepAgents(ctx) {
 
 // ── 깨우기 ───────────────────────────────────────────────
 // 칸이 셸이면 그 칸에서 이어 가고, 칸이 없어졌으면 같은 폴더에 새 탭을 연다. 셸이 아니면 기록만 지운다.
-// 돌려주는 값: { space, tab, pane }(옮겨 갈 곳) 또는 null
+// 잠든 기록은 그 칸(새 탭이면 새 칸)이 Claude Code가 된 것을 본 뒤에만 지운다. 못 보면 기록을 두고 이유를 돌려준다(다시 깨울 수 있다).
+// 돌려주는 값: { ok, to?: { space, tab, pane }(옮겨 갈 곳), why?(실패 이유), removed?(기록을 지웠는지) }
+const WAIT = 15;   // 깨운 뒤 Claude Code가 뜨기를 기다리는 초
+
+// 조건을 1초마다 WAIT초까지 본다(setTimeout이 없어 sleep 프로세스로 기다린다). 맞으면 그 값, 아니면 null.
+async function waitFor(fn) {
+  for (let i = 0; i < WAIT; i++) {
+    await exec("sleep", ["1"]).catch(() => null);
+    const v = fn(panes() ?? []);
+    if (v) return v;
+  }
+  return null;
+}
+const claudeUp = (p) => Boolean(p && isClaude(p.program, p.app) && !isShellPane(p));
+
 export async function wake(rec) {
   const ps = panes() ?? [], st = paneState(rec, ps);
-  if (!UUID.test(rec.session ?? "")) { await updateSleeping((rs) => without(rs, rec.address)); return null; }
-  if (st === "busy") {
-    await updateSleeping((rs) => without(rs, rec.address));
-    notify({ title: `'${rec.tabName}' 탭은 이미 다른 프로그램이 돌고 있습니다`, body: "잠든 기록만 지웠습니다", level: "info" });
-    return null;
-  }
+  const drop = () => updateSleeping((rs) => without(rs, rec.address));
+  if (!UUID.test(rec.session ?? "")) { await drop(); return { ok: false, removed: true, why: "세션 id가 잘못된 기록이라 지웠습니다" }; }
+  if (st === "busy") { await drop(); return { ok: false, removed: true, why: "이미 다른 프로그램이 돌고 있어 잠든 기록만 지웠습니다" }; }
   if (st === "shell") {
     const p = ps.find((x) => x.terminal === rec.address && x.pane === rec.pane);
     const r = await hc(["send", rec.address, resumeLine(rec)]).catch(() => null);
-    if (r?.code !== 0) {
-      notify({ title: `'${rec.tabName}' 탭을 깨우지 못했습니다`, body: (r?.stderr || r?.stdout || "").trim().slice(0, 300), level: "error" });
-      return null;
-    }
-    await updateSleeping((rs) => without(rs, rec.address));
+    if (r?.code !== 0) return { ok: false, why: `재개 명령을 보내지 못했습니다 ${(r?.stderr || r?.stdout || "").trim().slice(0, 120)}`.trim() };
+    const up = await waitFor((now) => claudeUp(now.find((x) => x.terminal === rec.address && x.pane === rec.pane)));
+    if (!up) return { ok: false, why: `${WAIT}초 안에 Claude Code가 뜨지 않았습니다 · 그 칸에서 확인해 주세요` };
+    await drop();
     const space = spaces().find((s) => s.tabs.some((x) => x.id === p.tab));
-    return { space: space?.id ?? rec.space, tab: p.tab, pane: p.pane };
+    return { ok: true, to: { space: space?.id ?? rec.space, tab: p.tab, pane: p.pane } };
   }
   // 칸이 없다: 같은 폴더에 새 탭. 원격 기록은 그 스페이스가 남아 있을 때만(다른 스페이스에 열면 이 컴퓨터에서 돈다).
   const sp = spaces().find((s) => s.id === rec.space);
-  if (rec.machine && !sp) {
-    notify({ title: `'${rec.tabName}' 탭을 깨우지 못했습니다`, body: `${rec.machine}의 스페이스가 닫혀 있습니다. 그 기기에서 claude --resume ${rec.session}`, level: "warning" });
-    return null;
-  }
+  if (rec.machine && !sp) return { ok: false, why: `${rec.machine}의 스페이스가 닫혀 있습니다 · 그 기기에서 claude --resume ${rec.session}` };
+  const before = new Set(ps.map((x) => x.terminal).filter(Boolean));
   run("tab.new", { name: rec.tabName, ...(sp ? { space: sp.id } : {}), folder: rec.cwd, argv: ["claude", "--resume", rec.session] });
   run("layout.show", { id: "office-term" });
-  await updateSleeping((rs) => without(rs, rec.address));
-  return null;
+  // 새로 생긴 터미널 중 Claude Code인 칸(탭 이름이 같으면 그것을 먼저)
+  const tabName = (p) => spaces().flatMap((s) => s.tabs).find((x) => x.id === p.tab)?.name;
+  const p = await waitFor((now) => {
+    const fresh = now.filter((x) => x.terminal && !before.has(x.terminal) && claudeUp(x));
+    return fresh.find((x) => tabName(x) === rec.tabName) ?? (fresh.length === 1 ? fresh[0] : null);
+  });
+  if (!p) return { ok: false, why: `새 탭에서 ${WAIT}초 안에 Claude Code가 뜨지 않았습니다 · 그 탭에서 확인해 주세요` };
+  await drop();
+  const space = spaces().find((s) => s.tabs.some((x) => x.id === p.tab));
+  return { ok: true, to: { space: space?.id ?? rec.space, tab: p.tab, pane: p.pane } };
 }
 
 // 기록만 지우기(칸이 닫힌 기록을 버릴 때)

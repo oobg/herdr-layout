@@ -174,6 +174,7 @@ export class WorkspaceApp {
     this.rows = [];
     this.sleeping = [];                         // data/office-apps/sleeping.json
     this.probes = {};                           // 주소 → 기록 확인 결과(workspace/sleeper.js probe)
+    this.wakeWhy = {};                          // 주소 → 깨우지 못한 이유(행에 흐리게, 다시 깨우면 지운다)
     this.timer = null; this.busy = false; this.rendered = 0; this.notified = 0;
   }
 
@@ -221,12 +222,18 @@ export class WorkspaceApp {
   // 다른 곳으로 간다: 대화 창이면 먼저 닫고(닫힐 때의 포커스 되돌리기가 pane.focus를 덮지 않게) 간다.
   leave(go) { this.closeHost?.(); go(); }
 
-  // 잠든 기록 하나를 깨우고, 칸이 있으면 그리로 간다(last: 마지막 하나면 대화 창도 닫는다 — 중간에 닫으면 남은 깨우기가 끊긴다)
+  // 잠든 기록 하나를 깨우고, 칸이 Claude Code가 된 것을 보면 그리로 간다(last: 마지막 하나면 대화 창도 닫는다 — 중간에 닫으면 남은 깨우기가 끊긴다).
+  // 기록을 지운 경우(성공, 다른 프로그램이 돎)에만 행을 지운다. 실패면 행을 두고 이유(this.wakeWhy)를 그 행에 보인다.
   async wakeOne(rec, cx, last = true) {
-    const to = await wake(rec);
-    this.sleeping = this.sleeping.filter((r) => r.address !== rec.address);
-    if (to) { if (last) this.leave(() => goPane(to.space, to.tab, to.pane)); else goPane(to.space, to.tab, to.pane); }
+    delete this.wakeWhy[rec.address];
     cx?.notify?.();
+    const r = await wake(rec).catch(() => ({ ok: false, why: "깨우지 못했습니다" }));
+    if (r.ok || r.removed) this.sleeping = this.sleeping.filter((x) => x.address !== rec.address);
+    if (r.why && r.removed) notify({ title: `'${rec.tabName}' 탭을 깨우지 않았습니다`, body: r.why, level: "info" });
+    else if (r.why) this.wakeWhy[rec.address] = r.why;
+    if (r.to) { if (last) this.leave(() => goPane(r.to.space, r.to.tab, r.to.pane)); else goPane(r.to.space, r.to.tab, r.to.pane); }
+    cx?.notify?.();
+    return r.ok;
   }
 
   wakeTab(tabId, cx) {
@@ -461,7 +468,8 @@ export class WorkspaceApp {
         .child(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(p.focused ? t.foreground : t.muted)
           .child(p.title || p.program?.name || p.mod || "칸"))
         .when(Boolean(w), (el) => el.child(div().flex_none().text_size(11).text_color(slept && !p.status ? t.muted : t[p.status] ?? t.dim).child(w))))
-      .when(Boolean(place), (el) => el.child(div().pl(22).truncate().text_size(11).text_color(t.dim).child(place)));
+      .when(Boolean(place), (el) => el.child(div().pl(22).truncate().text_size(11).text_color(t.dim).child(place)))
+      .when(slept && Boolean(this.wakeWhy[p.terminal]), (el) => el.child(div().pl(22).truncate().text_size(11).text_color(t.muted).child(this.wakeWhy[p.terminal])));
   }
 
   // 정리: 후보마다 체크 · 탭 이름 · 스페이스 / 이유. 체크 기본값은 규칙(끝난 에이전트만 해제), 사람이 바꾼 건 this.checks.
@@ -557,7 +565,8 @@ export class WorkspaceApp {
         .children(os.map((r) => h_flex().id(`ws-o-${r.address}`).min_h(40).px(6).py(4).gap(8).items_center()
           .child(v_flex().flex_1().min_w(0)
             .child(div().truncate().text_size(12.5).text_color(t.foreground).child(r.tabName || r.address))
-            .child(div().truncate().text_size(11).text_color(t.dim).child(`${where(r.cwd, r.machine)}${r.machine ? ` · ${r.machine}` : ""} · 깨우면 새 탭에서 이어 갑니다`)))
+            .child(div().truncate().text_size(11).text_color(t.dim).child(`${where(r.cwd, r.machine)}${r.machine ? ` · ${r.machine}` : ""} · 깨우면 새 탭에서 이어 갑니다`))
+            .when(Boolean(this.wakeWhy[r.address]), (el) => el.child(div().truncate().text_size(11).text_color(t.muted).child(this.wakeWhy[r.address]))))
           .child(this.btn(`ws-o-wake-${r.address}`, "깨우기", (_e, cx) => cx.spawn(async (cx) => this.wakeOne(r, cx)), t))
           .child(this.btn(`ws-o-forget-${r.address}`, "기록 지우기", (_e, cx) => cx.spawn(async (cx) => {
             await forget(r); this.sleeping = this.sleeping.filter((x) => x.address !== r.address); cx.notify();
