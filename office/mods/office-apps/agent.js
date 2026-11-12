@@ -42,6 +42,7 @@ const CODE_FONT = "D2Coding";   // 시각(숫자) 글꼴
 const LABEL_W = 64;      // 요약 줄의 왼쪽 라벨 열
 
 const isClaude = (p, app) => /claude/i.test(`${p?.key ?? ""} ${p?.name ?? ""} ${app ?? ""}`);
+const isCodex = (p, app) => /codex/i.test(`${p?.key ?? ""} ${p?.name ?? ""} ${app ?? ""}`);
 const mins = (ms) => Math.max(0, Math.floor(ms / 60000));
 function dur(ms) { const m = mins(ms); return m < 1 ? "방금" : m < 60 ? `${m}분` : `${Math.floor(m / 60)}시간 ${m % 60}분`; }
 function ago(at) {
@@ -434,7 +435,11 @@ export class AgentApp {
     else {
       items.push(this.nowRow(r, null, null, Date.now(), t));
       if (staleNote) items.push(staleNote);
-      items.push(this.note(!claude ? "Claude Code 에이전트만 하는 일을 읽을 수 있습니다" : !v ? "기록을 읽는 중" : "대화 기록을 찾지 못했습니다", t));
+      // Codex는 대화 기록을 아직 읽지 못한다고 정직하게(누르면 그 터미널로). 다른 에이전트도 Claude Code만 읽는다고 밝힌다.
+      if (!claude && isCodex(r.program, r.app) && r.kind !== "rec")
+        items.push(this.note("Codex 대화는 아직 읽지 못합니다 · 터미널로", t).id("agent-codex-note").cursor_pointer()
+          .hover((x) => x.text_color(t.muted)).on_click(() => goTo(this.target(r))));
+      else items.push(this.note(!claude ? "Claude Code 에이전트만 하는 일을 읽을 수 있습니다" : !v ? "기록을 읽는 중" : "대화 기록을 찾지 못했습니다", t));
     }
 
     return v_flex().size_full().min_h(0)
