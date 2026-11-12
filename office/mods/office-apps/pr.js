@@ -20,6 +20,7 @@ import {
   DIFF_LINE, NARROW, inlineRow, splitRow, inlineWidth, splitWidth, diffPalette, wordSpans, splitRows, isDark, diffMode, modeToggle,
 } from "./commit/diffview.js";
 import { splitDiff } from "./pr/diff.js";
+import { check, readiness, failHint } from "./pr/status.js";
 
 const ME = "mods/office-apps";
 const PR_TICK = "office-apps.pr.tick";
@@ -49,12 +50,16 @@ const METHODS = [
 
 // ── 확인 창이 부르는 동작. ctx는 값만: { number, root, on, flag?, head? }
 
-async function gh(ctx, args, done) {
+// failed: 실패했을 때 제목에 쓸 동사("병합하지") → "#12 병합하지 못했습니다". 본문은 아는 오류면 한국어 한 줄 + 원문.
+async function gh(ctx, args, done, failed) {
   let r;
   try { r = await exec("gh", args, { cwd: ctx.root, on: ctx.on, timeout: 120000 }); }
   catch (e) { r = { code: -1, stdout: "", stderr: String(e?.message ?? e) }; }
   if (r.code === 0) notify({ title: done, body: `#${ctx.number}`, level: "info" });
-  else notify({ title: "실패했습니다", body: (r.stderr || r.stdout || "").trim().slice(0, 300), level: "error" });
+  else {
+    const raw = (r.stderr || r.stdout || "").trim(), hint = failHint(raw);
+    notify({ title: `#${ctx.number} ${failed} 못했습니다`, body: (hint ? `${hint}\n${raw}` : raw).slice(0, 400), level: "error" });
+  }
   setShared(PR_TICK, Date.now());
   return r.code === 0;
 }
@@ -63,24 +68,28 @@ async function gh(ctx, args, done) {
 ACTIONS["pr.merge"] = (ctx) => {
   if (!ctx.head) { notify({ title: "병합하지 않았습니다", body: "PR의 head 커밋을 몰라 안전하게 병합할 수 없습니다. 다시 읽은 뒤 해 보세요.", level: "error" }); return false; }
   setShared(METHOD, ctx.flag);
-  return gh(ctx, ["pr", "merge", String(ctx.number), ctx.flag, "--match-head-commit", ctx.head], "병합했습니다");
+  return gh(ctx, ["pr", "merge", String(ctx.number), ctx.flag, "--match-head-commit", ctx.head], "병합했습니다", "병합하지");
 };
-ACTIONS["pr.close"] = (ctx) => gh(ctx, ["pr", "close", String(ctx.number)], "PR을 닫았습니다");
-ACTIONS["pr.checkout"] = async (ctx) => { await gh(ctx, ["pr", "checkout", String(ctx.number)], "체크아웃했습니다"); setShared(TICK, Date.now()); };
+ACTIONS["pr.close"] = (ctx) => gh(ctx, ["pr", "close", String(ctx.number)], "PR을 닫았습니다", "닫지");
+ACTIONS["pr.checkout"] = async (ctx) => { await gh(ctx, ["pr", "checkout", String(ctx.number)], "체크아웃했습니다", "체크아웃하지"); setShared(TICK, Date.now()); };
 
 // opts: { yes: 실행 버튼 이름, danger: 되돌리기 어려우면 true } — menu.js Confirm 참고
 const confirm = (action, title, detail, ctx, opts = {}) =>
   openOverlay({ mod: "office-apps", kind: "dialog", width: 420, height: 190, props: { role: "confirm", action, title, detail, ctx, ...opts } });
 
 // ── 메뉴(⋯ 버튼과 목록 우클릭이 같은 항목을 쓴다). 오버레이 복사본에서 그려지므로 ctx는 값만:
-//   { number, title, url, root, on, open, draft, head, headRef, baseRef, methods: [{ flag, name, by }], method }
+//   { number, title, url, root, on, open, draft, head, headRef, baseRef, methods: [{ flag, name, by }], method, ready }
+//   ready: 상세를 읽은 PR이면 readiness() 결과(병합 확인 창 요약), 목록 값뿐이면 null
 
 const I = (n) => `${ME}/${n}.svg`;
 const C = { open: "#7aa2f7", copy: "#d699b6", go: "#e5739d", merge: "#a7c080" };
 
+// 상세를 읽은 PR이면 c.ready(체크·리뷰 요약)를 덧붙이고, 체크 실패나 변경 요청이 있으면 위험한 동작으로 묻는다.
 function askMerge(c, m) {
-  confirm("pr.merge", `#${c.number} 병합 · ${m.name}`, `${c.headRef} → ${c.baseRef}, ${m.name} 방식으로 병합합니다.`,
-    { number: c.number, root: c.root, on: c.on, flag: m.flag, head: c.head }, { yes: "병합" });
+  // 목록 줄에서 바로 연 경우(상세를 안 읽음)는 상태를 모른다는 것을 알린다.
+  const r = c.ready, note = !r ? " 체크·리뷰 상태는 아직 읽지 않았습니다(PR을 고르면 보입니다)." : r.text ? ` 지금 상태: ${r.text}.` : "";
+  confirm("pr.merge", `#${c.number} 병합 · ${m.name}`, `${c.headRef} → ${c.baseRef}, ${m.name} 방식으로 병합합니다.${note}`,
+    { number: c.number, root: c.root, on: c.on, flag: m.flag, head: c.head }, r?.risky ? { yes: "그래도 병합", danger: true } : { yes: "병합" });
 }
 const askCheckout = (c) => confirm("pr.checkout", `#${c.number} 체크아웃`,
   `작업 폴더를 ${c.headRef} 브랜치로 바꿉니다. 커밋하지 않은 변경이 있으면 실패할 수 있습니다.`, { number: c.number, root: c.root, on: c.on }, { yes: "체크아웃" });
@@ -198,15 +207,6 @@ function prState(p) {
   return { text: "열림", color: "ansi2" };
 }
 
-// 체크 한 개: CheckRun(name·status·conclusion) 또는 StatusContext(context·state)
-function check(c) {
-  let s;
-  if (c.__typename === "StatusContext" || (c.context && !c.name)) {
-    s = { SUCCESS: "pass", FAILURE: "fail", ERROR: "fail" }[c.state] ?? "pending";
-  } else if (c.status && c.status !== "COMPLETED") s = "pending";
-  else s = { SUCCESS: "pass", NEUTRAL: "skip", SKIPPED: "skip" }[c.conclusion] ?? "fail";
-  return { state: s, name: c.name ?? c.context ?? "", link: c.detailsUrl ?? c.targetUrl ?? "", group: c.workflowName ?? "" };
-}
 const CHECK = { fail: ["실패", "ansi1"], pending: ["대기", "ansi3"] };
 const REVIEW = { APPROVED: ["승인", "ansi2"], CHANGES_REQUESTED: ["변경 요청", "ansi1"], COMMENTED: ["코멘트", "dim"], DISMISSED: ["취소됨", "dim"] };
 const DECISION = { APPROVED: ["리뷰 승인", "ansi2"], CHANGES_REQUESTED: ["리뷰 변경 요청", "ansi1"], REVIEW_REQUIRED: ["리뷰 대기", "ansi3"] };
@@ -337,10 +337,13 @@ export class PrApp {
 
   // 메뉴·확인 창에 넘길 값(목록 줄이나 상세 어느 쪽이든)
   ctxFor(p) {
+    // 목록 줄에는 체크·리뷰 값이 없어 상세를 읽은 PR일 때만 요약을 붙인다.
+    const d = this.pr?.number === p.number && this.pr.statusCheckRollup !== undefined ? this.pr : null, r = d ? readiness(d) : null;
     return {
       number: p.number, title: p.title, url: p.url, root: this.root, on: this.on,
       open: p.state === "OPEN", draft: Boolean(p.isDraft), head: p.headRefOid, headRef: p.headRefName, baseRef: p.baseRefName,
       methods: this.methods().map(({ flag, name, by }) => ({ flag, name, by })), method: this.mergeMethod().flag,
+      ready: r && { text: r.text, risky: r.risky },
     };
   }
 
@@ -498,11 +501,10 @@ export class PrApp {
     const word = (text, color) => parts.push(div().flex_none().text_color(color).child(text));
     if (open) {
       if (p.isDraft) word("초안", t.muted);
-      const list = (p.statusCheckRollup ?? []).map(check);
-      const n = (s) => list.filter((c) => c.state === s).length;
-      if (n("fail")) word(`체크 실패 ${n("fail")}`, t.ansi1);
-      else if (n("pending")) word(`체크 대기 ${n("pending")}`, t.ansi3);
-      else if (list.length) word(`체크 통과 ${n("pass")}`, t.ansi2);
+      const r = readiness(p);
+      if (r.fail) word(`체크 실패 ${r.fail}`, t.ansi1);
+      else if (r.pending) word(`체크 대기 ${r.pending}`, t.ansi3);
+      else if (r.total) word(`체크 통과 ${r.pass}`, t.ansi2);
       const dec = DECISION[p.reviewDecision];
       if (dec) word(dec[0], t[dec[1]]);
       if (p.mergeable === "CONFLICTING") word("충돌 있어 병합할 수 없음", t.ansi1);
