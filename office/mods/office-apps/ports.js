@@ -1,22 +1,23 @@
 // office-apps의 포트 앱: 열려 있는(LISTEN) TCP 포트와 그것을 띄운 터미널을 본다.
-//   왼쪽: 툴바(시스템 포트 보기 · 다시 읽기) + 기기별 머리줄(이 Mac, 원격) 아래 포트 줄(":3000" · 프로세스 · 스페이스 › 탭 또는 "터미널 밖")
+//   왼쪽: 툴바(숨긴 포트 보기 · 다시 읽기) + 기기별 머리줄(이 Mac, 원격) 아래 포트 줄(":3000" · 프로세스 · 스페이스 › 탭 또는 "터미널 밖")
 //   오른쪽: 포트·주소·pid·명령줄·띄운 터미널, 동작(브라우저로 열기 · 그 터미널로 가기 · 종료)
 // 데이터: 기기마다 sh 스크립트 한 번(ports/parse.js의 SCRIPT: macOS lsof, Linux ss 또는 /proc/net/tcp, 공통 ps).
 //   터미널마다 hc get으로 셸(뿌리) pid를 한 번 얻어 두고(office-resources와 같게), 리스닝 pid의 조상 체인에서 가장 가까운 셸을 찾는다.
 // 갱신: 이 앱이 그려지는 동안만 5초마다(에이전트 앱과 같은 방식: 알렸는데 그려지지 않았으면 멈추고, 다시 그려지면 깨운다).
+// 기본 숨김: 시스템 서비스와 데스크톱 앱(Orca·WebStorm 같은 .app 묶음). Herdr 터미널에서 띄운 것은 무엇이든 보인다(parse.js isHidden).
 // 종료는 확인 창(menu.js Confirm) → ACTIONS["ports.kill"]이 pid의 명령줄이 그대로인지 다시 보고 kill -TERM.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { exec, hc, spaces, panes, terminals, machines, layout, run, notify, shared, setShared, openOverlay, closeOverlay } from "herdr";
 import { ACTIONS } from "./menu.js";
-import { SCRIPT, parseAll, order } from "./ports/parse.js";
+import { SCRIPT, parseAll, order, isHidden } from "./ports/parse.js";
 
 const ME = "mods/office-apps";
 const LOCAL = "";                          // 이 Mac의 키
 const TICK = "office-apps.ports.tick";     // 종료 뒤 다시 읽으라는 신호
 const EVERY = 5000;
 const CODE_FONT = "D2Coding";
-const TOOL = { sys: "#9da9a0", refresh: "#7fbbb3" };
+const TOOL = { hidden: "#9da9a0", refresh: "#7fbbb3" };
 const DANGER = "#e67e80";
 
 const machineOf = (address) => (String(address).includes("/") ? String(address).split("/")[0] : null);
@@ -65,7 +66,7 @@ export class PortsApp {
     this.timer = null; this.busy = false; this.again = false;
     this.rendered = 0; this.notified = 0;
     this.tick = shared(TICK);
-    try { this.showSys = JSON.parse(localStorage.getItem("ports.sys") ?? "false") === true; } catch { this.showSys = false; }
+    try { this.showHidden = JSON.parse(localStorage.getItem("ports.hidden") ?? localStorage.getItem("ports.sys") ?? "false") === true; } catch { this.showHidden = false; }
     try { this.sel = JSON.parse(localStorage.getItem("ports.sel") ?? "null"); } catch { this.sel = null; }
     this.loop(cx, 0);
   }
@@ -181,7 +182,7 @@ export class PortsApp {
     return this.machineList().map((m) => {
       const d = this.data.get(m.key);
       const all = order(d?.ports ?? []);
-      const shown = this.showSys ? all : all.filter((p) => !p.system);
+      const shown = this.showHidden ? all : all.filter((p) => !isHidden(p));
       return { m, d, shown: shown.map((p) => ({ ...p, key: keyOf(m.key, p), machine: m.name })), hidden: all.length - shown.length };
     });
   }
@@ -200,9 +201,9 @@ export class PortsApp {
     try { localStorage.setItem("ports.sel", JSON.stringify(key)); } catch { /* 이번 실행 동안만 */ }
   }
 
-  toggleSys(cx) {
-    this.showSys = !this.showSys;
-    try { localStorage.setItem("ports.sys", JSON.stringify(this.showSys)); } catch { /* 이번 실행 동안만 */ }
+  toggleHidden(cx) {
+    this.showHidden = !this.showHidden;
+    try { localStorage.setItem("ports.hidden", JSON.stringify(this.showHidden)); } catch { /* 이번 실행 동안만 */ }
     cx?.notify?.();
   }
 
@@ -228,7 +229,7 @@ export class PortsApp {
   emptyState() {
     if (!this.loaded) return { text: "포트를 읽는 중", sub: "" };
     const hidden = this.groups().reduce((n, g) => n + g.hidden, 0);
-    return { text: "열려 있는 포트가 없습니다", sub: hidden ? `시스템 포트 ${hidden}개는 숨겨 두었습니다 · 툴바의 눈 단추로 봅니다` : "개발 서버를 띄우면 여기에 보입니다" };
+    return { text: "열려 있는 포트가 없습니다", sub: hidden ? `시스템·데스크톱 앱 포트 ${hidden}개는 숨겨 두었습니다 · 툴바의 눈 단추로 봅니다` : "개발 서버를 띄우면 여기에 보입니다" };
   }
 
   subtitle(t) {
@@ -245,8 +246,8 @@ export class PortsApp {
       .child(svg(icon).size(16).text_color(color));
     // 한 자리 토글: 숨기는 중(걸러 내는 중)이면 빗금 눈 + 배경
     return h_flex().min_h(32).flex_none().py(2).px(6).gap(2).items_center().border_b_1().border_color(t.border)
-      .child(btn("sys", `${ME}/${this.showSys ? "eye" : "eye-off"}.svg`, TOOL.sys,
-        this.showSys ? "시스템 포트 보는 중 · 누르면 숨기기" : "시스템 포트 숨김 · 누르면 보기", !this.showSys, (cx) => this.toggleSys(cx)))
+      .child(btn("hidden", `${ME}/${this.showHidden ? "eye" : "eye-off"}.svg`, TOOL.hidden,
+        this.showHidden ? "숨긴 포트 보는 중 · 누르면 다시 숨기기" : "숨긴 포트 보기(시스템·데스크톱 앱)", !this.showHidden, (cx) => this.toggleHidden(cx)))
       .child(div().flex_1())
       .child(btn("refresh", `${ME}/refresh.svg`, this.busy ? t.dim : TOOL.refresh, "다시 읽기", false, (cx) => this.kick(cx)));
   }
@@ -271,7 +272,7 @@ export class PortsApp {
     for (const g of groups) {
       body.push(h_flex().flex_none().px(8).pt(many ? 8 : 4).pb(2).gap(6).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(12).font_semibold().text_color(t.muted).child(g.m.name ?? "이 Mac"))
-        .when(g.hidden > 0, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(`시스템 ${g.hidden}개 숨김`))));
+        .when(g.hidden > 0, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(`숨김 ${g.hidden}개`))));
       if (g.d?.error) body.push(div().px(8).py(2).text_size(11).text_color(t.dim).child(g.d.error));
       else if (!g.shown.length) body.push(div().px(8).py(2).text_size(11).text_color(t.dim).child(this.loaded ? "열린 포트 없음" : "읽는 중"));
       for (const r of g.shown) body.push(this.row(r, t));

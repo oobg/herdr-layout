@@ -162,6 +162,20 @@ export function isSystem(port, proc, pid) {
   return proc.user === "root" || SYS_PATH.test(proc.command);
 }
 
+// 데스크톱 앱: 실행 파일이 .app 묶음 안에 있다(/Applications/Orca.app/Contents/MacOS/Orca, ~/Applications/…, /Library/…/x.app/Contents/…).
+//   경로에 빈칸이 있을 수 있어(Visual Studio Code.app) 첫 낱말이 아니라 ".app/Contents/" 앞까지를 실행 파일 경로로 본다.
+//   /Applications/·~/Applications/ 아래 앱도 이 규칙에 든다. 그 앞에 인자 경계(" -", " /")가 있으면 인자 속 경로라 실행 파일이 아니다(node /x/y.app/Contents/z.js).
+export function isDesktop(command) {
+  const c = String(command ?? "").trim();
+  const cut = c.indexOf(".app/Contents/");
+  if (cut < 0) return false;
+  const exe = c.slice(0, cut);
+  return /^[/~]/.test(exe) && !/ -| \//.test(exe);
+}
+
+// 기본으로 숨기는 포트: 시스템 서비스나 데스크톱 앱. 단 Herdr 터미널에서 띄운 것(term을 찾은 것)은 무엇이든 보인다.
+export const isHidden = (p) => !p.term && (p.system || p.desktop);
+
 // 구역 → 목록. (포트, pid)마다 한 줄로 주소를 모으고, 한 포트를 여러 pid가 나눠 쓰면(fork한 워커) 조상인 쪽 하나만 남긴다.
 //   roots: Map(셸 pid → 터미널 주소). 결과는 포트순.
 export function listen(sec, roots = new Map()) {
@@ -190,8 +204,11 @@ export function listen(sec, roots = new Map()) {
     for (const e of keep) {
       const proc = e.pid != null ? procs.get(e.pid) : null;
       const name = e.name || baseName(proc?.command) || "알 수 없음";
+      const system = isSystem(e.port, proc, e.pid);
+      // 이름을 바꾼 앱 프로세스("Raycast Backend")는 경로가 없어 바로 위 부모가 앱 묶음인지도 본다
+      const desktop = !system && Boolean(proc) && (isDesktop(proc.command) || isDesktop(procs.get(proc.ppid)?.command));
       out.push({ ...e, name, command: proc?.command ?? "", user: proc?.user ?? null,
-        system: isSystem(e.port, proc, e.pid), term: findRoot(e.pid, procs, roots), all: bindAll(e.addrs) });
+        system, desktop, term: findRoot(e.pid, procs, roots), all: bindAll(e.addrs) });
     }
   }
   return out.sort((a, b) => a.port - b.port || (a.pid ?? 0) - (b.pid ?? 0));
