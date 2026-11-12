@@ -2,7 +2,7 @@
 // office/mods/office/activity.js의 파서를 옮겨 와 고쳤다(herdr를 부르지 않아 node로도 시험할 수 있다).
 //   - 서브에이전트 기록(subagents/agent-<id>.jsonl)은 모든 줄이 isSidechain이라 sidechain 옵션으로 읽는다
 //   - 파일 전체를 읽었으면(cut=false) 첫 줄을 버리지 않는다: 서브에이전트에게 준 요청이 첫 줄에 있다
-//   - 이번 턴의 요청(ask)과 마지막 말(say), 고친 파일, 서브에이전트의 agentId를 함께 낸다
+//   - 이번 턴의 요청(ask)과 마지막 말(say, 그 시각 sayAt), 고친 파일, 서브에이전트의 agentId를 함께 낸다
 
 // 도구 → [종류, 대상]. 종류는 흐름 줄에서 같은 것끼리 묶는 데 쓴다.
 export function describe(name, input) {
@@ -30,7 +30,7 @@ const clip = (s, n) => { const x = s.replace(/\s+\n/g, "\n").trim(); return x.le
 export function parse(text, { cut = true, sidechain = false } = {}) {
   const lines = text.split("\n");
   if (cut) lines.shift();
-  let calls = [], ask = "", lastPrompt = "", askAt = 0, say = "", lastAt = 0, model = "";
+  let calls = [], ask = "", lastPrompt = "", askAt = 0, say = "", sayAt = 0, lastAt = 0, model = "";
   const agentCalls = [];   // 서브에이전트 호출은 턴이 바뀌어도 남긴다(백그라운드는 다음 턴까지 돈다)
   const done = new Set(), launched = new Set(), finished = {}, ended = {}, names = {}, agentIds = {};
   for (const line of lines) {
@@ -68,14 +68,14 @@ export function parse(text, { cut = true, sidechain = false } = {}) {
       const t = queued || textOf(content).trim();
       // 사람이 보낸 메시지면 새 턴(자동 알림·시스템 메시지는 "<"로 시작해 제외): 그 앞 단계는 버린다
       if (!d.isMeta && t && !t.startsWith("<") && !t.startsWith("[Request interrupted")) {
-        calls = []; ask = clip(t, 600); askAt = at; say = "";
+        calls = []; ask = clip(t, 600); askAt = at; say = ""; sayAt = 0;
       }
       continue;
     }
     if (d.type === "assistant" && d.message?.model && d.message.model !== "<synthetic>") model = d.message.model;
     if (!Array.isArray(content)) continue;
     for (const it of content) {
-      if (it.type === "text" && d.type === "assistant" && it.text?.trim()) say = clip(it.text, 400);
+      if (it.type === "text" && d.type === "assistant" && it.text?.trim()) { say = clip(it.text, 400); sayAt = at; }
       else if (it.type === "tool_use") {
         if (names[it.id]) continue; // 같은 호출이 두 번 적힌 줄
         const c = { id: it.id, name: it.name, input: it.input ?? {}, at };
@@ -122,7 +122,7 @@ export function parse(text, { cut = true, sidechain = false } = {}) {
   }
   const hidden = Math.max(0, flow.length - 24);
   flow.splice(0, hidden);
-  return { ask: ask || clip(lastPrompt, 600), askAt, say, model, lastAt, tools: steps.length, running, agents, ended,
+  return { ask: ask || clip(lastPrompt, 600), askAt, say, sayAt, model, lastAt, tools: steps.length, running, agents, ended,
     edited: edited.slice(0, 15), moreEdited: Math.max(0, edited.length - 15),
     flow, hidden };
 }

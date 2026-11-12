@@ -25,10 +25,11 @@ export async function termInfo(address) {
 }
 
 // Claude 세션 기록 폴더와 세션 id. pid로 못 찾으면 터미널 폴더로 짐작한다(세션 id 없음).
+// 셸을 못 돌렸으면(원격 머신 끊김 등) 던진다: 짐작으로 넘어가지 않고 부른 쪽이 읽기 실패로 센다.
 export async function sessionOf(pid, cwd, on) {
   let session = null, dir = cwd;
   if (pid) {
-    const r = await exec("sh", ["-c", 'cat "$HOME/.claude/sessions/$1.json" 2>/dev/null', "sessions", String(pid)], { on }).catch(() => null);
+    const r = await exec("sh", ["-c", 'cat "$HOME/.claude/sessions/$1.json" 2>/dev/null', "sessions", String(pid)], { on });
     try { const j = JSON.parse(r?.stdout || "null"); if (j?.sessionId) { session = j.sessionId; dir = j.cwd || cwd; } } catch { /* 짐작으로 */ }
   }
   if (!dir) return null;
@@ -42,6 +43,7 @@ export async function sessionOf(pid, cwd, on) {
 //   처음이거나, 다른 파일이거나, 파일이 줄었거나, 새로 붙은 양이 TAIL보다 많으면 끝 TAIL만 읽는다.
 //   tail -c 대신 dd(64KB 칸)로 읽고 앞뒤를 잘라 낸다: macOS tail -c는 바이트마다 읽어 느리다(office 모드와 같은 이유).
 // guessed: 세션 기록을 못 찾아 그 폴더의 가장 최근 기록을 읽었다(같은 폴더의 다른 에이전트 것일 수 있다).
+// 기록이 없으면 null, 셸이 실패했으면 던진다(부른 쪽이 지난 값을 두고 실패로 센다).
 export async function readLog(sess, sub, prev, on) {
   const script = [
     'p=$(eval echo "$1"); s=$2; sub=$3; known=$4; n=$5; from=$6; kf=$7; f=""; g=0',
@@ -62,7 +64,8 @@ export async function readLog(sess, sub, prev, on) {
   ].join("\n");
   const r = await exec("sh", ["-c", script, "log", sess.project, sess.session ?? "", sub ?? "", String(prev?.size ?? ""), String(TAIL),
     String(prev?.buf?.pos ?? ""), prev?.file ?? ""], { on });
-  if (r.code !== 0) return null;
+  if (r.code === 3) return null;
+  if (r.code !== 0) throw new Error(`log ${r.code}`);
   const out = r.stdout;
   let i = 0;
   const line = () => { const j = out.indexOf("\n", i); const x = out.slice(i, j < 0 ? out.length : j); i = j < 0 ? out.length : j + 1; return x; };

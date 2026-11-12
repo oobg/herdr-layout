@@ -143,6 +143,7 @@ export class AgentApp {
     this.rows = [];       // 지난 렌더의 목록(타이머가 쓴다)
     this.open = {};       // 펼친 것: say(마지막 말) · flow(도구 흐름) · ask(요청). 다른 줄을 고르면 접는다.
     this.loaded = false;  // 첫 갱신을 마쳤는지(빈 상태의 "읽는 중"과 "없음"을 가른다)
+    this.fail = null;     // 고른 줄을 연달아 못 읽은 동안 { key, since }: 화면의 값이 그때에 멈춰 있다
     this.timer = null; this.busy = false;
     this.rendered = 0; this.notified = 0; this.minute = 0;
   }
@@ -199,7 +200,7 @@ export class AgentApp {
   }
 
   select(key, cx) {
-    if (key !== this.sel) this.open = {};
+    if (key !== this.sel) { this.open = {}; this.fail = null; }
     this.sel = key;
     try { localStorage.setItem("agent.sel", JSON.stringify(key)); } catch { /* 이번 실행 동안만 */ }
     this.kick(cx);
@@ -269,7 +270,7 @@ export class AgentApp {
       this.busy = true;
       cx.spawn(async (cx) => {
         let changed = false;
-        try { changed = await this.refresh(); } catch { /* 다음 차례에 다시 */ }
+        try { changed = await this.refresh(); } catch { changed = this.failed() || changed; /* 다음 차례에 다시 */ }
         this.busy = false;
         if (!this.loaded) { this.loaded = true; changed = true; }
         const again = this.again; this.again = false;
@@ -279,8 +280,16 @@ export class AgentApp {
     });
   }
 
+  // 고른 줄을 못 읽었다: 처음 못 읽은 시각을 둔다(이어서 실패하는 동안 그대로). 새로 생겼으면 true.
+  failed() {
+    const k = this.sel;
+    if (this.fail?.key === k) return false;
+    this.fail = { key: k, since: Date.now() };
+    return true;
+  }
+
   async refresh() {
-    let changed = false;
+    let changed = false, ok = true;
     const now = Date.now(), sel = this.current();
     // hc get: 고른 줄의 터미널은 매번, 다른 Claude 에이전트는 15초마다(안에서 도는 서브에이전트 목록·상태 시각)
     const want = this.rows.filter((r) => r.kind !== "rec" && isClaude(r.program, r.app)
@@ -288,26 +297,33 @@ export class AgentApp {
     for (const r of want) {
       const i = await termInfo(r.address).catch(() => null);
       const prev = this.info[r.address];
-      if (!i) { this.info[r.address] = { ...(prev ?? {}), at: now }; continue; } // 못 읽으면 지난 값을 둔다
+      if (!i) { this.info[r.address] = { ...(prev ?? {}), at: now }; if (r.address === sel?.address) ok = false; continue; } // 못 읽으면 지난 값을 둔다
       this.info[r.address] = { ...i, at: now };
       if (JSON.stringify(i?.records ?? {}) !== JSON.stringify(prev?.records ?? {}) || i?.statusAt !== prev?.statusAt) changed = true;
     }
     // 고른 줄의 기록
     if (sel && isClaude(sel.program, sel.app)) {
       const i = this.info[sel.address] ?? {}, on = machineOf(sel.address);
-      const sess = await sessionOf(i.pid, i.cwd ?? sel.cwd ?? sel.top?.cwd, on).catch(() => null);
       const prev = this.act[sel.key];
-      const v = sess ? await readLog(sess, sel.sub ?? null, prev, on).catch(() => null) : null;
-      if (!v) { if (!prev?.empty) { this.act[sel.key] = { empty: true }; changed = true; } }
+      // 셸을 못 돌렸으면(던짐) 지난 값을 두고 실패로 센다. 기록이 없으면(null) "찾지 못했습니다".
+      let sess = null, v = null, threw = false;
+      try {
+        sess = await sessionOf(i.pid, i.cwd ?? sel.cwd ?? sel.top?.cwd, on);
+        v = sess ? await readLog(sess, sel.sub ?? null, prev, on) : null;
+      } catch { threw = true; ok = false; }
+      if (threw) { /* 지난 값을 둔다 */ }
+      else if (!v) { if (!prev?.empty) { this.act[sel.key] = { empty: true }; changed = true; } }
       else if (!v.same) { this.act[sel.key] = v; changed = true; }
       // 고른 줄이 안의 서브에이전트면 부모 기록도 읽는다: 그 줄의 상태(끝남·실패)는 부모 기록의 완료 알림에서 온다.
       //   크기가 그대로면 readLog가 건너뛰므로 읽는 양은 늘지 않는다.
-      if (sess && sel.kind === "rec") {
+      if (sess && !threw && sel.kind === "rec") {
         const pv = this.act[sel.address];
         const w = await readLog(sess, null, pv, on).catch(() => null);
         if (w && !w.same) { this.act[sel.address] = w; changed = true; }
       }
     }
+    if (!ok) changed = this.failed() || changed;
+    else if (this.fail) { this.fail = null; changed = true; }
     return changed;
   }
 
@@ -392,6 +408,9 @@ export class AgentApp {
       .text_color(t.foreground).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(fn).child(text);
 
     const items = [this.now(r, v?.flow?.length ? v : null, t)];
+    // 연달아 못 읽은 지 1분이 넘었다: 아래 값이 그때에 멈춰 있다고 밝힌다
+    const stale = this.fail?.key === r.key ? mins(Date.now() - this.fail.since) : 0;
+    if (stale >= 1) items.push(div().pt(6).text_size(12).text_color(t.muted).child(`${stale}분째 새로 읽지 못했습니다`));
     if (!claude) items.push(this.note("Claude Code 에이전트만 하는 일을 읽을 수 있습니다", t));
     else if (!v) items.push(this.note("기록을 읽는 중", t));
     else if (v.empty) items.push(this.note("대화 기록을 찾지 못했습니다", t));
@@ -448,7 +467,10 @@ export class AgentApp {
       const lines = v.say.split("\n");
       const long = v.say.length > SAY_N || lines.length > SAY_LINES;
       const shown = long && !this.open.say ? `${lines.slice(0, SAY_LINES).join("\n").slice(0, SAY_N).trimEnd()}…` : v.say;
-      out.push(div().pt(10).text_size(12).text_color(t.muted).child(shown));
+      // 머리: 언제 한 말인지(흐린 상대 시각). 갱신이 멈춰도 오래된 말을 지금 말로 읽지 않게.
+      const at = ago(v.sayAt || v.lastAt);
+      out.push(div().pt(10).text_size(11).text_color(t.dim).child(at ? `마지막 말 · ${at}` : "마지막 말"));
+      out.push(div().pt(2).text_size(12).text_color(t.muted).child(shown));
       if (long) out.push(this.toggle("agent-say-more", "say", this.open.say ? "접기" : "더 보기", cx, t));
     }
 
