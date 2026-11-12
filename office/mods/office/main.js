@@ -354,7 +354,7 @@ class Floor {
       .child(div().id("ov-add-agent").w(20).h(18).flex().items_center().justify_center().rounded(4).text_size(14).text_color(t.muted)
         .cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
         .on_click((_e, cx) => { cx.stop_propagation(); openAddMenu(s, this.where(s, panes())); })
-        .tooltip("에이전트 띄우기")
+        .tooltip("에이전트 띄우기(권한 확인 없이)")
         .child("+"));
     // 에이전트 줄: 1행 상태·이름·경과, 2행 하는 일(창 제목). 상태 단어에만 색.
     const agentRow = (a, sub) => {
@@ -978,6 +978,8 @@ function yolo(a) {
   const argv = [...(a.run ?? [])], flag = YOLO[providerOf(a)];
   return flag && argv.length && !argv.includes(flag) ? [...argv, flag] : argv;
 }
+// 이 항목을 권한 확인 없이 띄우는지(플래그를 아는 구독 종류만). 팝업이 낱말로 밝힌다.
+const skipsAsk = (a) => Boolean(YOLO[providerOf(a)] && a.run?.length);
 
 // knownAgents 항목 → 구독 종류. office-usage 모드가 사용량을 읽는 네 곳과 같다.
 const PROVIDER = [[/claude/i, "claude"], [/codex|openai/i, "codex"], [/grok/i, "grok"], [/antigravity|\bagy\b/i, "antigravity"]];
@@ -1038,12 +1040,17 @@ class AddAgent {
       .text_color(a.ok ? t.foreground : t.dim).hover((st) => st.bg(t.hover))
       .on_click(() => this.start(a))
       .child(div().w(16).flex_none().flex().justify_center().child(programIcon(a, 14, t)))
-      .child(div().flex_1().min_w(0).truncate().child(a.name));
+      .child(div().flex_1().min_w(0).truncate().child(a.name))
+      // 머리줄의 "권한 확인 없이"와 다른 것(플래그를 모르는 에이전트)만 줄에 밝힌다
+      .when(!skipsAsk(a), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child("권한 확인 있음")));
     const ok = (this.list ?? []).filter((a) => a.ok), rest = (this.list ?? []).filter((a) => !a.ok);
     const note = (text) => div().px(8).py(6).text_size(12).text_color(t.muted).child(text);
     return v_flex().id("office-add-agent").track_focus(this.h).size_full().p(5).gap(1).bg(t.popover).text_size(12.5).overflow_y_scrollbar()
       .on_key_down((e, cx) => { if (e.key === "escape") { closeOverlay(p.overlay); cx.stop_propagation(); } })
-      .child(div().px(8).pt(4).pb(4).text_size(11).text_color(t.dim).child("에이전트 띄우기"))
+      // 제목 옆 흐린 낱말: 이 팝업은 권한 확인 없이(bypass) 띄운다. 플래그를 모르는 에이전트는 줄에 "권한 확인 있음".
+      .child(h_flex().px(8).pt(4).pb(4).gap(6).items_baseline()
+        .child(div().text_size(12).text_color(t.muted).child("에이전트 띄우기"))
+        .child(div().text_size(11).text_color(t.dim).child("권한 확인 없이")))
       .when(this.list == null && !this.failed, (el) => el.child(note("확인하는 중")))
       .when(this.failed, (el) => el.child(note("설치된 에이전트를 확인하지 못했습니다")))
       .when(this.list != null && !this.list.length, (el) => el.child(note("설치된 에이전트가 없습니다")))
