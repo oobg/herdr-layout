@@ -164,6 +164,7 @@ export class AgentApp {
         walk(k.address, depth + 1, top, row);
       }
       // Claude Code 안의 서브에이전트(records). 부모 기록에서 끝난 걸 알면 그쪽을 믿는다.
+      //   부모 기록은 부모 줄이나 그 서브에이전트 줄을 골랐을 때 다시 읽는다(refresh).
       const recs = tmap.get(addr)?.records ?? this.info[addr]?.records ?? {};
       const known = this.act[addr]?.agents ?? [], ended = this.act[addr]?.ended ?? {};
       for (const [id, r] of Object.entries(recs).slice(0, 12)) {
@@ -299,6 +300,13 @@ export class AgentApp {
       const v = sess ? await readLog(sess, sel.sub ?? null, prev?.size, on).catch(() => null) : null;
       if (!v) { if (!prev?.empty) { this.act[sel.key] = { empty: true }; changed = true; } }
       else if (!v.same) { this.act[sel.key] = v; changed = true; }
+      // 고른 줄이 안의 서브에이전트면 부모 기록도 읽는다: 그 줄의 상태(끝남·실패)는 부모 기록의 완료 알림에서 온다.
+      //   크기가 그대로면 readLog가 건너뛰므로 읽는 양은 늘지 않는다.
+      if (sess && sel.kind === "rec") {
+        const pv = this.act[sel.address];
+        const w = await readLog(sess, null, pv?.size, on).catch(() => null);
+        if (w && !w.same) { this.act[sel.address] = w; changed = true; }
+      }
     }
     return changed;
   }
