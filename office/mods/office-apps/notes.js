@@ -13,13 +13,14 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
 import { spaces, panes, focused, exec, home, appHome, readTextFile, writeTextFile, notify } from "herdr";
 import * as fs from "fs/promises";
-import { candidates, chosen, recipients, sendToAgent } from "./send.js";
+import { candidates, chosen, recipients, sendToAgent, nextRecipient } from "./send.js";
 import {
   DIR, noteId, notePath, rootName, parseFile, serialize, parseTodos, split, join, toggleLine, todoLine,
   payload, ago, order,
 } from "./notes/model.js";
 
 const SAVE_MS = 1000;
+const CLEAR = "#00000000";   // 키보드 커서가 없을 때 체크 줄·글자 버튼 테두리(자리만 잡아 커서가 와도 움직이지 않게)
 
 function load(k, d) { try { return JSON.parse(localStorage.getItem(k) ?? "null") ?? d; } catch { return d; } }
 function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 이번 실행 동안만 */ } }
@@ -69,6 +70,8 @@ export class NotesApp {
     this.memo = TextareaState.new({ placeholder: "메모 · 다른 작업 공간에 다녀와서 이어 볼 것, 에이전트에게 넘길 것", rows: 8 });
     this.memo.on("change", (_e, cx) => this.edited(cx));
     this.memo.on("blur", (_e, cx) => this.flush(cx));
+    // ⌘Enter(메모 안): 걸어 둔 저장을 바로 한다. 입력의 submit(secondary)로만 받는다
+    this.memo.on("submit", (e, cx) => { if (e?.secondary) { this.flush(cx); cx.notify(); } });
     this.add = InputState.new({ placeholder: "할 일 추가 · Enter" });
     this.add.on("submit", (_e, cx) => {
       const line = todoLine(this.add.value());
@@ -282,7 +285,19 @@ export class NotesApp {
     return div().text_size(12).text_color(t.dim).truncate().child(n ? `작업 공간 ${n}곳` : "");
   }
 
+  // 런처 키 계약: 지난 그리기에서 모은 멈출 곳(전체·남은 할 일 · 보내기 · 복사 · 보낼 곳 · 끝낸 일 지우기 · 할 일 체크 · 추가 입력 · 메모).
+  //   ⌘Enter(상세 어디서나) = 메모 바로 저장.
+  focusables() { return this.stops ?? []; }
+  submitDetail(cx) { this.flush(cx); }
+
+  // 그리면서 멈출 곳을 모은다. 키보드 커서가 있으면 true.
+  stop(id, kind, run) {
+    (this.stops || (this.stops = [])).push(kind === "input" ? { id, kind, focus: run } : { id, kind, run });
+    return Boolean(this.kb?.on?.(id));
+  }
+
   detail(cx, t) {
+    this.stops = [];
     this.prepare(cx);
     const c = this.cur;
     if (!c) {
@@ -291,11 +306,17 @@ export class NotesApp {
         .child(this.clash === this.sel ? "이 작업 공간의 메모 파일 이름이 다른 작업 공간과 겹쳐 열지 않았습니다" : "메모를 읽는 중");
     }
     const space = location().space;
-    const btn = (id, text, fn, off) => div().id(id).flex_none().px(10).py(4).rounded(6).border_1().border_color(t.border).text_size(12)
-      .text_color(off ? t.dim : t.foreground).when(!off, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(fn)).child(text);
-    const seg = (k, text) => div().id(`nt-which-${k}`).px(8).py(3).rounded(5).text_size(12).cursor_pointer()
-      .text_color(this.which === k ? t.foreground : t.muted).when(this.which === k, (el) => el.bg(t.selected))
-      .on_click((_e, cx) => { this.which = k; save("notes.which", k); cx.notify(); }).child(text);
+    const btn = (id, text, fn, off) => {
+      const f = off ? false : this.stop(id, "button", () => fn());
+      return div().id(id).flex_none().px(10).py(4).rounded(6).border_1().border_color(f ? t.accent : t.border).text_size(12)
+        .text_color(off ? t.dim : t.foreground).when(!off, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(fn)).child(text);
+    };
+    const seg = (k, text) => {
+      const pickIt = (cx) => { this.which = k; save("notes.which", k); cx.notify(); }, f = this.stop(`nt-which-${k}`, "button", pickIt);
+      return div().id(`nt-which-${k}`).px(8).py(3).rounded(5).text_size(12).cursor_pointer().border_1().border_color(f ? t.accent : CLEAR)
+        .text_color(this.which === k ? t.foreground : t.muted).when(this.which === k, (el) => el.bg(t.selected))
+        .on_click((_e, cx) => pickIt(cx)).child(text);
+    };
     const text = payload(this.body(), c.name, this.which);
     const where = [c.machine, tilde(c.root)].filter(Boolean).join(" · ");
 
@@ -308,15 +329,26 @@ export class NotesApp {
 
     return v_flex().size_full().min_h(0)
       .child(head)
-      .when(Boolean(space), (el) => el.child(div().flex_none().px(14).py(6).border_b_1().border_color(t.border)
-        .child(recipients("nt", this.agentsHere(space), this.target(space)?.address, (address) => { this.to = address; }, t))))
+      .when(Boolean(space), (el) => {
+        const list = this.agentsHere(space), sel = this.target(space)?.address, nx = nextRecipient(list, sel);
+        const f = nx ? this.stop("nt-to", "button", () => { this.to = nx.address; }) : undefined;
+        return el.child(div().flex_none().px(14).py(6).border_b_1().border_color(t.border)
+          .child(recipients("nt", list, sel, (address) => { this.to = address; }, t, undefined, f)));
+      })
       .child(v_flex().flex_1().min_h(0).px(20).py(14).gap(6)
         .child(this.todoView(c, cx, t))
         .child(h_flex().pt(10).items_center()
           .child(div().flex_1().text_size(12).font_semibold().text_color(t.muted).child("메모"))
           .child(div().flex_none().text_size(11).text_color(this.state === "error" ? t.ansi1 : t.dim).child(this.saveWord())))
-        .child(Textarea.new(this.memo).flex_1().min_h(120).w_full().p(10).rounded(7).border_1().border_color(t.border)
-          .bg(t.background).text_color(t.foreground).text_size(13)));
+        .child(this.memoView(t)));
+  }
+
+  // 메모 입력칸: 멈출 곳으로 올리고, 감싼 곳이 키를 받아 런처에 알린다(Textarea에는 on_key_down이 닿지 않는다)
+  memoView(t) {
+    this.stop("nt-memo", "input", () => this.memo.focus());
+    return v_flex().flex_1().min_h(120).w_full().on_key_down(() => { if (this.kb) this.kb.from = "nt-memo"; })
+      .child(Textarea.new(this.memo).flex_1().min_h(120).w_full().p(10).rounded(7).border_1().border_color(t.border)
+        .bg(t.background).text_color(t.foreground).text_size(13));
   }
 
   saveWord() {
@@ -335,18 +367,35 @@ export class NotesApp {
     return v_flex().flex_none().gap(2)
       .child(h_flex().items_center().pb(2)
         .child(div().flex_1().text_size(12).font_semibold().text_color(t.muted).child(items.length ? `할 일 ${open} 남음` : "할 일"))
-        .when(done > 0, (el) => el.child(div().id("nt-clear").flex_none().text_size(11).text_color(t.dim).cursor_pointer()
-          .hover((s) => s.text_color(t.foreground))
-          .on_click((_e, cx) => { c.todos = c.todos.filter((l) => !parseTodos(l)[0]?.done); this.saveSoon(cx, 0); cx.notify(); })
-          .child(`끝낸 일 ${done}개 지우기`))))
+        .when(done > 0, (el) => {
+          const clear = (cx) => { c.todos = c.todos.filter((l) => !parseTodos(l)[0]?.done); this.saveSoon(cx, 0); cx.notify(); };
+          const f = this.stop("nt-clear", "button", clear);
+          return el.child(div().id("nt-clear").flex_none().px(2).rounded(4).border_1().border_color(f ? t.accent : CLEAR)
+            .text_size(11).text_color(t.dim).cursor_pointer()
+            .hover((s) => s.text_color(t.foreground))
+            .on_click((_e, cx) => clear(cx))
+            .child(`끝낸 일 ${done}개 지우기`));
+        }))
       .child(v_flex().id("nt-todos").max_h(200).overflow_y_scrollbar()
-        .children(items.map((x) => h_flex().id(`nt-td-${x.i}`).min_h(24).px(4).gap(8).items_center().rounded(4).cursor_pointer()
-          .hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => { c.todos[x.i] = toggleLine(x.line); this.saveSoon(cx, 0); cx.notify(); })
-          .child(box(x.done))
-          .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(x.done ? t.muted : t.foreground)
-            .when(x.done, (el) => el.line_through()).child(x.text || " ")))))
-      .child(Input.new(this.add).h(30).mt(4).px(8).rounded(6).border_1().border_color(t.border).bg(t.background)
+        .children(items.map((x) => {
+          const flip = (cx) => { c.todos[x.i] = toggleLine(x.line); this.saveSoon(cx, 0); cx.notify(); };
+          const f = this.stop(`nt-td-${x.i}`, "check", flip);
+          return h_flex().id(`nt-td-${x.i}`).min_h(24).px(4).gap(8).items_center().rounded(4).cursor_pointer()
+            .border_1().border_color(f ? t.accent : CLEAR)
+            .hover((s) => s.bg(t.hover))
+            .on_click((_e, cx) => flip(cx))
+            .child(box(x.done))
+            .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(x.done ? t.muted : t.foreground)
+              .when(x.done, (el) => el.line_through()).child(x.text || " "));
+        })))
+      .child(this.addView(t));
+  }
+
+  // 할 일 추가 입력칸: 멈출 곳으로 올리고, 감싼 곳이 키를 받아 런처에 알린다
+  addView(t) {
+    this.stop("nt-add", "input", () => this.add.focus());
+    return div().w_full().mt(4).on_key_down(() => { if (this.kb) this.kb.from = "nt-add"; })
+      .child(Input.new(this.add).h(30).px(8).rounded(6).border_1().border_color(t.border).bg(t.background)
         .text_size(12.5).text_color(t.foreground));
   }
 
