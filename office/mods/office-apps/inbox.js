@@ -113,6 +113,16 @@ export class InboxApp {
     if (r) goTo(this.target(r));
   }
 
+  // 런처 키 계약: 상세 머리줄 버튼 둘
+  focusables() {
+    const r = this.current();
+    if (!r) return [];
+    return [
+      { id: "inbox-go", kind: "button", run: () => goTo(this.target(r)) },
+      { id: "inbox-agent", kind: "button", run: () => run(`office-apps.agent:${r.address}`) },
+    ];
+  }
+
   // 판정 범위를 밝힌다: 상태를 보고하지 않는 에이전트가 있으면 "없다"고 말하지 않는다.
   emptyState() {
     const { blocked, working, unknown } = this.groups;
@@ -243,7 +253,7 @@ export class InboxApp {
     this.prepare(cx);
     const r = this.current();
     if (!r) return null;
-    const btn = (id, text, fn) => div().id(id).flex_none().px(10).py(4).rounded(6).border_1().border_color(t.border).text_size(12)
+    const btn = (id, text, fn) => div().id(id).flex_none().px(10).py(4).rounded(6).border_1().border_color(this.kb?.on?.(id) ? t.accent : t.border).text_size(12)
       .text_color(t.foreground).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(fn).child(text);
     const title = r.program?.name && r.program.name !== r.title ? `${r.program.name} · ${r.title}` : r.title;
 
