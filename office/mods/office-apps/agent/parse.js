@@ -22,6 +22,8 @@ export function describe(name, input) {
   }
 }
 
+const FLOW_MAX = 300;   // 흐름 묶음을 몇 개까지 들고 있을지(시간 띠·단계 목록이 턴 전체를 보도록 넉넉히)
+
 const textOf = (content) => (typeof content === "string" ? content
   : Array.isArray(content) ? content.filter((it) => it.type === "text").map((it) => it.text).join("\n") : "");
 const clip = (s, n) => { const x = s.replace(/\s+\n/g, "\n").trim(); return x.length > n ? `${x.slice(0, n).trimEnd()}…` : x; };
@@ -32,7 +34,7 @@ export function parse(text, { cut = true, sidechain = false } = {}) {
   if (cut) lines.shift();
   let calls = [], ask = "", lastPrompt = "", askAt = 0, say = "", sayAt = 0, lastAt = 0, model = "";
   const agentCalls = [];   // 서브에이전트 호출은 턴이 바뀌어도 남긴다(백그라운드는 다음 턴까지 돈다)
-  const done = new Set(), launched = new Set(), finished = {}, ended = {}, names = {}, agentIds = {};
+  const done = new Set(), doneAt = {}, launched = new Set(), finished = {}, ended = {}, names = {}, agentIds = {};
   for (const line of lines) {
     if (!line) continue;
     let d;
@@ -92,6 +94,7 @@ export function parse(text, { cut = true, sidechain = false } = {}) {
           if (/Async agent launched/.test(body)) { launched.add(it.tool_use_id); continue; }
         }
         done.add(it.tool_use_id);
+        if (at) doneAt[it.tool_use_id] = at;
       }
     }
   }
@@ -113,14 +116,17 @@ export function parse(text, { cut = true, sidechain = false } = {}) {
     if (!x.target) continue;
     if ((x.kind === "수정" || x.kind === "작성") && !edited.some((f) => f.path === x.target)) edited.push({ kind: x.kind, path: x.target });
   }
-  // 흐름: 이번 턴의 단계를 연속된 같은 종류끼리 묶는다(길면 마지막 24묶음)
+  // 흐름: 이번 턴의 단계를 연속된 같은 종류끼리 묶는다(길면 마지막 FLOW_MAX묶음).
+  //   from: 묶음의 첫 호출 시각, at: 마지막 호출 시각, end: 결과가 온 가장 늦은 시각(없으면 at), targets: 대상들(겹침 없이)
   const flow = [];
   for (const x of steps) {
-    const last = flow[flow.length - 1];
-    if (last && last.kind === x.kind) { last.n++; last.running ||= x.running; last.target = x.target; last.at = x.at; }
-    else flow.push({ kind: x.kind, n: 1, running: x.running, target: x.target, at: x.at });
+    const end = doneAt[x.id] ?? x.at, last = flow[flow.length - 1];
+    if (last && last.kind === x.kind) {
+      last.n++; last.running ||= x.running; last.target = x.target; last.at = x.at; last.end = Math.max(last.end, end);
+      if (x.target && !last.targets.includes(x.target)) last.targets.push(x.target);
+    } else flow.push({ kind: x.kind, n: 1, running: x.running, target: x.target, targets: x.target ? [x.target] : [], from: x.at, at: x.at, end });
   }
-  const hidden = Math.max(0, flow.length - 24);
+  const hidden = Math.max(0, flow.length - FLOW_MAX);
   flow.splice(0, hidden);
   return { ask: ask || clip(lastPrompt, 600), askAt, say, sayAt, model, lastAt, tools: steps.length, running, agents, ended,
     edited: edited.slice(0, 15), moreEdited: Math.max(0, edited.length - 15),

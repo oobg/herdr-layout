@@ -17,6 +17,7 @@
 // 키·명령: office-apps.home(런처로), office-apps.open-<앱 id>(앱 열기), office-apps.show:<경로>(파일 열기),
 //   office-apps.manage(앱 관리 대화 상자), office-apps.disable-<앱 id>(앱 끄기),
 //   office-apps.commit:<해시|WORKTREE>(커밋 앱에서 그 커밋 열기), office-apps.range:<a>...<b>(커밋 앱에서 범위 비교),
+//   office-apps.agent:<터미널 주소>(에이전트 앱에서 그 에이전트 줄 고르기, 사무실 오른쪽 패널의 "자세히 →"가 보낸다),
 //   office-apps.files-toggle-hidden · files-toggle-ignored(파일 앱 ⋯ 메뉴가 보낸다: 숨김 파일 · gitignore 항목 보이기 전환)
 
 import { View, div, svg, image } from "gpui-kit";
@@ -113,6 +114,11 @@ class Launcher {
         else if (c === "manage") openManage();
         // 끌 수 없는 앱(앱 관리)은 setDisabled가 무시한다
         else if (c.startsWith("disable-")) setDisabled(c.slice(8), true);
+        // agent:<터미널 주소>  에이전트 앱을 열고 그 줄을 고른다. 꺼져 있으면 열지 않고 알린다.
+        else if (c.startsWith("agent:")) {
+          if (this.disabled().agent) notify({ title: "에이전트 앱이 꺼져 있습니다", body: "앱 관리에서 켜면 열 수 있습니다", level: "info" });
+          else { this.go("agent", cx); this.inst.agent?.reveal?.(c.slice(6), cx); }
+        }
         // show:<경로>  파일 앱에서 그 파일을 연다(프로젝트 기준 상대 경로)
         else if (c.startsWith("show:")) { this.go("files", cx); this.inst.files?.show(c.slice(5), cx); }
         cx.notify();
