@@ -10,6 +10,7 @@ import { readActivity, readSub } from "./activity.js";
 import { placeOf, summary, artifactTitle } from "./parse.js";
 import * as md from "./md.js";
 import { STATUS_WORD, UNKNOWN_WORD, FINISHED, holdDone } from "./status.js";
+import { CI_KEY, CI_EVERY, githubRepo, ciRun, ciWord, sameCi } from "./ci.js";
 import { v_flex, h_flex } from "gpui-base";
 import {
   props, spaces, agents, panes, terminals, theme, run, exec,
@@ -125,6 +126,7 @@ class Floor {
     //   부모가 쉬는 동안 서브에이전트만 도는 때에도 제때 읽게 오버뷰가 열려 있으면 다시 읽을 때가 된 순간 다시 그린다.
     cx.timer.every(2500, (cx) => {
       this.publishDone();
+      this.publishCi();
       if (shared(OPEN) && Date.now() >= (this.due ?? Infinity)) { this.due = Infinity; cx.notify(); }
     });
     cx.spawn(async (cx) => {
@@ -258,7 +260,8 @@ class Floor {
         const head = lines[0]?.startsWith("## ") ? lines.shift().slice(3) : "";
         (this.git ??= {})[k] = { at: Date.now(), ok: r.code === 0,
           ahead: Number(/ahead (\d+)/.exec(head)?.[1] ?? 0), behind: Number(/behind (\d+)/.exec(head)?.[1] ?? 0), gone: /\[gone\]/.test(head),
-          upstream: /\.\.\.(\S+)/.exec(head)?.[1] ?? null };
+          upstream: /\.\.\.(\S+)/.exec(head)?.[1] ?? null,
+          branch: /^(?:No commits yet on )?([^\s.]+(?:\.(?!\.)[^\s.]+)*)/.exec(head)?.[1] ?? null };
       } catch { (this.git ??= {})[k] = { at: Date.now(), ok: false }; }
       this.gitBusy.delete(k);
       cx.notify();
@@ -266,9 +269,49 @@ class Floor {
     return g;
   }
 
+  // CI: 지금 브랜치의 마지막 GitHub Actions 실행 하나(ci.js). 오버뷰가 그려질 때만, 2분마다.
+  //   origin이 GitHub가 아니거나 gh가 없거나 실패하면 조용히 없음. 실패도 시각을 남겨 2분 동안 다시 묻지 않는다.
+  //   렌더는 Herdr 상태가 바뀔 때만 오므로 다음에 읽을 때를 this.due에 걸어 둔다(생성자의 2.5초 타이머가 깨운다).
+  //   결과는 지금 오버뷰의 것(읽기 전이면 그대로 둔다)을 this.ciNext에 적어 두고, 2.5초 타이머가 바뀌었을 때만
+  //   공유 상태 office.ci로 내보낸다(렌더 밖). 다른 스페이스로 옮기면 그 스페이스의 값(없으면 null)으로 바뀐다.
+  ciFor(s, branch, cx) {
+    const cwd = this.where(s, panes());
+    if (!cwd || !branch) { this.ciNext = { space: s.id, run: null }; return null; }
+    const k = `${s.machine ?? ""}|${cwd}|${branch}`, c = this.ci?.[k];
+    if (c) this.ciNext = { space: s.id, run: c.run };
+    const fresh = c && Date.now() - c.at < CI_EVERY;
+    if (fresh) this.due = Math.min(this.due, c.at + CI_EVERY);
+    if (fresh || this.ciBusy?.has(k)) return c?.run ?? null;
+    (this.ciBusy ??= new Set()).add(k);
+    cx.spawn(async (cx) => {
+      let last = null;   // 마지막 실행(없거나 못 읽으면 null)
+      try {
+        const u = await exec("git", ["remote", "get-url", "origin"], { cwd, on: s.machine, timeout: 10000 });
+        const repo = u.code === 0 ? githubRepo(u.stdout) : null;
+        if (repo) {
+          const r = await exec("gh", ["run", "list", "--repo", repo, "--branch", branch, "--limit", "1",
+            "--json", "status,conclusion,workflowName,url,databaseId"], { cwd, on: s.machine, timeout: 30000 });
+          if (r.code === 0) last = ciRun(r.stdout, repo, branch);
+        }
+      } catch { last = null; }
+      (this.ci ??= {})[k] = { at: Date.now(), run: last };
+      this.ciBusy.delete(k);
+      cx.notify();   // 다시 그리면서 ciNext가 이 결과로 바뀐다
+    });
+    return c?.run ?? null;
+  }
+
+  // office.ci 내보내기: 오버뷰가 열려 있고 그 스페이스의 값이 공유 값과 다를 때만(확인 시각은 빼고 비교)
+  publishCi() {
+    const n = this.ciNext;
+    if (!n || shared(OPEN) !== n.space) return;
+    if (!sameCi(shared(CI_KEY), n.run)) setShared(CI_KEY, n.run);
+  }
+
   overview(s, groups, ags, terms, cx, t) {
     const mine = ags.filter((a) => a.space === s.id);
     const g = this.gitFor(s, cx) ?? { ahead: 0, behind: 0 };
+    const ci = ciWord(this.ciFor(s, s.branch ?? g.branch, cx));
     const repo = [...groups.values()].find((z) => z.spaces.some((x) => x.id === s.id))?.name ?? s.name;
     const blocked = mine.filter((a) => a.status === "blocked");
     const tabOf = (a) => s.tabs.find((x) => x.id === a.tab);
@@ -332,7 +375,11 @@ class Floor {
       .child(h_flex().pt(16).gap(8).items_baseline()
         .child(div().text_size(16).font_semibold().text_color(t.foreground).child(repo))
         .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.muted).child(`${s.branch ?? "브랜치 없음"}${s.machine ? ` · ${s.machine}` : ""}`))
-        .when(Boolean(sync), (el) => el.child(div().flex_none().text_size(13).text_color(t.foreground).child(sync))))
+        .when(Boolean(sync), (el) => el.child(div().flex_none().text_size(13).text_color(t.foreground).child(sync)))
+        // CI 낱말 하나(실패·진행 중일 때만). 누르면 배포 앱.
+        .when(Boolean(ci), (el) => el.child(div().id("ov-ci").flex_none().text_size(13).text_color(ci.fail ? t.ansi1 : t.muted)
+          .cursor_pointer().hover((st) => st.underline()).tooltip("배포 앱에서 보기")
+          .on_click((_e, cx) => { cx.stop_propagation(); run("office-apps.open-actions"); }).child(ci.word))))
       // 목록이 이미 보여 주는 것은 다시 글로 쓰지 않는다. 비어 있을 때만 한 줄.
       .when(!mine.length, (el) => el.child(addHead("에이전트 0")).child(div().text_size(13).text_color(t.muted).child("에이전트가 없습니다")))
       // 답을 기다리는 에이전트가 있으면 바로 열 수 있게

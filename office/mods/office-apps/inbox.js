@@ -7,6 +7,8 @@
 //   오른쪽: 상태 한 줄 → 마지막 말(마크다운 앞 6줄, 넘치면 "더 보기": agent/say.js) → 요청 한 줄. Claude Code면 고른 줄 하나만 대화 기록(jsonl)에서 읽는다
 //         (agent/activity.js·agent/parse.js. 크기가 그대로면 다시 읽지 않는다).
 //         동작: 터미널로 가기(Enter·더블클릭과 같음) · 에이전트 앱에서 자세히(office-apps.agent:<주소>).
+//   CI: 사무실 오버뷰가 읽은 지금 브랜치의 마지막 CI(공유 상태 office.ci, office/ci.js)가 실패면 목록 맨 위에 "CI 실패" 줄 하나.
+//         누르면 배포 앱(office-apps.open-actions). 고르는 줄(this.rows)에는 넣지 않는다. 사무실 오버뷰가 열려 있을 때만 새로 읽힌다.
 // 목록 만들기는 inbox/model.js(herdr를 import하지 않아 node로 시험한다).
 // 갱신: 이 앱이 그려지는 동안만 타이머가 돈다. 고른 줄이 작업 중이면 4초, 아니면 1분(경과 글자만).
 //   알렸는데 그려지지 않았으면(다른 앱으로 갔거나 칸이 숨음) 멈추고, 다시 그려질 때 이어 간다(에이전트 앱과 같은 방식).
@@ -20,6 +22,7 @@ import { statusWord, FINISHED } from "./status.js";
 
 const APPS = "mods/office-apps";
 const FAST = 4000, REST = 60000, INFO_TTL = 15000;
+const CI_KEY = "office.ci";        // office 모드(office/ci.js)가 내보낸다: { repo, branch, failed, workflow, url, id, at }
 const OPEN_KEY = "inbox.open2";   // 묶음 펼침(상태 모름 기본 펼침으로 바뀌어 예전 "inbox.open"은 읽지 않는다)
 // 작게 그리면 잘 안 보이는 기본 아이콘 대신 브랜드 로고(에이전트 앱의 그림을 쓴다)
 const BRAND = [[/claude/i, `${APPS}/agent/icons/claude.svg`, "#d97757"], [/codex|openai/i, `${APPS}/agent/icons/openai.svg`, null]];
@@ -187,8 +190,11 @@ export class InboxApp {
   list(cx, t) {
     this.prepare(cx);
     const heads = GROUPS.filter((g) => this.groups[g.id].length);
+    const ci = shared(CI_KEY);
+    const failed = Boolean(ci && typeof ci === "object" && ci.failed);
     return v_flex().id("inbox-list").flex_1().min_h(0).overflow_y_scrollbar().p(4)
-      .when(!heads.length, (el) => el.child(div().p(8).text_size(12).text_color(t.dim).child("없음")))
+      .when(failed, (el) => el.child(this.ciRow(ci, t)))
+      .when(!heads.length && !failed, (el) => el.child(div().p(8).text_size(12).text_color(t.dim).child("없음")))
       .children(heads.flatMap((g) => {
         const rows = this.groups[g.id], open = this.open[g.id];
         const head = h_flex().id(`inbox-g-${g.id}`).h(26).flex_none().px(6).gap(6).items_center().rounded(4).cursor_pointer()
@@ -198,6 +204,16 @@ export class InboxApp {
           .child(div().flex_none().text_size(12).text_color(t.dim).child(String(rows.length)));
         return [head, ...(open ? rows.map((r) => this.row(r, t)) : [])];
       }));
+  }
+
+  // CI 실패 줄: 누르면 배포 앱. 어느 레포·브랜치의 결과인지 함께(오버뷰를 닫으면 새로 읽지 않아서).
+  ciRow(ci, t) {
+    const where = [ci.repo, ci.branch].filter(Boolean).join(" › ");
+    return h_flex().id("inbox-ci").h(26).flex_none().px(6).gap(8).items_center().rounded(4).cursor_pointer()
+      .hover((s) => s.bg(t.hover)).tooltip("배포 앱에서 보기")
+      .on_click(() => run("office-apps.open-actions"))
+      .child(div().flex_none().text_size(12).font_semibold().text_color(t.ansi1).child("CI 실패"))
+      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child([where, ci.workflow].filter(Boolean).join(" · ")));
   }
 
   row(r, t) {
